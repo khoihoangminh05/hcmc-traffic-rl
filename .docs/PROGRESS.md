@@ -94,8 +94,9 @@
 
 ## Next proposed work
 
-1. User bảo train → làm theo [TRAIN_NOW.md](./TRAIN_NOW.md) (`data_tag=v0_seed120_mixed_day`).
-2. Sau baseline: nâng môi trường L1→L5 theo [ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md).
+1. Push GitHub → clone sol1 → train v0 ([TRAIN_NOW.md](./TRAIN_NOW.md)).
+2. Đọc số cùng thầy ([LEARN_WITH_TEACHER.md](./LEARN_WITH_TEACHER.md)) — gửi `summary.json`.
+3. Sau baseline: L1→L5 ([ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md)).
 
 ---
 
