@@ -1,0 +1,11 @@
+{
+  "time_bucket": "2026-10-02T14",
+  "alleys": 5660,
+  "observed": 120,
+  "interpolated": 5540,
+  "prior": 0,
+  "mapbox_csv": "..\\ingestion-worker\\data_raw\\mapbox\\travel_time_2026-10-02.csv",
+  "graph": "artifacts\\out\\quan4\\alley_graph.json",
+  "density_json": "artifacts\\out\\quan4\\density\\alley_density_latest.json",
+  "density_geojson": "artifacts\\out\\quan4\\density\\quan4_density_latest.geojson"
+}

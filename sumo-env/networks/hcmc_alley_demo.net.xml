@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<net version="1.16" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">
+  <location netOffset="0.0,0.0" convBoundary="0.00,0.00,400.00,200.00" origBoundary="0.00,0.00,400.00,200.00" projParameter="!"/>
+  <junction id="n0" type="priority" x="0.00" y="0.00" incLanes="" intLanes="" shape="-2.00,-2.00 2.00,-2.00 2.00,2.00 -2.00,2.00"/>
+  <junction id="n1" type="priority" x="80.00" y="0.00" incLanes="" intLanes="" shape="78.00,-2.00 82.00,-2.00 82.00,2.00 78.00,2.00"/>
+  <junction id="n1a" type="priority" x="160.00" y="0.00" incLanes="" intLanes="" shape="158.00,-2.00 162.00,-2.00 162.00,2.00 158.00,2.00"/>
+  <junction id="n2" type="priority" x="240.00" y="0.00" incLanes="" intLanes="" shape="238.00,-2.00 242.00,-2.00 242.00,2.00 238.00,2.00"/>
+  <junction id="n2a" type="priority" x="320.00" y="0.00" incLanes="" intLanes="" shape="318.00,-2.00 322.00,-2.00 322.00,2.00 318.00,2.00"/>
+  <junction id="n2b" type="priority" x="0.00" y="60.00" incLanes="" intLanes="" shape="-2.00,58.00 2.00,58.00 2.00,62.00 -2.00,62.00"/>
+  <junction id="n3" type="priority" x="80.00" y="60.00" incLanes="" intLanes="" shape="78.00,58.00 82.00,58.00 82.00,62.00 78.00,62.00"/>
+  <edge id="main_01" from="n0" to="n1" priority="1"><lane id="main_01_0" index="0" speed="13.00" length="120.00"/></edge>
+  <edge id="main_01_rev" from="n1" to="n0" priority="1"><lane id="main_01_rev_0" index="0" speed="13.00" length="120.00"/></edge>
+  <edge id="main_02" from="n1" to="n2" priority="1"><lane id="main_02_0" index="0" speed="13.00" length="100.00"/></edge>
+  <edge id="alley_01" from="n1" to="n1a" priority="1"><lane id="alley_01_0" index="0" speed="8.00" length="60.00"/></edge>
+  <edge id="main_02_rev" from="n2" to="n1" priority="1"><lane id="main_02_rev_0" index="0" speed="13.00" length="100.00"/></edge>
+  <edge id="main_03" from="n2" to="n3" priority="1"><lane id="main_03_0" index="0" speed="13.00" length="140.00"/></edge>
+  <edge id="alley_03_rev" from="n2" to="n2a" priority="1"><lane id="alley_03_rev_0" index="0" speed="8.00" length="55.00"/></edge>
+  <edge id="alley_04" from="n2" to="n2b" priority="1"><lane id="alley_04_0" index="0" speed="8.00" length="70.00"/></edge>
+  <edge id="alley_01_rev" from="n1a" to="n1" priority="1"><lane id="alley_01_rev_0" index="0" speed="8.00" length="60.00"/></edge>
+  <edge id="alley_02" from="n1a" to="n2a" priority="1"><lane id="alley_02_0" index="0" speed="8.00" length="80.00"/></edge>
+  <edge id="main_03_rev" from="n3" to="n2" priority="1"><lane id="main_03_rev_0" index="0" speed="13.00" length="140.00"/></edge>
+  <edge id="alley_05_rev" from="n3" to="n2b" priority="1"><lane id="alley_05_rev_0" index="0" speed="8.00" length="90.00"/></edge>
+  <edge id="alley_03" from="n2a" to="n2" priority="1"><lane id="alley_03_0" index="0" speed="8.00" length="55.00"/></edge>
+  <edge id="alley_04_rev" from="n2b" to="n2" priority="1"><lane id="alley_04_rev_0" index="0" speed="8.00" length="70.00"/></edge>
+  <edge id="alley_05" from="n2b" to="n3" priority="1"><lane id="alley_05_0" index="0" speed="8.00" length="90.00"/></edge>
+</net>

@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<routes><vType id="moto" accel="1.5" decel="3.5" sigma="0.3" length="2.0" maxSpeed="12" /><route id="r_main" edges="main_01 main_02 main_03" /><route id="r_alley" edges="alley_05_rev alley_05 alley_02" /><vehicle id="veh0" type="moto" route="r_main" depart="0" /><vehicle id="veh1" type="moto" route="r_alley" depart="2" /></routes>

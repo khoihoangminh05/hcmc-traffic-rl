@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <input>
+    <net-file value="networks/quan4_alleys.net.xml"/>
+    <route-files value="routes/quan4_alleys.rou.xml"/>
+  </input>
+  <time>
+    <begin value="0"/>
+    <end value="300"/>
+  </time>
+</configuration>

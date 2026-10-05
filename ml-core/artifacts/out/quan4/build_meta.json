@@ -1,0 +1,28 @@
+{
+  "place": "Quận 4, Thành phố Hồ Chí Minh, Việt Nam",
+  "district": "Quan_4_HCMC",
+  "build_profile": "detailed_v2_alley_inclusive",
+  "nodes": 5351,
+  "edges": 9726,
+  "stats": {
+    "alley": 5660,
+    "local": 2478,
+    "secondary": 1588,
+    "arterial": 0,
+    "other": 0,
+    "skipped": 2112
+  },
+  "alleys_only_features": 5660,
+  "local_features": 2478,
+  "spine_features": 1588,
+  "od_pairs_alley_only": 5660,
+  "graph": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ml-core\\artifacts\\out\\quan4\\alley_graph.json",
+  "geojson_alleys": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ml-core\\artifacts\\out\\quan4\\quan4_alleys.geojson",
+  "geojson_all": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ml-core\\artifacts\\out\\quan4\\quan4_network_all.geojson",
+  "geojson_spine": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ml-core\\artifacts\\out\\quan4\\quan4_roads_spine.geojson",
+  "qa": "PASS — zero primary/secondary/tertiary in alley layer",
+  "alley_index": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ml-core\\artifacts\\out\\quan4\\alley_index.json",
+  "export_od": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\ingestion-worker\\config\\od_pairs.quan4.json",
+  "sumo_net": "D:\\LapTrinh\\System\\HCMC_urban_traffic_optimization\\hcmc-traffic-rl\\sumo-env\\networks\\quan4_alleys.net.xml",
+  "limitations": "OSM Vietnam often misses or misplaces hẻm (tube houses obscure imagery). This build includes service=alley + residential + moto-accessible footways; ground survey / JOSM edits still needed for true completeness."
+}

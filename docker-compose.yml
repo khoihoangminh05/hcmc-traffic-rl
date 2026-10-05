@@ -1,0 +1,38 @@
+# Local infrastructure for HCMC Urban Traffic Optimization (Alley Network)
+# Spin up Redis (ingestion buffer) and OSRM (routing baseline) on the local PC (Node 1).
+# Node 2 (GPU server) does NOT depend on these services at runtime — batch jobs consume
+# offline artifacts synced from Node 1 (pause/resume OK on the local worker).
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hcmc-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Placeholder OSRM service. Replace ./osrm-data with a prepared
+  # vietnam-south / HCMC PBF extract + osrm-extract / osrm-partition / osrm-customize output.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    container_name: hcmc-osrm
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm-data:/data
+    # Update the .osrm basename after you prepare the map extract.
+    command: ["osrm-routed", "--algorithm", "mld", "/data/hcmc.osrm"]
+    restart: unless-stopped
+    profiles:
+      - routing
+
+volumes:
+  redis_data:

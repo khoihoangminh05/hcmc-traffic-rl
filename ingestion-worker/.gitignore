@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+dist/
+
+# Secrets & local state
+.env
+data_raw/**
+!data_raw/.gitkeep
+.state/
+*.log

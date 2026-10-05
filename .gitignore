@@ -1,0 +1,46 @@
+# --- Python ---
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.pytest_cache/
+*.egg-info/
+.Python
+
+# --- Node / Nest ---
+**/node_modules/
+ingestion-worker/dist/
+ingestion-worker/.env
+ingestion-worker/data_raw/**
+!ingestion-worker/data_raw/.gitkeep
+ingestion-worker/state/
+*.log
+
+# --- ML artifacts: default ignore, keep Quận 4 train essentials ---
+ml-core/artifacts/raw/
+ml-core/artifacts/out/**
+!ml-core/artifacts/out/quan4/
+!ml-core/artifacts/out/quan4/alley_graph.json
+!ml-core/artifacts/out/quan4/build_meta.json
+!ml-core/artifacts/out/quan4/density/
+!ml-core/artifacts/out/quan4/density/alley_density_latest.json
+!ml-core/artifacts/out/quan4/density/density_meta.json
+ml-core/artifacts/out/quan4/marl_runs/
+ml-core/artifacts/out/quan4/marl_from_sol1/
+*.pt
+*.pth
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Bundles / temp / caches ---
+hcmc_train_bundle/
+hcmc_train_bundle.tar.gz
+*.tar.gz
+ml-core/cache/
+artifacts/

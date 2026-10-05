@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+artifacts/raw/
+# Ignore generated outs except Quận 4 train essentials (see root .gitignore too)
+artifacts/out/**
+!artifacts/out/quan4/
+!artifacts/out/quan4/alley_graph.json
+!artifacts/out/quan4/build_meta.json
+!artifacts/out/quan4/density/
+!artifacts/out/quan4/density/alley_density_latest.json
+!artifacts/out/quan4/density/density_meta.json
+artifacts/out/quan4/marl_runs/
+*.pt
+.mypy_cache/
+.ruff_cache/

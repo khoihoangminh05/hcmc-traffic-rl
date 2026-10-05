@@ -1,0 +1,50 @@
+[
+  {
+    "cameraId": "cam_vvn_dvb",
+    "name": "Vo Van Ngan - Dang Van Bi",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd542766c880017188948"
+  },
+  {
+    "cameraId": "cam_vvn_kvc",
+    "name": "Vo Van Ngan - Kha Van Can",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd653766c88001718894c"
+  },
+  {
+    "cameraId": "cam_hvt_thl",
+    "name": "Hoang Van Thu - Tran Huy Lieu",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdb9f766c880017188968"
+  },
+  {
+    "cameraId": "cam_tc_xh",
+    "name": "Truong Chinh - Xuan Hong",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdb0a766c880017188964"
+  },
+  {
+    "cameraId": "cam_ltk_llq",
+    "name": "Ly Thuong Kiet - Lac Long Quan",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdc57766c88001718896e"
+  },
+  {
+    "cameraId": "cam_tc_tktq",
+    "name": "Truong Chinh - Tan Ky Tan Quy",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=586e25e1f9fab7001111b0ae"
+  },
+  {
+    "cameraId": "cam_lqd_ntl",
+    "name": "Le Quang Dinh - No Trang Long",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd614766c88001718894a"
+  },
+  {
+    "cameraId": "cam_llq_ac",
+    "name": "Lac Long Quan - Au Co",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdc9d766c880017188970"
+  }
+]

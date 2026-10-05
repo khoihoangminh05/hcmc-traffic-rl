@@ -1,0 +1,9 @@
+{
+  "video": "demo_cam.ts",
+  "camera_id": "cam_01",
+  "frame_count": 300,
+  "vehicle_count": 24,
+  "avg_confidence": 0.72,
+  "method": "stub_hash",
+  "processed_at": "2026-09-22T08:00:00+00:00"
+}

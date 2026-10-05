@@ -1,0 +1,97 @@
+# Quận 4 MARL — ready for CUDA train (sol1: RTX 4090; also H100)
+# On sol1: CUDA_VISIBLE_DEVICES=1 and output_root under /mnt/data8tb (via symlink).
+# Freeze this file into each run's output dir as hyperparameters.snapshot.yaml
+#
+# Data assumptions (v0):
+#   - Mapbox OD seeds (~120) → density on alley layer; rest interpolated
+#   - Camera does NOT see into alleys → NOT used as primary k; secondary only (future L4)
+#   - density_latest may mix morning+evening (fix in ENV_UPGRADE L1)
+
+experiment:
+  name: quan4_marl_robust
+  data_tag: v0_seed120_mixed_day   # bump when density pipeline changes (v1, v2, ...)
+  seed: 42
+  device: auto          # auto | cpu | cuda
+  output_root: artifacts/out/quan4/marl_runs
+
+data:
+  graph: artifacts/out/quan4/alley_graph.json
+  density: artifacts/out/quan4/density/alley_density_latest.json
+  seeds: ../ingestion-worker/config/od_pairs.quan4.seeds.json
+  # Departure times (sec of day) sampled during train; fixed list for val/test
+  t_train: [25200, 28800, 32400, 61200, 64800, 68400]   # 7–9h & 17–19h VN-ish
+  t_eval: [28800, 64800]
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    min_path_edges: 2          # drop trivial 1-edge OD from train (keep in eval ok)
+    require_path: true
+
+env:
+  n_agents: 1
+  obs_mode: compact            # compact (fast/strong) | full (legacy ~20k dim — avoid on Quận4)
+  compact_dim: 64
+
+model:
+  hidden: 128
+  n_actions: 2
+
+optim:
+  lr: 3.0e-4
+  lr_min: 1.0e-5
+  weight_decay: 1.0e-5
+  grad_clip_norm: 1.0
+
+ppo:
+  # Mini-batch of single-step episodes (route choice)
+  rollout_episodes: 32         # collect before one PPO update
+  ppo_epochs: 4
+  clip_eps: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.02
+  entropy_coef_min: 0.001
+  gamma: 1.0                   # single-step → 1.0
+  normalize_advantage: true
+
+train:
+  max_updates: 200             # each update = rollout_episodes env steps
+  eval_every: 5                # validate every N updates
+  log_every: 1
+  save_every: 10
+
+early_stopping:
+  enabled: true
+  metric: val_travel_time      # lower is better
+  mode: min
+  patience: 12                 # evals without improvement
+  min_delta: 0.5               # seconds
+  restore_best: true
+
+# Validation-driven hyperparameter adaptation (no random search burn)
+adapt:
+  enabled: true
+  # If val does not improve for `plateau_evals`, interpolate LR & entropy toward safer values
+  plateau_evals: 3
+  lr_decay: 0.5                # new_lr = max(lr_min, lr * lr_decay)
+  entropy_decay: 0.7           # reduce exploration when stuck
+  # If val improves sharply, gently restore entropy (escape local greed)
+  improve_entropy_boost: 1.15
+  # Blend current hyperparams with last-best using val score (inverse-distance style)
+  interpolate_with_best: true
+  interpolate_alpha: 0.35      # 0=keep current, 1=jump to best snapshot
+
+baseline:
+  # Oracle: min(prefer_main, prefer_alley) — policy must approach this on val/test
+  compute_oracle: true
+
+risk:
+  max_obs_dim: 512             # abort if obs_mode=full would exceed (Quận4 safety)
+  nan_guard: true
+  fail_on_infinite_travel: true
+
+viz:
+  write_dashboard: false       # server: log only (no HTML)
+  write_csv: true
+  write_jsonl: true
+  tensorboard: false
