@@ -128,8 +128,12 @@ Pass: thấy `L1 density_catalog=...` đủ 3 peak + `ROBUST_TRAIN_OK`.
 
 ## 4) Train full GPU1 (Paper B)
 
+**Cảnh báo:** lệnh có `--smoke` chỉ chạy ~6 update (~10–20s) rồi dừng — **không** phải train paper.  
+Full train **không** có `--smoke`. Nếu tmux “trống”: dùng `python -u` + `tee` như dưới.
+
 ```bash
-cd ~/hcmc-traffic-rl/ml-core
+cd ~/hcmc-traffic-rl && git pull
+cd ml-core
 tmux new -s marl_v5
 ```
 
@@ -141,17 +145,51 @@ conda activate /mnt/data8tb/minhkhoi/hcmc-traffic-rl/conda-env
 export PATH="/mnt/data8tb/minhkhoi/tools-env/bin:$PATH"
 cd ~/hcmc-traffic-rl/ml-core
 
+# phải thấy: .../conda-env/bin/python
+which python
+# phải KHÔNG có chữ smoke trong lệnh bên dưới
+nvidia-smi
+
+mkdir -p /mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs
 LOG=/mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/train_v5_$(date +%Y%m%d_%H%M%S).log
 
-CUDA_VISIBLE_DEVICES=1 python -m marl_agent.robust_train \
+# -u = unbuffered → thấy log ngay trong tmux
+CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.robust_train \
   --config marl_agent/configs/quan4_v5_final.yaml \
   --device cuda \
   2>&1 | tee "$LOG"
 ```
 
+Dòng đầu phải có: `[robust_train] mode=FULL ... max_updates=200`  
+Nếu thấy `mode=SMOKE` hoặc `*** SMOKE MODE ***` → đang sai lệnh.
+
 - Detach: **Ctrl+B** rồi **D**  
-- Attach lại: `tmux attach -t marl_v5`  
-- Xong khi: `ROBUST_TRAIN_OK` và log `[train] N/200` (hoặc early-stop), **không** chỉ 6 update.
+- Xem log file (kể cả khi detach): `tail -f $LOG` hoặc  
+  `tail -f /mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/train_v5_*.log`  
+- Attach lại: `tmux attach -t marl_v5`
+
+### Debug nếu lại “10 giây / không log”
+
+```bash
+cd ~/hcmc-traffic-rl/ml-core
+conda activate /mnt/data8tb/minhkhoi/hcmc-traffic-rl/conda-env
+
+# 1) Lệnh vừa chạy có --smoke không?
+history | tail -20
+
+# 2) File twin có đủ không?
+ls -lh artifacts/out/quan4/wcc/alley_graph_wcc.json \
+  artifacts/out/quan4/wcc/alley_density_peak_*_paper_a_merged_wcc.json \
+  ../ingestion-worker/config/od_pairs.quan4.seeds_l3.json
+
+# 3) Chạy foreground (không tmux) để thấy lỗi đỏ
+CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.robust_train \
+  --config marl_agent/configs/quan4_v5_final.yaml --device cuda
+
+# 4) Log gần nhất
+ls -lt /mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/train_v5_*.log | head
+tail -80 /mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/train_v5_*.log | tail -80
+```
 
 ---
 

@@ -19,6 +19,7 @@ import json
 import math
 import random
 import shutil
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -356,12 +357,16 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
     print(
         f"[robust_train] data_tag={data_tag} device={device} obs_mode={obs_mode} "
         f"obs_dim={obs_dim} train_od={len(split['train'])} val_od={len(split['val'])} "
-        f"test_od={len(split['test'])}"
+        f"test_od={len(split['test'])}",
+        flush=True,
     )
     if density_catalog:
-        print(f"[robust_train] L1 density_catalog={ {k: str(v) for k, v in density_catalog.items()} }")
-    print(f"[robust_train] run_dir={run_dir}")
-    print("[robust_train] look at logs: [train] / [eval] / [adapt] → summary.json")
+        print(
+            f"[robust_train] L1 density_catalog={ {k: str(v) for k, v in density_catalog.items()} }",
+            flush=True,
+        )
+    print(f"[robust_train] run_dir={run_dir}", flush=True)
+    print("[robust_train] look at logs: [train] / [eval] / [adapt] → summary.json", flush=True)
 
     agent = env.agents[0]
     stop_reason = "max_updates"
@@ -590,6 +595,13 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
 
 
 def main() -> None:
+    # Unbuffered-friendly for tmux/tee
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="Robust Quận 4 MARL trainer")
     parser.add_argument(
         "--config",
@@ -601,6 +613,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--smoke", action="store_true", help="Tiny run for CI/local check")
     args = parser.parse_args()
+
+    print(
+        f"[robust_train] boot config={args.config} smoke={args.smoke} "
+        f"device_arg={args.device} cwd={Path.cwd()}",
+        flush=True,
+    )
 
     cfg = load_config(args.config)
     if args.smoke:
@@ -614,6 +632,11 @@ def main() -> None:
         cfg["early_stopping"]["patience"] = 3
         cfg.setdefault("experiment", {})
         cfg["experiment"]["name"] = "quan4_marl_smoke"
+        print(
+            "[robust_train] *** SMOKE MODE *** max_updates=6 — NOT a full Paper B train. "
+            "Re-run WITHOUT --smoke for GPU job.",
+            flush=True,
+        )
     if args.max_updates is not None:
         cfg.setdefault("train", {})
         cfg["train"]["max_updates"] = args.max_updates
@@ -624,7 +647,21 @@ def main() -> None:
         cfg.setdefault("experiment", {})
         cfg["experiment"]["seed"] = args.seed
 
-    run_training(cfg, config_path=args.config)
+    max_u = int(cfg.get("train", {}).get("max_updates", 0))
+    print(
+        f"[robust_train] mode={'SMOKE' if args.smoke else 'FULL'} "
+        f"data_tag={cfg.get('experiment', {}).get('data_tag')} max_updates={max_u}",
+        flush=True,
+    )
+
+    try:
+        run_training(cfg, config_path=args.config)
+    except Exception:
+        import traceback
+
+        print("[robust_train] FATAL — traceback below", flush=True)
+        traceback.print_exc()
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
