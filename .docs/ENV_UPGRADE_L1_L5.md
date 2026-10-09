@@ -1,7 +1,7 @@
 # Nâng cấp môi trường Twin Quận 4 — L1 → L5
 
-> Pipeline kỹ thuật phục vụ **hai bài báo** — xem [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).  
-> **Paper A (data/twin):** L1–L4 + freeze artifact. **Paper B (tối ưu hẻm):** L5 protocol + **một** train GPU trên twin đã freeze.  
+> Pipeline twin L1–L4 phục vụ **một paper UAKP** — [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).  
+> L5 / train chính = `quan4_uakp.yaml` (không còn binary `quan4_v5` làm claim). Legacy 2-paper: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).
 > **Không** train lại sau mỗi L.
 
 ## Nguyên tắc khóa

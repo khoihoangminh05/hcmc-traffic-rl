@@ -1,18 +1,18 @@
 # Progress Tracker — HCMC Urban Traffic Optimization
 
 > Living checklist. Update after every working block.  
-> **Research lock:** [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) — Paper A (data twin) + Paper B (alley routing).
+> **Research lock:** [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) — Uncertainty-aware alley routing (UAKP).
 
 **Last updated:** 2026-10-09  
-**Current phase:** Paper A **frozen** → thao tác **Paper B trên sol1**: [SOL1_PAPER_B.md](./SOL1_PAPER_B.md).  
-Guides: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) · [TRAIN_NOW.md](./TRAIN_NOW.md).
+**Current phase:** UAKP env + train (binary v5 = legacy).  
+Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_UAKP.md](./SOL1_UAKP.md) · [TRAIN_NOW.md](./TRAIN_NOW.md).
 
 **Focus (locked):** Quận 4 — Mapbox-first trong hẻm; camera chỉ secondary.  
 **Server:** sol1 — `CUDA_VISIBLE_DEVICES=1`, outputs `/mnt/data8tb/minhkhoi/...`.
 
 **North star (locked):**
-- **Paper A:** Twin hẻm: `alley_id` + cấu trúc + `k(t)` (time-bucket, WCC, uncertainty).  
-- **Paper B:** MARL `(t, O, D) →` thời gian ngắn nhất (được qua hẻm) trên twin đã freeze.
+- **One paper:** Twin `k+u` + UAKP (K-path PPO, risk-sensitive) — gap-to-oracle vs Dijkstra/heuristics.  
+- Legacy: binary `v5_l1l5` / hai-paper plan — không còn claim chính.
 
 **Deployment note (locked):**
 - **Node 1** = local NestJS + Redis (pause/resume).  
@@ -93,11 +93,12 @@ Guides: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) · [TRAIN_NOW.md](./T
 
 ---
 
-## Next proposed work (2 papers)
+## Next proposed work (one paper UAKP)
 
-1. **Done — Paper A freeze** (`ready_to_freeze=true`, 3 peaks × 379).  
-2. **Now — Paper B sol1:** làm đúng [SOL1_PAPER_B.md](./SOL1_PAPER_B.md) (git push → scp bundle → unpack → smoke → train GPU1).  
-3. Paste `summary.json` v5 (+ bảng vs v0) vào chat.
+1. **Done — twin freeze** + research lock [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).  
+2. **Done locally:** UAKP env/tests/train + baselines + stochastic CVaR eval + ablation harness.  
+3. **Now — sol1 full GPU** (SSH cần key/password): [SOL1_UAKP.md](./SOL1_UAKP.md) → `git pull` → train + ablations → paste `summary.json`.  
+4. Viết draft theo [PAPER_OUTLINE_UAKP.md](./PAPER_OUTLINE_UAKP.md).
 
 ---
 
@@ -123,3 +124,4 @@ Guides: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) · [TRAIN_NOW.md](./T
 | 2026-10-05 | L3: seeds_l3 n=400 + min_positive=3 + hop uncertainty + `verify_l3` |
 | 2026-10-05 | Evening poll + L4 cam_secondary + L5 `quan4_v5_final` + limitations |
 | 2026-10-06 | Locked **2 conference papers**: RESEARCH_TWO_PAPERS.md (A=data twin, B=routing) |
+| 2026-10-09 | **Supersede → one paper UAKP**: RESEARCH_ONE_PAPER + uakp_env/train + quan4_uakp; binary v5 = legacy |

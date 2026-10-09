@@ -1,0 +1,98 @@
+# Quận 4 — UncertaintyAwareKPath (MAIN paper train)
+# Research lock: .docs/RESEARCH_ONE_PAPER.md
+# data_tag: uakp_v1
+#
+#   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.uakp_train \
+#     --config marl_agent/configs/quan4_uakp.yaml --device cuda
+
+experiment:
+  name: quan4_uakp
+  data_tag: uakp_v1
+  seed: 42
+  device: auto
+  output_root: artifacts/out/quan4/marl_runs
+
+data:
+  graph: artifacts/out/quan4/wcc/alley_graph_wcc.json
+  density: artifacts/out/quan4/wcc/alley_density_l4_cam_wcc.json
+  density_by_peak:
+    morning: artifacts/out/quan4/wcc/alley_density_peak_morning_paper_a_merged_wcc.json
+    afternoon: artifacts/out/quan4/wcc/alley_density_peak_afternoon_paper_a_merged_wcc.json
+    evening: artifacts/out/quan4/wcc/alley_density_peak_evening_paper_a_merged_wcc.json
+  density_l1_index: artifacts/out/quan4/density/density_l1_index.json
+  require_l1_catalog: true
+  seeds: ../ingestion-worker/config/od_pairs.quan4.seeds_l3.json
+  t_train: [25200, 28800, 32400, 46800, 50400, 61200, 64800, 68400]
+  t_eval: [28800, 50400, 64800]
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    min_path_edges: 2
+    require_path: true
+
+env:
+  k_paths: 8
+  # Stronger risk weight so ranking differs from pure mean-T Dijkstra
+  risk_lambda: 0.15
+  compact_dim: 128
+  include_uncertainty: true
+
+model:
+  hidden: 128
+  # n_actions = env.k_paths (set at runtime)
+
+optim:
+  lr: 3.0e-4
+  lr_min: 1.0e-5
+  weight_decay: 1.0e-5
+  grad_clip_norm: 1.0
+
+ppo:
+  rollout_episodes: 64
+  ppo_epochs: 4
+  clip_eps: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.05
+  entropy_coef_min: 0.005
+  gamma: 1.0
+  normalize_advantage: true
+
+train:
+  max_updates: 500
+  eval_every: 10
+  log_every: 1
+  save_every: 20
+
+early_stopping:
+  enabled: true
+  metric: val_risk_adjusted
+  mode: min
+  patience: 15
+  min_delta: 0.5
+  restore_best: true
+
+adapt:
+  enabled: true
+  plateau_evals: 3
+  lr_decay: 0.5
+  entropy_decay: 0.7
+  improve_entropy_boost: 1.15
+  interpolate_with_best: true
+  interpolate_alpha: 0.35
+
+baseline:
+  run_on_eval: true
+
+ablation:
+  # Set via CLI --no-uncertainty / --risk-lambda 0 for ablations
+  note: "±include_uncertainty and risk_lambda"
+
+risk:
+  max_obs_dim: 512
+  nan_guard: true
+  fail_on_infinite_travel: true
+
+viz:
+  write_csv: true
+  write_jsonl: true

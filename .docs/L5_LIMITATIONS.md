@@ -1,27 +1,33 @@
-# L5 / Paper limitations (draft)
+# Limitations (One paper — UAKP)
 
-> Dùng cho **Paper A** (limitation twin) và phần môi trường của **Paper B**.  
-> Chiến lược 2 bài: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).
+> Paper: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).  
+> Legacy hai-paper note: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).
 
-## Scope (cả hai bài)
-- Twin domain = **largest alley-core WCC** of Quận 4 OSM (~886 nodes / ~1828 alleys), not the full fragmented city graph (370 WCC).
+## Scope
+
+- Twin domain = **largest alley-core WCC** of Quận 4 OSM (~886 nodes / ~1828 edges), not the full fragmented city graph (370 WCC).
 - Density primary source = **Mapbox Directions** on sampled alley OD seeds (~379), graph-interpolated.
+- Each alley carries **`density_k` + `uncertainty`** (observed / interpolated / prior levels).
 - Camera is **secondary at entries/spine only**; does **not** observe interior alleys.
+- Routing decision = **select 1 of K candidate paths** (UAKP), not binary prefer-main/alley, not multi-agent MAPPO.
 
-## Paper A — data / twin
+## Twin / data
+
 - OSM Vietnam alley coverage incomplete / inconsistently tagged (`service=alley` vs residential).
 - Mapbox duration ≠ motorcycle probe inside narrow hẻm; zeros dropped (`duration_sec > 0`, `min_positive≥3`).
-- Time buckets (UTC): morning 0–5, afternoon 6–9, evening 10–14.
-- Catch-up days may leave a peak empty (e.g. morning prior-only) until peak polls exist.
-- Peak-to-peak `|Δk|` can be small on some calendar days — report honestly; do not overclaim “strong diurnal signal” without evidence.
-- `cameras.hcmc_seed.json` is mostly **outside** Quận 4; Q4 L4 file may use entry placeholders until a real Q4 catalog exists.
+- Time buckets (UTC peaks mapped to morning / afternoon / evening wall schedule in configs).
+- Peak-to-peak `|Δk|` can be small on some calendar days — report honestly.
+- `cameras.hcmc_seed.json` is mostly **outside** Quận 4; Q4 L4 may use entry placeholders until a real Q4 catalog exists.
 
-## Paper B — routing optimization
-- Action space: binary prefer-main vs prefer-alley (compact obs); not full path enumeration.
-- Oracle = min(main, alley preference) on fused speeds — optimistic vs field GPS.
-- Compare frozen twin (`v5_l1l5` / Paper A tag) vs mixed-day baseline (`v0_seed120_mixed_day`).
-- Do not treat intermediate L1–L4 tags as separate GPU campaigns unless ablation is required.
+## UAKP / optimization
+
+- Candidates are generated from weighted shortest / simple-path variants — not full path enumeration.
+- Oracle-K = best candidate under mean travel (optimistic vs field GPS).
+- Risk term uses fused `uncertainty` as a **proxy**, not calibrated predictive variance.
+- Single-agent trip choice; no endogenous congestion from many simultaneous agents.
+- Binary `quan4_v5` / `v5_l1l5` runs are **legacy toys** (2 actions, often trivial regret=0) — do not cite as main scientific result.
 
 ## Ethics
+
 - Public traffic cams / Mapbox ToS: research use, no PII, no re-identification of individuals in frames.
 - Cite data sources; do not release Mapbox tokens or raw camera dumps with sensitive content.

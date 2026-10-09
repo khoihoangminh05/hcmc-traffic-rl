@@ -1,9 +1,8 @@
-# Quận 4 MARL — FINAL train config (**Paper B**)
-# Requires Paper A twin freeze (WCC + L1 peaks + L3 seeds + optional L4).
-# Plan: .docs/RESEARCH_TWO_PAPERS.md
-# data_tag: v5_l1l5  — compare to v0_seed120_mixed_day (quan4_h100.yaml)
+# LEGACY — binary prefer-main/alley PPO (2 actions, often trivial regret=0).
+# NOT the main paper result. Main train: quan4_uakp.yaml (UAKP / RESEARCH_ONE_PAPER.md).
+# Kept for regression / “toy baseline” contrast only.
+# data_tag: v5_l1l5
 #
-# Train on sol1 ONLY after morning peak filled + twin synced:
 #   CUDA_VISIBLE_DEVICES=1 python -m marl_agent.robust_train \
 #     --config marl_agent/configs/quan4_v5_final.yaml --device cuda
 
