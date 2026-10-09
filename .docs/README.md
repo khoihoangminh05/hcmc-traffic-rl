@@ -2,7 +2,14 @@
 
 ## North star (mục tiêu cốt lõi — luôn ưu tiên)
 
-**Tái tạo tốt nhất có thể môi trường giao thông có chứa hẻm** (Digital Twin / SUMO), đủ giàu để huấn luyện MARL.
+**Hai bài báo (locked):** [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md)
+
+| Paper | Trọng tâm | GPU |
+|-------|-----------|-----|
+| **A — Data / twin hẻm** | OSM + Mapbox peaks + WCC + fusion + cam secondary | 0 |
+| **B — Tối ưu định tuyến hẻm** | MARL `(t,O,D)→travel` trên twin đã freeze; so v0 vs v5 | 1–2 buổi sol1 |
+
+**Tái tạo môi trường giao thông có hẻm** (Digital Twin / SUMO) đủ giàu để (A) công bố twin và (B) huấn luyện MARL.
 
 Mỗi hẻm trên twin phải có đủ 3 lớp:
 
@@ -10,17 +17,17 @@ Mỗi hẻm trên twin phải có đủ 3 lớp:
 |-----|----------|---------|
 | **Định danh duy nhất** | `alley_id` ổn định | Đồ thị đường (OSMnx → SUMO edge/node) |
 | **Cấu trúc hẻm** | topology, chiều dài, loại/cấp, chiều đi | Graph + OSM attributes |
-| **Mật độ theo hẻm** | `k(t)` (và speed suy ra nếu cần) | **Nội suy / data fusion** (Greenshields + Kalman) từ camera thưa + Mapbox |
+| **Mật độ theo hẻm** | `k(t)` (và speed suy ra nếu cần) | **Nội suy / data fusion** (Greenshields + Kalman) — Mapbox-first; camera secondary tại cổng |
 
-| Chiều MARL | Hợp đồng |
-|------------|----------|
+| Chiều MARL (Paper B) | Hợp đồng |
+|----------------------|----------|
 | **Đầu vào** | `t` · `O` · `D` |
 | **Đầu ra** | Thời gian ngắn nhất — lộ trình **được qua hẻm** |
 | **Quan sát** | State graph: cấu trúc + mật độ theo `alley_id` tại `t` |
 
 Crawl / CV chỉ là quan sát thưa; `ml-core/data_fusion` là máy nội suy mật độ cho mọi hẻm đã định danh.
 
-Phase 1 xây twin (ID + cấu trúc + `k`). Phase 2 MARL: `(t, O, D) → min travel time (via alleys)`.
+Paper A xây / freeze twin. Paper B: `(t, O, D) → min travel time (via alleys)` trên twin đó.
 
 ---
 

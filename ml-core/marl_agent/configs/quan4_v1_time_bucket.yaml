@@ -1,0 +1,100 @@
+# Quận 4 MARL — L1 time-bucketed density (v1)
+# Diff vs v0 (quan4_h100.yaml):
+#   - data_tag v1_time_bucket
+#   - density_by_peak morning/evening (no mixed-day k)
+#   - require_l1_catalog: true
+# Same trainer / obs / PPO — fair compare to v0.
+#
+# Before train: fuse L1 peaks from Mapbox day CSV:
+#   python -m data_fusion.run_quan4_density --l1-peaks \
+#     --mapbox ../ingestion-worker/data_raw/mapbox/travel_time_2026-10-02.csv \
+#     --output artifacts/out/quan4/density --latest-peak evening
+
+experiment:
+  name: quan4_marl_robust
+  data_tag: v1_time_bucket
+  seed: 42
+  device: auto
+  output_root: artifacts/out/quan4/marl_runs
+
+data:
+  graph: artifacts/out/quan4/alley_graph.json
+  # Fallback / evening mirror (fuse --latest-peak evening)
+  density: artifacts/out/quan4/density/alley_density_latest.json
+  # L1 catalog — trainer reloads by t (<12h morning, else evening)
+  density_by_peak:
+    morning: artifacts/out/quan4/density/alley_density_peak_morning_2026-10-02.json
+    evening: artifacts/out/quan4/density/alley_density_peak_evening_2026-10-02.json
+  density_l1_index: artifacts/out/quan4/density/density_l1_index.json
+  require_l1_catalog: true
+  seeds: ../ingestion-worker/config/od_pairs.quan4.seeds.json
+  t_train: [25200, 28800, 32400, 61200, 64800, 68400]
+  t_eval: [28800, 64800]
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    min_path_edges: 2
+    require_path: true
+
+env:
+  n_agents: 1
+  obs_mode: compact
+  compact_dim: 64
+
+model:
+  hidden: 128
+  n_actions: 2
+
+optim:
+  lr: 3.0e-4
+  lr_min: 1.0e-5
+  weight_decay: 1.0e-5
+  grad_clip_norm: 1.0
+
+ppo:
+  rollout_episodes: 32
+  ppo_epochs: 4
+  clip_eps: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.02
+  entropy_coef_min: 0.001
+  gamma: 1.0
+  normalize_advantage: true
+
+train:
+  max_updates: 200
+  eval_every: 5
+  log_every: 1
+  save_every: 10
+
+early_stopping:
+  enabled: true
+  metric: val_travel_time
+  mode: min
+  patience: 12
+  min_delta: 0.5
+  restore_best: true
+
+adapt:
+  enabled: true
+  plateau_evals: 3
+  lr_decay: 0.5
+  entropy_decay: 0.7
+  improve_entropy_boost: 1.15
+  interpolate_with_best: true
+  interpolate_alpha: 0.35
+
+baseline:
+  compute_oracle: true
+
+risk:
+  max_obs_dim: 512
+  nan_guard: true
+  fail_on_infinite_travel: true
+
+viz:
+  write_dashboard: false
+  write_csv: true
+  write_jsonl: true
+  tensorboard: false

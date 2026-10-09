@@ -1,0 +1,50 @@
+[
+  {
+    "cameraId": "cam_q4_entry_0",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.7099623,
+    "lat": 10.7595494,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  },
+  {
+    "cameraId": "cam_q4_entry_1",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.7101191,
+    "lat": 10.7594417,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  },
+  {
+    "cameraId": "cam_q4_entry_2",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.7098564,
+    "lat": 10.7596269,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  },
+  {
+    "cameraId": "cam_q4_entry_3",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.7165328,
+    "lat": 10.7566414,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  },
+  {
+    "cameraId": "cam_q4_entry_4",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.7165839,
+    "lat": 10.7566536,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  },
+  {
+    "cameraId": "cam_q4_entry_5",
+    "name": "Q4 entry synth near Đoàn Văn Bơ",
+    "lon": 106.716165,
+    "lat": 10.7565466,
+    "mode": "synthetic_entry",
+    "note": "Placeholder entry/spine cam for L4 pipeline until real Q4 cam catalog exists. Not interior alley."
+  }
+]

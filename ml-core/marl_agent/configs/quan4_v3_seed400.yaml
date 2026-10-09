@@ -1,0 +1,95 @@
+# Quận 4 MARL — L3 denser seeds in WCC (draft; merge into v5 after L5)
+# Pipeline before this config is useful:
+#   1) L2 export_wcc_subgraph
+#   2) sample_od_seeds --n 400 from od_pairs_wcc
+#   3) Nest poll peaks with MAPBOX_OD_FILE=…seeds_l3.json
+#   4) fuse --l1-peaks --min-positive 3 on WCC graph
+#   5) re-export density *_wcc
+# GPU: do NOT train until L5.
+
+experiment:
+  name: quan4_marl_robust
+  data_tag: v3_seed400_wcc
+  seed: 42
+  device: auto
+  output_root: artifacts/out/quan4/marl_runs
+
+data:
+  graph: artifacts/out/quan4/wcc/alley_graph_wcc.json
+  density: artifacts/out/quan4/wcc/alley_density_latest_wcc.json
+  density_by_peak:
+    morning: artifacts/out/quan4/wcc/alley_density_peak_morning_2026-10-05_wcc.json
+    afternoon: artifacts/out/quan4/wcc/alley_density_peak_afternoon_2026-10-05_wcc.json
+    evening: artifacts/out/quan4/wcc/alley_density_peak_evening_2026-10-05_wcc.json
+  require_l1_catalog: false
+  seeds: ../ingestion-worker/config/od_pairs.quan4.seeds_l3.json
+  t_train: [25200, 28800, 32400, 61200, 64800, 68400]
+  t_eval: [28800, 64800]
+  split:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    min_path_edges: 2
+    require_path: true
+
+env:
+  n_agents: 1
+  obs_mode: compact
+  compact_dim: 64
+
+model:
+  hidden: 128
+  n_actions: 2
+
+optim:
+  lr: 3.0e-4
+  lr_min: 1.0e-5
+  weight_decay: 1.0e-5
+  grad_clip_norm: 1.0
+
+ppo:
+  rollout_episodes: 32
+  ppo_epochs: 4
+  clip_eps: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.02
+  entropy_coef_min: 0.001
+  gamma: 1.0
+  normalize_advantage: true
+
+train:
+  max_updates: 200
+  eval_every: 5
+  log_every: 1
+  save_every: 10
+
+early_stopping:
+  enabled: true
+  metric: val_travel_time
+  mode: min
+  patience: 12
+  min_delta: 0.5
+  restore_best: true
+
+adapt:
+  enabled: true
+  plateau_evals: 3
+  lr_decay: 0.5
+  entropy_decay: 0.7
+  improve_entropy_boost: 1.15
+  interpolate_with_best: true
+  interpolate_alpha: 0.35
+
+baseline:
+  compute_oracle: true
+
+risk:
+  max_obs_dim: 512
+  nan_guard: true
+  fail_on_infinite_travel: true
+
+viz:
+  write_dashboard: false
+  write_csv: true
+  write_jsonl: true
+  tensorboard: false

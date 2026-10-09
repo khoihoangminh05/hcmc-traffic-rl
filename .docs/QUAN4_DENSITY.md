@@ -1,7 +1,7 @@
 # Quận 4 — Bước mật độ k(t) theo thời gian từng hẻm
 
-**Máy:** local PC  
-**Điều kiện trước:** bản đồ hẻm Quận 4 đã OK (`artifacts/out/quan4/`).
+> Thuộc **Paper A (data/twin)**. Kế hoạch 2 bài: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).  
+> Camera không phải nguồn chính trong hẻm — xem L4 secondary.
 
 ## Ý tưởng
 
@@ -76,15 +76,32 @@ Invoke-RestMethod -Method Post http://127.0.0.1:3000/camera/crawl
 
 ## Bước 4 — Fusion mật độ mọi hẻm
 
+### L1 (khuyến nghị) — tách peak sáng/tối, không mix ngày
+
 ```powershell
 cd D:\LapTrinh\System\HCMC_urban_traffic_optimization\hcmc-traffic-rl\ml-core
 .\.venv\Scripts\activate
 $env:PYTHONIOENCODING='utf-8'
 
-# Đổi ngày CSV cho đúng
+python -m data_fusion.run_quan4_density --l1-peaks `
+  --graph artifacts/out/quan4/alley_graph.json `
+  --mapbox ..\ingestion-worker\data_raw\mapbox\travel_time_2026-10-02.csv `
+  --output artifacts/out/quan4/density `
+  --latest-peak evening
+```
+
+**Pass:** `density_l1_index.json` có `peaks.morning` + `peaks.evening`;  
+`alley_density_peak_morning_*.json` / `*_evening_*.json` riêng;  
+`alley_density_latest.json` = đúng một peak (`latest_peak`).
+
+Train: `marl_agent/configs/quan4_v1_time_bucket.yaml`.
+
+### Legacy (v0) — cả ngày một file (baseline so sánh)
+
+```powershell
 python -m data_fusion.run_quan4_density `
   --graph artifacts/out/quan4/alley_graph.json `
-  --mapbox ..\ingestion-worker\data_raw\mapbox\travel_time_2026-09-24.csv `
+  --mapbox ..\ingestion-worker\data_raw\mapbox\travel_time_2026-10-02.csv `
   --output artifacts/out/quan4/density
 ```
 
@@ -106,8 +123,8 @@ Xem map màu mật độ:
 Mỗi khung giờ (ví dụ 30–60 phút):
 
 1. `POST /mapbox/poll` lại  
-2. Chạy lại `run_quan4_density` (file CSV cùng ngày sẽ append thêm dòng)  
-3. Có thêm snapshot `alley_density_<time_bucket>.json`
+2. Chạy lại `run_quan4_density --l1-peaks` (CSV cùng ngày append thêm dòng)  
+3. Peak files + `density_l1_index.json` cập nhật
 
 Worker cron cũng poll theo `MAPBOX_POLL_INTERVAL_MS` nếu để NestJS chạy.
 

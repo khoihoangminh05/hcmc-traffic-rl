@@ -1,7 +1,9 @@
-# Học cùng lúc train — cách đọc số & quyết định
+# Học cùng lúc train — Paper B
 
-Bạn không cần thuộc hết. Mỗi lần train xong, mở `summary.json` và trả lời **4 câu** bên dưới.  
+Bạn không cần thuộc hết. Mỗi lần train xong (v0 hoặc v5), mở `summary.json` và trả lời **4 câu** bên dưới.  
 Gửi mình file đó — mình sẽ cùng bạn đọc như buổi chữa bài.
+
+Chiến lược 2 paper: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) — số train thuộc **Paper B**; chất lượng twin thuộc **Paper A**.
 
 ---
 
@@ -100,7 +102,7 @@ Ví dụ các field quan trọng:
 | Chạy xong, acc ~50%, regret lớn | Bình thường với **v0**; giữ checkpoint làm baseline, sang **L1** |
 | Acc tăng, regret giảm rõ qua các update | Pipeline học được tín hiệu → có thể train dài hơn hoặc sang L1/L2 |
 | Train tốt, val xấu | Overfit / data mix → L1 time-bucket, đừng tăng model trước |
-| Muốn paper mạnh hơn | Không train thêm 10 buổi trên v0; làm [ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md) |
+| Muốn paper mạnh hơn | Không train thêm trên v0; làm hết L1→L5 rồi **train một thể** ([ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md)) |
 
 ---
 

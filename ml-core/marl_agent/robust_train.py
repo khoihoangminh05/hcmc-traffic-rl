@@ -52,6 +52,30 @@ def _resolve(path: Path | str, base: Path, *, must_exist: bool = True) -> Path:
     return alt
 
 
+def _load_density_catalog(data_cfg: dict[str, Any], base: Path) -> dict[str, Path]:
+    """L1: morning/evening density paths from yaml or density_l1_index.json."""
+    catalog: dict[str, Path] = {}
+    by_peak = data_cfg.get("density_by_peak") or {}
+    for name, rel in by_peak.items():
+        if not rel:
+            continue
+        p = _resolve(rel, base, must_exist=False)
+        if p.exists():
+            catalog[str(name)] = p
+    index_rel = data_cfg.get("density_l1_index")
+    if index_rel and len(catalog) < 2:
+        index_path = _resolve(index_rel, base, must_exist=False)
+        if index_path.exists():
+            idx = json.loads(index_path.read_text(encoding="utf-8"))
+            for name, meta in (idx.get("peaks") or {}).items():
+                if name in catalog:
+                    continue
+                p = meta.get("path") if isinstance(meta, dict) else None
+                if p and Path(p).exists():
+                    catalog[str(name)] = Path(p)
+    return catalog
+
+
 def load_config(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -182,10 +206,15 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
     graph = _resolve(data_cfg["graph"], base, must_exist=True)
     density = _resolve(data_cfg["density"], base, must_exist=True)
     seeds = _resolve(data_cfg["seeds"], base, must_exist=True)
+    density_catalog = _load_density_catalog(data_cfg, base)
     for p, name in ((graph, "graph"), (density, "density"), (seeds, "seeds")):
         if not p.exists():
             raise FileNotFoundError(f"Missing {name}: {p}")
-
+    if data_cfg.get("require_l1_catalog") and len(density_catalog) < 2:
+        raise FileNotFoundError(
+            "L1 requires density_by_peak morning+evening (or density_l1_index). "
+            "Run: python -m data_fusion.run_quan4_density --l1-peaks --mapbox <csv>"
+        )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     exp_name = cfg.get("experiment", {}).get("name", "quan4_marl")
     data_tag = str(cfg.get("experiment", {}).get("data_tag", "v0"))
@@ -232,6 +261,7 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
         seed=seed,
         obs_mode=obs_mode,
         compact_dim=int(env_cfg.get("compact_dim", 64)),
+        density_catalog=density_catalog or None,
     )
     obs_dim = env.obs_dim()
     max_obs = int(cfg.get("risk", {}).get("max_obs_dim", 512))
@@ -316,6 +346,7 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
         "n_val_od": len(split["val"]),
         "n_test_od": len(split["test"]),
         "density": str(density),
+        "density_catalog": {k: str(v) for k, v in density_catalog.items()},
         "graph": str(graph),
         "started_utc": datetime.now(timezone.utc).isoformat(),
         "note": "Camera not primary for alley k (cannot see into alleys); Mapbox seeds + graph interpolation.",
@@ -327,6 +358,8 @@ def run_training(cfg: dict[str, Any], config_path: Path | None = None) -> dict[s
         f"obs_dim={obs_dim} train_od={len(split['train'])} val_od={len(split['val'])} "
         f"test_od={len(split['test'])}"
     )
+    if density_catalog:
+        print(f"[robust_train] L1 density_catalog={ {k: str(v) for k, v in density_catalog.items()} }")
     print(f"[robust_train] run_dir={run_dir}")
     print("[robust_train] look at logs: [train] / [eval] / [adapt] → summary.json")
 

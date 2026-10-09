@@ -1,22 +1,23 @@
 # Progress Tracker — HCMC Urban Traffic Optimization
 
-> Living checklist. Update this file after every working code block.  
-> Session start: read this file → propose 1–2 next files → wait for confirmation.
+> Living checklist. Update after every working block.  
+> **Research lock:** [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) — Paper A (data twin) + Paper B (alley routing).
 
-**Last updated:** 2026-10-05  
-**Current phase:** Train trên **sol1** (2×RTX 4090). Guide: [TRAIN_NOW.md](./TRAIN_NOW.md) · máy: [SERVER_SOL1.md](./SERVER_SOL1.md). Sau v0 → [ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md).
+**Last updated:** 2026-10-09  
+**Current phase:** Paper A **frozen** → thao tác **Paper B trên sol1**: [SOL1_PAPER_B.md](./SOL1_PAPER_B.md).  
+Guides: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md) · [TRAIN_NOW.md](./TRAIN_NOW.md).
 
-**Focus (locked):** Quận 4 — Mapbox-first trong hẻm; camera chỉ secondary (không nhìn vào hẻm).  
-**Server:** sol1 — prefer `CUDA_VISIBLE_DEVICES=1`, outputs `/mnt/data8tb/minhkhoi/...`.
+**Focus (locked):** Quận 4 — Mapbox-first trong hẻm; camera chỉ secondary.  
+**Server:** sol1 — `CUDA_VISIBLE_DEVICES=1`, outputs `/mnt/data8tb/minhkhoi/...`.
 
 **North star (locked):**
-- Tái tạo twin giao thông **có hẻm**: `alley_id` (đồ thị) + cấu trúc + mật độ `k(t)` nội suy từng hẻm.
-- MARL: **In** `(t, O, D)` → **Out** thời gian ngắn nhất (được đi qua hẻm); obs = graph state.
+- **Paper A:** Twin hẻm: `alley_id` + cấu trúc + `k(t)` (time-bucket, WCC, uncertainty).  
+- **Paper B:** MARL `(t, O, D) →` thời gian ngắn nhất (được qua hẻm) trên twin đã freeze.
 
 **Deployment note (locked):**
-- **Node 1** = máy local (NestJS + Redis); tắt / resume được; cần cursor bền vững.
-- **Node 2** = GPU server khoẻ, batch ~8h/ngày (chưa bắt buộc H100).
-- Bộ máy tổng hợp / nội suy / infer từ data cào = `ml-core/` (chủ yếu `data_fusion` + `cv_tracker`).
+- **Node 1** = local NestJS + Redis (pause/resume).  
+- **Node 2** = GPU batch (sol1).  
+- Fusion/MARL = `ml-core/`.
 
 ---
 
@@ -92,11 +93,11 @@
 
 ---
 
-## Next proposed work
+## Next proposed work (2 papers)
 
-1. Push GitHub → clone sol1 → train v0 ([TRAIN_NOW.md](./TRAIN_NOW.md)).
-2. Đọc số cùng thầy ([LEARN_WITH_TEACHER.md](./LEARN_WITH_TEACHER.md)) — gửi `summary.json`.
-3. Sau baseline: L1→L5 ([ENV_UPGRADE_L1_L5.md](./ENV_UPGRADE_L1_L5.md)).
+1. **Done — Paper A freeze** (`ready_to_freeze=true`, 3 peaks × 379).  
+2. **Now — Paper B sol1:** làm đúng [SOL1_PAPER_B.md](./SOL1_PAPER_B.md) (git push → scp bundle → unpack → smoke → train GPU1).  
+3. Paste `summary.json` v5 (+ bảng vs v0) vào chat.
 
 ---
 
@@ -116,3 +117,9 @@
 | 2026-10-02 | Nest morning+evening peaks; fusion `2026-10-02T14` observed=120 |
 | 2026-10-04 | Quận 4 twin: `export_sumo --prefix quan4_alleys` + `run_quan4_twin` → QUAN4_TWIN_OK |
 | 2026-10-05 | Robust MARL: `robust_train` + `quan4_h100.yaml` + TRAIN_NOW + ENV_UPGRADE L1–L5 (cam = secondary only) |
+| 2026-10-05 | L1: `--l1-peaks` fusion + env density_catalog + `quan4_v1_time_bucket.yaml` |
+| 2026-10-05 | Locked: L1→L5 verify only; **one** GPU train after L5 (no per-L retrain) |
+| 2026-10-05 | L2-B: `export_wcc_subgraph` + `quan4_v2_wcc.yaml` draft |
+| 2026-10-05 | L3: seeds_l3 n=400 + min_positive=3 + hop uncertainty + `verify_l3` |
+| 2026-10-05 | Evening poll + L4 cam_secondary + L5 `quan4_v5_final` + limitations |
+| 2026-10-06 | Locked **2 conference papers**: RESEARCH_TWO_PAPERS.md (A=data twin, B=routing) |

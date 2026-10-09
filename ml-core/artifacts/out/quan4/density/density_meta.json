@@ -1,11 +1,85 @@
 {
-  "time_bucket": "2026-10-02T14",
-  "alleys": 5660,
-  "observed": 120,
-  "interpolated": 5540,
-  "prior": 0,
-  "mapbox_csv": "..\\ingestion-worker\\data_raw\\mapbox\\travel_time_2026-10-02.csv",
-  "graph": "artifacts\\out\\quan4\\alley_graph.json",
-  "density_json": "artifacts\\out\\quan4\\density\\alley_density_latest.json",
-  "density_geojson": "artifacts\\out\\quan4\\density\\quan4_density_latest.geojson"
+  "mode": "l1_peaks",
+  "index": "artifacts\\out\\quan4\\density\\density_l1_index.json",
+  "latest_peak": "evening",
+  "peaks": {
+    "morning": {
+      "utc_hours": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "path": "artifacts\\out\\quan4\\density\\alley_density_peak_morning_paper_a_merged.json",
+      "observed": 379,
+      "mapbox_rows_used": 1525,
+      "mapbox_od_used": 379,
+      "is_latest": false,
+      "l3": {
+        "min_positive": 3,
+        "weak_positive_below_min": 0,
+        "uncertainty_unique_levels": 4,
+        "uncertainty_levels": [
+          0.015,
+          0.03,
+          0.04,
+          0.05
+        ]
+      }
+    },
+    "afternoon": {
+      "utc_hours": [
+        6,
+        7,
+        8,
+        9
+      ],
+      "path": "artifacts\\out\\quan4\\density\\alley_density_peak_afternoon_paper_a_merged.json",
+      "observed": 379,
+      "mapbox_rows_used": 1501,
+      "mapbox_od_used": 379,
+      "is_latest": false,
+      "l3": {
+        "min_positive": 3,
+        "weak_positive_below_min": 0,
+        "uncertainty_unique_levels": 5,
+        "uncertainty_levels": [
+          0.008,
+          0.015,
+          0.03,
+          0.04,
+          0.05
+        ]
+      }
+    },
+    "evening": {
+      "utc_hours": [
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "path": "artifacts\\out\\quan4\\density\\alley_density_peak_evening_paper_a_merged.json",
+      "observed": 379,
+      "mapbox_rows_used": 2178,
+      "mapbox_od_used": 379,
+      "is_latest": true,
+      "l3": {
+        "min_positive": 3,
+        "weak_positive_below_min": 0,
+        "uncertainty_unique_levels": 5,
+        "uncertainty_levels": [
+          0.008,
+          0.015,
+          0.03,
+          0.04,
+          0.05
+        ]
+      }
+    }
+  },
+  "min_positive": 3
 }

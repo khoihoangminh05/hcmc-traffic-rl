@@ -27,24 +27,29 @@ class AlleyRoutingEnv:
         seed: int = 0,
         obs_mode: str = "compact",
         compact_dim: int = 64,
+        density_catalog: dict[str, Path] | None = None,
     ) -> None:
-        self.density_path = density_path
+        self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = n_agents
         self.obs_mode = obs_mode if obs_mode in ("compact", "full") else "compact"
         self.compact_dim = max(32, int(compact_dim))
+        # L1: optional morning/evening density files
+        self.density_catalog = {
+            str(k): Path(v) for k, v in (density_catalog or {}).items() if v
+        }
+        self._active_peak: str | None = None
         self.rng = np.random.default_rng(seed)
         self.agents = [f"agent_{i}" for i in range(n_agents)]
         self.possible_agents = list(self.agents)
         self._g = self._load_graph()
-        self._density, self._speed = self._load_density()
+        self._density, self._speed = self._load_density_file(self.density_path)
         self._aids = sorted({d["alley_id"] for _, _, d in self._g.edges(data=True)})
         self._nodes = sorted(self._g.nodes())
         self._node_index = {n: i for i, n in enumerate(self._nodes)}
         self._od: dict[str, tuple[str, str]] = {}
         self._t: float = 0.0
         self._dens_cache = self._density_summaries()
-        # Dummy OD so obs_dim() works before first reset
         if self._nodes:
             for a in self.agents:
                 self._od[a] = (self._nodes[0], self._nodes[min(1, len(self._nodes) - 1)])
@@ -74,10 +79,10 @@ class AlleyRoutingEnv:
 
         return build_demo_alley_graph()
 
-    def _load_density(self) -> tuple[dict[str, float], dict[str, float]]:
-        if not self.density_path.exists():
+    def _load_density_file(self, path: Path) -> tuple[dict[str, float], dict[str, float]]:
+        if not path.exists():
             return {}, {}
-        rows = json.loads(self.density_path.read_text(encoding="utf-8"))
+        rows = json.loads(path.read_text(encoding="utf-8"))
         dens: dict[str, float] = {}
         speeds: dict[str, float] = {}
         for r in rows:
@@ -94,6 +99,39 @@ class AlleyRoutingEnv:
                 pass
         return dens, speeds
 
+    @staticmethod
+    def peak_for_t(t: float) -> str:
+        """Map sec-of-day (VN-ish schedule in config) → L1 peak name."""
+        # morning < 12h; afternoon 12–17h; evening >= 17h (VN wall-ish from yaml t_*)
+        sec = float(t)
+        if sec < 12 * 3600:
+            return "morning"
+        if sec < 17 * 3600:
+            return "afternoon"
+        return "evening"
+
+    def ensure_density_for_t(self, t: float) -> str | None:
+        """Reload density file when L1 catalog is configured. Returns active peak."""
+        if not self.density_catalog:
+            return None
+        peak = self.peak_for_t(t)
+        if peak == self._active_peak:
+            return peak
+        path = self.density_catalog.get(peak)
+        if path is None or not path.exists():
+            # fallback: any available peak
+            for name, p in self.density_catalog.items():
+                if p.exists():
+                    peak, path = name, p
+                    break
+            else:
+                return None
+        self._density, self._speed = self._load_density_file(path)
+        self._dens_cache = self._density_summaries()
+        self._active_peak = peak
+        self.density_path = path
+        return peak
+
     def observation_space(self, agent: str) -> dict[str, Any]:
         return {"graph_nodes": len(self._g.nodes), "edges": len(self._g.edges)}
 
@@ -108,6 +146,7 @@ class AlleyRoutingEnv:
             self.rng = np.random.default_rng(seed)
         options = options or {}
         self._t = float(options.get("t", 0.0))
+        self.ensure_density_for_t(self._t)
         nodes = list(self._g.nodes())
         self._od = {}
         for agent in self.agents:
@@ -213,6 +252,7 @@ class AlleyRoutingEnv:
     def oracle_travel_time(self, t: float, origin: str, destination: str) -> dict[str, float]:
         """Baseline times for both preferences + min (oracle)."""
         self._t = t
+        self.ensure_density_for_t(t)
         t_main = self._shortest_time(origin, destination, prefer_alley=False)
         t_alley = self._shortest_time(origin, destination, prefer_alley=True)
         return {
@@ -254,6 +294,7 @@ class AlleyRoutingEnv:
     def shortest_travel_time(self, t: float, origin: str, destination: str) -> float:
         """North-star inference helper: (t, O, D) → min travel time (alleys allowed)."""
         self._t = t
+        self.ensure_density_for_t(t)
         return min(
             self._shortest_time(origin, destination, prefer_alley=True),
             self._shortest_time(origin, destination, prefer_alley=False),

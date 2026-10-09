@@ -1,11 +1,11 @@
-# Quận 4 MARL — ready for CUDA train (sol1: RTX 4090; also H100)
+# Quận 4 MARL — baseline v0 (**Paper B** control / mixed-day env)
+# Compare against v5_l1l5 (Paper A twin). See .docs/RESEARCH_TWO_PAPERS.md
 # On sol1: CUDA_VISIBLE_DEVICES=1 and output_root under /mnt/data8tb (via symlink).
-# Freeze this file into each run's output dir as hyperparameters.snapshot.yaml
 #
-# Data assumptions (v0):
+# Data assumptions (v0 — intentionally weaker env for ablation):
 #   - Mapbox OD seeds (~120) → density on alley layer; rest interpolated
-#   - Camera does NOT see into alleys → NOT used as primary k; secondary only (future L4)
-#   - density_latest may mix morning+evening (fix in ENV_UPGRADE L1)
+#   - Camera does NOT see into alleys → NOT used as primary k
+#   - density_latest may mix morning+evening → fixed in Paper A (L1 peaks)
 
 experiment:
   name: quan4_marl_robust
