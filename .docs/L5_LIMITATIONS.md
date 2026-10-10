@@ -1,33 +1,27 @@
-# Limitations (One paper — UAKP)
+# Limitations (One paper — MAPPO multi-agent)
 
-> Paper: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).  
-> Legacy hai-paper note: [RESEARCH_TWO_PAPERS.md](./RESEARCH_TWO_PAPERS.md).
+> Paper: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).
 
 ## Scope
 
-- Twin domain = **largest alley-core WCC** of Quận 4 OSM (~886 nodes / ~1828 edges), not the full fragmented city graph (370 WCC).
-- Density primary source = **Mapbox Directions** on sampled alley OD seeds (~379), graph-interpolated.
-- Each alley carries **`density_k` + `uncertainty`** (observed / interpolated / prior levels).
-- Camera is **secondary at entries/spine only**; does **not** observe interior alleys.
-- Routing decision = **select 1 of K candidate paths** (UAKP), not binary prefer-main/alley, not multi-agent MAPPO.
+- Twin domain = largest alley-core WCC Quận 4 (~886 nodes / ~1.8k edges).
+- Density primary = Mapbox OD seeds + interpolation; camera secondary at entries only.
+- Decision = **N agents × K-path** under **BPR congestion**; MAPPO CTDE.
+- Episode = one joint route choice (multi-agent congestion game), not microscopic car-following.
 
 ## Twin / data
 
-- OSM Vietnam alley coverage incomplete / inconsistently tagged (`service=alley` vs residential).
-- Mapbox duration ≠ motorcycle probe inside narrow hẻm; zeros dropped (`duration_sec > 0`, `min_positive≥3`).
-- Time buckets (UTC peaks mapped to morning / afternoon / evening wall schedule in configs).
-- Peak-to-peak `|Δk|` can be small on some calendar days — report honestly.
-- `cameras.hcmc_seed.json` is mostly **outside** Quận 4; Q4 L4 may use entry placeholders until a real Q4 catalog exists.
+- OSM alley coverage incomplete; Mapbox ≠ motorcycle probe in narrow alleys.
+- Peak `|Δk|` can be small — report honestly.
+- Cam seed mostly outside Q4 interior.
 
-## UAKP / optimization
+## MARL / optimization
 
-- Candidates are generated from weighted shortest / simple-path variants — not full path enumeration.
-- Oracle-K = best candidate under mean travel (optimistic vs field GPS).
-- Risk term uses fused `uncertainty` as a **proxy**, not calibrated predictive variance.
-- Single-agent trip choice; no endogenous congestion from many simultaneous agents.
-- Binary `quan4_v5` / `v5_l1l5` runs are **legacy toys** (2 actions, often trivial regret=0) — do not cite as main scientific result.
+- Congestion model = BPR + capacity by road_class + twin base `k` — stylized, not calibrated field counts.
+- Reward multi-objective weights are chosen a priori (ablate in paper).
+- Parameter-sharing MAPPO; homogeneous agents.
+- Legacy: binary v5 and single-agent UAKP are **too easy** (match Dijkstra) — appendix only.
 
 ## Ethics
 
-- Public traffic cams / Mapbox ToS: research use, no PII, no re-identification of individuals in frames.
-- Cite data sources; do not release Mapbox tokens or raw camera dumps with sensitive content.
+- Public cams / Mapbox ToS: research use, no PII; no token/raw dump release.

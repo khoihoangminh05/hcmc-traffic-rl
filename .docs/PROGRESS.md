@@ -1,18 +1,18 @@
 # Progress Tracker — HCMC Urban Traffic Optimization
 
 > Living checklist. Update after every working block.  
-> **Research lock:** [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) — Uncertainty-aware alley routing (UAKP).
+> **Research lock:** [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) — MAPPO multi-agent alley congestion.
 
-**Last updated:** 2026-10-09  
-**Current phase:** UAKP env + train (binary v5 = legacy).  
-Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_UAKP.md](./SOL1_UAKP.md) · [TRAIN_NOW.md](./TRAIN_NOW.md).
+**Last updated:** 2026-10-10  
+**Current phase:** MAPPO N-agent BPR (UAKP/binary = appendix too-easy).  
+Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_MAPPO.md](./SOL1_MAPPO.md).
 
 **Focus (locked):** Quận 4 — Mapbox-first trong hẻm; camera chỉ secondary.  
 **Server:** sol1 — `CUDA_VISIBLE_DEVICES=1`, outputs `/mnt/data8tb/minhkhoi/...`.
 
 **North star (locked):**
-- **One paper:** Twin `k+u` + UAKP (K-path PPO, risk-sensitive) — gap-to-oracle vs Dijkstra/heuristics.  
-- Legacy: binary `v5_l1l5` / hai-paper plan — không còn claim chính.
+- **One paper:** Twin + **MAPPO** N agents × K-path under BPR congestion (multi-obj reward).  
+- Legacy appendix: binary v5 / UAKP single-agent (too easy = Dijkstra).
 
 **Deployment note (locked):**
 - **Node 1** = local NestJS + Redis (pause/resume).  
@@ -93,12 +93,11 @@ Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_UAKP.md](./SOL
 
 ---
 
-## Next proposed work (one paper UAKP)
+## Next proposed work (MAPPO)
 
-1. **Done — twin freeze** + research lock [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md).  
-2. **Done locally:** UAKP env/tests/train + baselines + stochastic CVaR eval + ablation harness.  
-3. **Now — sol1 full GPU** (SSH cần key/password): [SOL1_UAKP.md](./SOL1_UAKP.md) → `git pull` → train + ablations → paste `summary.json`.  
-4. Viết draft theo [PAPER_OUTLINE_UAKP.md](./PAPER_OUTLINE_UAKP.md).
+1. **Done — MAPPO env/train/docs** (`quan4_mappo.yaml`).  
+2. **Now — sol1:** [SOL1_MAPPO.md](./SOL1_MAPPO.md) full train + `--ippo` ablation → paste `summary.json`.  
+3. Draft: [PAPER_OUTLINE_MAPPO.md](./PAPER_OUTLINE_MAPPO.md).
 
 ---
 
