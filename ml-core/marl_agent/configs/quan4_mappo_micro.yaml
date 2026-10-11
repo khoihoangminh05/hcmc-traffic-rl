@@ -1,13 +1,14 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train)
+# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v1
+# data_tag: mappo_micro_v2
+# Fixes vs v1: live occupancy obs, per-agent GAE, BC greedy warm-start, stronger cong/progress.
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v1
+  data_tag: mappo_micro_v2
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -34,40 +35,46 @@ data:
 
 env:
   n_agents: 16
-  # Cover nearly all nodes (pct outdeg>8 is tiny); neighbors ordered by free-time
   max_degree: 8
-  # hops p90~57 max~76; headroom for congestion detours / no infinite loops
   max_steps: 120
-  compact_dim: 128
+  compact_dim: 160
   bpr_alpha: 0.15
   bpr_beta: 4.0
   bpr_load_cap: 12.0
-  corridor_prob: 0.4
+  corridor_prob: 0.35
   reward_weights:
     w_T: 1.0
-    w_C: 0.08
+    w_C: 0.35
     w_R: 0.05
-    w_step: 0.01
-    arrive_bonus: 0.5
+    w_step: 0.02
+    arrive_bonus: 2.0
+    w_progress: 0.4
+    w_revisit: 0.25
+    w_team: 0.15
 
 model:
   hidden: 256
 
 optim:
-  lr_actor: 3.0e-4
-  lr_critic: 1.0e-3
+  lr_actor: 2.0e-4
+  lr_critic: 8.0e-4
   weight_decay: 1.0e-5
   grad_clip_norm: 1.0
 
+bc:
+  enabled: true
+  updates: 80
+  episodes_per_update: 24
+
 ppo:
-  rollout_episodes: 96           # multiple of n_envs; fewer waves → less IPC
-  n_envs: 24                     # subproc workers (sweet spot vs pipe overhead)
-  use_subproc: true              # true CPU parallel
-  minibatch_size: 8192           # fat GPU PPO batches (4090 ~24GB)
+  rollout_episodes: 96
+  n_envs: 24
+  use_subproc: true
+  minibatch_size: 8192
   ppo_epochs: 4
   clip_eps: 0.2
   value_coef: 0.5
-  entropy_coef: 0.03
+  entropy_coef: 0.05
   gamma: 0.99
   gae_lambda: 0.95
   normalize_advantage: true
@@ -80,9 +87,10 @@ train:
 
 early_stopping:
   enabled: true
-  patience: 30
+  patience: 40
   min_delta: 1.0
   restore_best: true
 
 baseline:
   run_on_eval: true
+  n_episodes: 30

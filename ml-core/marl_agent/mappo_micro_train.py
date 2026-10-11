@@ -192,7 +192,7 @@ def compute_gae(
     gamma: float,
     lam: float,
 ) -> tuple[list[float], list[float]]:
-    """rewards/values/dones are per env-step (team)."""
+    """GAE for one agent trajectory (or team if rewards are team-level)."""
     adv: list[float] = [0.0] * len(rewards)
     last_gae = 0.0
     next_v = 0.0
@@ -206,6 +206,75 @@ def compute_gae(
         next_v = values[t]
     rets = [adv[t] + values[t] for t in range(len(rewards))]
     return adv, rets
+
+
+def behavioral_clone_greedy(
+    env: MicroAlleyEnv,
+    actor: SharedActor,
+    opt_actor: torch.optim.Optimizer,
+    train_ods: list[tuple[str, str]],
+    t_train: list[float],
+    device: torch.device,
+    *,
+    updates: int,
+    episodes_per_update: int,
+    seed: int,
+) -> None:
+    """Warm-start actor toward load-aware greedy (closes gap vs strongest baseline)."""
+    if updates <= 0:
+        return
+    print(
+        f"[bc] greedy warm-start updates={updates} eps/upd={episodes_per_update}",
+        flush=True,
+    )
+    rng = np.random.default_rng(seed + 7)
+    env.set_od_pool(train_ods)
+    for u in range(1, updates + 1):
+        obs_rows: list[np.ndarray] = []
+        mask_rows: list[np.ndarray] = []
+        act_rows: list[int] = []
+        for ep in range(episodes_per_update):
+            t = float(rng.choice(t_train))
+            obs, _, info = env.reset(
+                seed=seed + 9_000_000 + u * 1000 + ep, options={"t": t}
+            )
+            for _ in range(env.max_steps):
+                greedy = env.baseline_greedy_load_actions()
+                for i, a in enumerate(env.agents):
+                    if env._done[i]:
+                        continue
+                    obs_rows.append(obs[a])
+                    mask_rows.append(info["masks"][a])
+                    act_rows.append(int(greedy[a]))
+                obs, _, _, _, _, info = env.step(greedy)
+                if info["all_done"]:
+                    break
+        if len(act_rows) < 16:
+            continue
+        o_t = torch.tensor(np.stack(obs_rows), dtype=torch.float32, device=device)
+        m_t = torch.tensor(np.stack(mask_rows), dtype=torch.float32, device=device)
+        a_t = torch.tensor(act_rows, dtype=torch.long, device=device)
+        # minibatch CE
+        n = o_t.shape[0]
+        idx = np.arange(n)
+        rng.shuffle(idx)
+        last_loss = 0.0
+        for start in range(0, n, 2048):
+            mb = idx[start : start + 2048]
+            if len(mb) < 8:
+                continue
+            mb_t = torch.tensor(mb, dtype=torch.long, device=device)
+            dist = masked_categorical(
+                actor(o_t.index_select(0, mb_t)), m_t.index_select(0, mb_t)
+            )
+            loss = -dist.log_prob(a_t.index_select(0, mb_t)).mean()
+            opt_actor.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+            opt_actor.step()
+            last_loss = float(loss.item())
+        if u == 1 or u % max(1, updates // 5) == 0 or u == updates:
+            print(f"[bc] {u}/{updates} ce_loss={last_loss:.4f} n={n}", flush=True)
 
 
 def run_training(
@@ -415,6 +484,27 @@ def run_training(
     best_state: dict[str, Any] | None = None
     last_update = 0
 
+    bc_cfg = cfg.get("bc", {})
+    if bool(bc_cfg.get("enabled", True)):
+        behavioral_clone_greedy(
+            env,
+            actor,
+            opt_actor,
+            train_ods,
+            t_train,
+            device,
+            updates=int(bc_cfg.get("updates", 80)),
+            episodes_per_update=int(bc_cfg.get("episodes_per_update", 24)),
+            seed=seed,
+        )
+        # quick val after BC
+        bc_val = evaluate_policy(env, actor, val_ods, t_eval, device, n_episodes=12)
+        print(
+            f"[bc] val fleet_mean={bc_val['fleet_mean']:.1f}s "
+            f"cong={bc_val['congestion']:.3f}",
+            flush=True,
+        )
+
     try:
       with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(
         "w", encoding="utf-8", newline=""
@@ -484,14 +574,14 @@ def run_training(
                     g_b = np.stack(g_list, axis=0).astype(np.float32)
                     m_b = np.stack(m_list, axis=0).astype(np.float32)
 
-                # [T, E, ...] prealloc — no per-step Python list growth
+                # [T, E, A, ...] — per-agent rewards (fix: team-mean killed credit)
                 buf_o = np.zeros((max_t, chunk, n_agents, obs_dim), np.float32)
                 buf_a = np.zeros((max_t, chunk, n_agents), np.int64)
                 buf_lp = np.zeros((max_t, chunk, n_agents), np.float32)
                 buf_m = np.zeros((max_t, chunk, n_agents, n_actions), np.float32)
                 buf_g = np.zeros((max_t, chunk, global_dim), np.float32)
-                buf_r = np.zeros((max_t, chunk), np.float32)
-                buf_v = np.zeros((max_t, chunk), np.float32)
+                buf_r = np.zeros((max_t, chunk, n_agents), np.float32)
+                buf_v = np.zeros((max_t, chunk, n_agents), np.float32)
                 buf_d = np.zeros((max_t, chunk), np.bool_)
                 ep_len = np.zeros(chunk, dtype=np.int32)
                 alive = np.ones(chunk, dtype=np.bool_)
@@ -511,24 +601,28 @@ def run_training(
                         act_t = dist.sample()
                         logp_t = dist.log_prob(act_t)
                         if ippo:
-                            v_env_t = (
+                            v_np = (
                                 critic(o_t)
                                 .view(n_alive, n_agents)
-                                .mean(dim=1)
+                                .detach()
+                                .cpu()
+                                .numpy()
+                                .astype(np.float32)
                             )
                         else:
                             g_t = torch.from_numpy(
                                 np.ascontiguousarray(g_b[alive_idx])
                             ).to(device, non_blocking=True)
-                            v_env_t = critic(g_t).view(-1)
-                        # one sync for act/logp/v
+                            v_env = critic(g_t).view(-1).detach().cpu().numpy()
+                            v_np = np.repeat(
+                                v_env.astype(np.float32)[:, None], n_agents, axis=1
+                            )
                         act_np = (
                             act_t.view(n_alive, n_agents).cpu().numpy().astype(np.int64)
                         )
                         logp_np = (
                             logp_t.view(n_alive, n_agents).cpu().numpy().astype(np.float32)
                         )
-                        v_np = v_env_t.detach().cpu().numpy().astype(np.float32)
 
                     acts_full = np.zeros((chunk, n_agents), dtype=np.int64)
                     acts_full[alive_idx] = act_np
@@ -544,7 +638,7 @@ def run_training(
                             acts_full
                         )
                     else:
-                        rewards = np.zeros(chunk, dtype=np.float64)
+                        rewards = np.zeros((chunk, n_agents), dtype=np.float32)
                         dones = np.zeros(chunk, dtype=np.bool_)
                         travels = last_travel.copy()
                         for j in alive_idx:
@@ -561,13 +655,13 @@ def run_training(
                             m_b[j] = np.stack(
                                 [info["masks"][a] for a in e.agents], axis=0
                             )
-                            rewards[j] = float(
-                                np.mean([rew[a] for a in e.agents])
+                            rewards[j] = np.asarray(
+                                [float(rew[a]) for a in e.agents], dtype=np.float32
                             )
                             dones[j] = bool(info["all_done"])
                             travels[j] = np.asarray(e._travel, dtype=np.float64)
 
-                    buf_r[t, alive_idx] = rewards[alive_idx].astype(np.float32)
+                    buf_r[t, alive_idx] = rewards[alive_idx]
                     if not np.isfinite(buf_r[t, alive_idx]).all():
                         raise RuntimeError("NaN reward")
                     buf_d[t, alive_idx] = dones[alive_idx]
@@ -581,11 +675,22 @@ def run_training(
                     L = int(ep_len[j])
                     if L <= 0:
                         continue
-                    r_j = buf_r[:L, j].tolist()
-                    v_j = buf_v[:L, j].tolist()
                     d_j = buf_d[:L, j].tolist()
-                    adv_t, ret_t = compute_gae(r_j, v_j, d_j, gamma, gae_lam)
-                    # [L, A, ...] → [L*A, ...]
+                    adv_parts: list[np.ndarray] = []
+                    ret_parts: list[np.ndarray] = []
+                    for ai in range(n_agents):
+                        adv_i, ret_i = compute_gae(
+                            buf_r[:L, j, ai].tolist(),
+                            buf_v[:L, j, ai].tolist(),
+                            d_j,
+                            gamma,
+                            gae_lam,
+                        )
+                        adv_parts.append(np.asarray(adv_i, dtype=np.float32))
+                        ret_parts.append(np.asarray(ret_i, dtype=np.float32))
+                    # interleave as [t0_a0, t0_a1, ..., t1_a0, ...] matching reshape
+                    adv_mat = np.stack(adv_parts, axis=1)  # [L, A]
+                    ret_mat = np.stack(ret_parts, axis=1)
                     o_flat = buf_o[:L, j].reshape(L * n_agents, obs_dim)
                     a_flat = buf_a[:L, j].reshape(L * n_agents)
                     lp_flat = buf_lp[:L, j].reshape(L * n_agents)
@@ -594,19 +699,13 @@ def run_training(
                         g_flat = o_flat
                     else:
                         g_flat = np.repeat(buf_g[:L, j], n_agents, axis=0)
-                    adv_flat = np.repeat(
-                        np.asarray(adv_t, dtype=np.float32), n_agents
-                    )
-                    ret_flat = np.repeat(
-                        np.asarray(ret_t, dtype=np.float32), n_agents
-                    )
                     all_obs.append(o_flat)
                     all_act.append(a_flat)
                     all_logp.append(lp_flat)
                     all_mask.append(m_flat)
                     all_g.append(g_flat)
-                    all_adv.append(adv_flat)
-                    all_ret.append(ret_flat)
+                    all_adv.append(adv_mat.reshape(L * n_agents))
+                    all_ret.append(ret_mat.reshape(L * n_agents))
                     ep_returns.append(float(np.sum(buf_r[:L, j])))
                     ep_fleet.append(float(np.mean(last_travel[j])))
                     ep_lens.append(float(L))
@@ -842,6 +941,10 @@ def main() -> None:
         cfg.setdefault("early_stopping", {})["patience"] = 5
         cfg.setdefault("baseline", {})["n_episodes"] = 2
         cfg.setdefault("train", {})["eval_every"] = 1
+        cfg.setdefault("bc", {})["enabled"] = True
+        cfg.setdefault("bc", {})["updates"] = 2
+        cfg.setdefault("bc", {})["episodes_per_update"] = 2
+        cfg.setdefault("env", {})["compact_dim"] = 160
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"
         )

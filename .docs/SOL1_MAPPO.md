@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `n_envs=32 subproc=True minibatch=8192` + GPU. Log mỗi update có `collect=…s ppo=…s`.
+Boot: `data_tag=mappo_micro_v2`, `n_envs=24 subproc=True`, dòng `[bc] greedy warm-start…`, rồi `collect=…s ppo=…s`.
 
 Ablation IPPO: thêm `--ippo`.
 

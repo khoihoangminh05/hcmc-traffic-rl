@@ -61,10 +61,13 @@ class MicroAlleyEnv:
         self.corridor_prob = float(corridor_prob)
         self.reward_weights = {
             "w_T": 1.0,
-            "w_C": 0.08,
+            "w_C": 0.35,
             "w_R": 0.05,
-            "w_step": 0.01,
-            "arrive_bonus": 0.5,
+            "w_step": 0.02,
+            "arrive_bonus": 2.0,
+            "w_progress": 0.4,
+            "w_revisit": 0.25,
+            "w_team": 0.15,
         }
         if reward_weights:
             self.reward_weights.update({k: float(v) for k, v in reward_weights.items()})
@@ -107,6 +110,10 @@ class MicroAlleyEnv:
         self._done: list[bool] = []
         self._travel: list[float] = []
         self._path_hist: list[list[str]] = []
+        # live multi-agent state (what greedy sees; v1 obs lacked this)
+        self._node_occ: dict[str, float] = {}
+        self._live_edge: dict[tuple[str, str], float] = {}
+        self._prev_remain: list[float] = []
 
     @staticmethod
     def _is_alley(data: dict[str, Any]) -> bool:
@@ -382,6 +389,11 @@ class MicroAlleyEnv:
     def _local_obs(self, i: int) -> np.ndarray:
         o, d = self._ods[i]
         curr = self._pos[i]
+        rem_here = self._remain_free(curr, d)
+        n_here = float(self._node_occ.get(curr, 0.0))
+        revisits = 0.0
+        if len(self._path_hist[i]) > 1:
+            revisits = float(self._path_hist[i].count(curr) - 1)
         t_feat = np.array([self._t / 86400.0, self._step_i / max(self.max_steps, 1)], dtype=np.float32)
         feat_parts = [
             t_feat,
@@ -392,8 +404,10 @@ class MicroAlleyEnv:
             np.array(
                 [
                     1.0 if self._done[i] else 0.0,
-                    self._remain_free(curr, d) / 1000.0,
+                    rem_here / 1000.0,
                     self._travel[i] / 1000.0,
+                    n_here / max(self.n_agents, 1),
+                    min(revisits, 5.0) / 5.0,
                 ],
                 dtype=np.float32,
             ),
@@ -405,24 +419,31 @@ class MicroAlleyEnv:
         for j in range(self.max_degree):
             if j < len(neigh):
                 nxt = neigh[j]
+                e = (curr, nxt)
                 data = self._g.edges[curr, nxt]
                 ft = self._edge_free_time(curr, nxt)
                 rem = self._remain_free(nxt, d)
+                bg = float(self._bg_load.get(e, 0.5))
+                live = float(self._live_edge.get(e, 0.0))
+                # tentative load if this agent takes the edge alone + others already here
+                tent = bg + live + max(0.0, n_here - 1.0) * 0.25 + 1.0
                 rows.append(
                     [
                         1.0,
                         1.0 if self._is_alley(data) else 0.0,
                         ft / 100.0,
                         self._edge_unc(curr, nxt),
-                        self._bg_load.get((curr, nxt), 0.5) / 5.0,
-                        1.0 / max(self._cap[(curr, nxt)], 0.5),
+                        bg / 5.0,
+                        live / max(self.n_agents, 1),
+                        float(self._node_occ.get(nxt, 0.0)) / max(self.n_agents, 1),
+                        1.0 / max(self._cap[e], 0.5),
                         rem / 1000.0,
-                        # delta remaining: negative = progress
-                        (self._remain_free(curr, d) - rem) / 100.0,
+                        (rem_here - rem) / 100.0,
+                        min(tent, self.bpr_load_cap) / max(self._cap[e], 0.5) / 4.0,
                     ]
                 )
             else:
-                rows.append([0.0] * 8)
+                rows.append([0.0] * 11)
         feat_parts.append(np.asarray(rows, dtype=np.float32).reshape(-1))
         feat = np.concatenate(feat_parts)
         if feat.size < self.compact_dim:
@@ -434,10 +455,24 @@ class MicroAlleyEnv:
         locs = np.stack([obs[a] for a in self.agents], axis=0)
         mean_loc = locs.mean(axis=0)
         active = float(sum(1 for d in self._done if not d)) / self.n_agents
+        # live crowding signal for central critic
+        occ_vals = np.array(list(self._node_occ.values()), dtype=np.float32)
+        if occ_vals.size:
+            live_stats = np.array(
+                [
+                    float(np.mean(occ_vals)) / max(self.n_agents, 1),
+                    float(np.max(occ_vals)) / max(self.n_agents, 1),
+                    float(len(occ_vals)) / max(len(self._nodes), 1),
+                ],
+                dtype=np.float32,
+            )
+        else:
+            live_stats = np.zeros(3, dtype=np.float32)
         return np.concatenate(
             [
                 mean_loc,
                 self._bg_hist,
+                live_stats,
                 np.array([active, self._step_i / self.max_steps], dtype=np.float32),
             ]
         ).astype(np.float32)
@@ -494,6 +529,11 @@ class MicroAlleyEnv:
         self._done = [o == d for o, d in self._ods]
         self._travel = [0.0] * self.n_agents
         self._path_hist = [[self._pos[i]] for i in range(self.n_agents)]
+        self._live_edge = {}
+        self._rebuild_node_occ()
+        self._prev_remain = [
+            self._remain_free(self._pos[i], self._ods[i][1]) for i in range(self.n_agents)
+        ]
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
         gstate = self._global_state_from_obs(obs)
         info = {
@@ -502,6 +542,14 @@ class MicroAlleyEnv:
             "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},
         }
         return obs, gstate, info
+
+    def _rebuild_node_occ(self) -> None:
+        occ: dict[str, float] = {}
+        for i, p in enumerate(self._pos):
+            if self._done[i]:
+                continue
+            occ[p] = occ.get(p, 0.0) + 1.0
+        self._node_occ = occ
 
     def step(
         self, actions: dict[str, int]
@@ -535,14 +583,16 @@ class MicroAlleyEnv:
         w = self.reward_weights
         rewards: dict[str, float] = {}
         cong_vals: list[float] = []
+        progress_vals: list[float] = []
         for i, a in enumerate(self.agents):
             if self._done[i]:
                 rewards[a] = 0.0
+                progress_vals.append(0.0)
                 continue
             e = intended[i]
             if e is None:
-                # stuck
-                rewards[a] = -0.2
+                rewards[a] = -0.5
+                progress_vals.append(0.0)
                 continue
             u, v = e
             load_e = float(self._bg_load.get(e, 0.0)) + float(edge_counts.get(e, 0))
@@ -550,31 +600,61 @@ class MicroAlleyEnv:
             cap = max(0.5, self._cap[e])
             cong = (min(load_e, self.bpr_load_cap) / cap) ** self.bpr_beta
             risk = self._edge_unc(u, v) * float(self._g.edges[u, v]["length_m"]) / 100.0
+            rem_before = (
+                self._prev_remain[i]
+                if i < len(self._prev_remain)
+                else self._remain_free(u, self._ods[i][1])
+            )
             self._travel[i] += tt
             self._pos[i] = v
+            revisit = 1.0 if v in self._path_hist[i] else 0.0
             self._path_hist[i].append(v)
             arrived = v == self._ods[i][1]
             if arrived:
                 self._done[i] = True
+                rem_after = 0.0
+            else:
+                rem_after = self._remain_free(v, self._ods[i][1])
+            progress = (rem_before - rem_after) / 50.0
+            progress_vals.append(float(progress))
             cost = (
                 w["w_T"] * (tt / 50.0)
                 + w["w_C"] * cong
                 + w["w_R"] * risk
                 + w["w_step"]
+                + w.get("w_revisit", 0.25) * revisit
             )
             bonus = w["arrive_bonus"] if arrived else 0.0
-            rewards[a] = float(-cost + bonus)
+            shaped = w.get("w_progress", 0.4) * progress
+            rewards[a] = float(-cost + bonus + shaped)
             cong_vals.append(float(cong))
+
+        # mild team penalty so selfish pile-ups hurt everyone
+        team_cong = float(np.mean(cong_vals)) if cong_vals else 0.0
+        w_team = float(w.get("w_team", 0.15))
+        if w_team > 0 and cong_vals:
+            for a in self.agents:
+                if a in rewards:
+                    rewards[a] -= w_team * team_cong
+
+        self._live_edge = {
+            e: float(c) for e, c in edge_counts.items() if e is not None
+        }
+        self._rebuild_node_occ()
+        self._prev_remain = [
+            0.0
+            if self._done[i]
+            else self._remain_free(self._pos[i], self._ods[i][1])
+            for i in range(self.n_agents)
+        ]
 
         self._step_i += 1
         truncated = self._step_i >= self.max_steps
-        # force remaining done on truncate (timeout penalty already via steps)
         if truncated:
             for i in range(self.n_agents):
                 if not self._done[i]:
-                    # large remaining penalty once
                     rem = self._remain_free(self._pos[i], self._ods[i][1])
-                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - rem / 50.0
+                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - rem / 40.0
                     self._travel[i] += rem
                     self._done[i] = True
 
@@ -591,11 +671,12 @@ class MicroAlleyEnv:
             "travels": travels,
             "fleet_mean": t_bar,
             "fleet_cvar90": cvar,
-            "congestion": float(np.mean(cong_vals)) if cong_vals else 0.0,
+            "congestion": team_cong,
             "n_arrived": int(sum(self._done)),
             "step": self._step_i,
             "all_done": all(self._done),
             "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},
+            "mean_progress": float(np.mean(progress_vals)) if progress_vals else 0.0,
         }
         return obs, rewards, terms, truncs, gstate, info
 

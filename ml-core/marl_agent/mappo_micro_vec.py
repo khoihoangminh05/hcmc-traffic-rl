@@ -39,9 +39,9 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 actions = {a: int(acts_arr[i]) for i, a in enumerate(agents)}
                 obs, rewards, _, _, gstate, info = env.step(actions)
                 o, m = _pack_obs(obs, info, agents)
-                r = float(np.mean([rewards[a] for a in agents]))
+                # per-agent rewards (MAPPO: individual r_i, central V)
+                r = np.asarray([float(rewards[a]) for a in agents], dtype=np.float32)
                 done = bool(info["all_done"])
-                # zero placeholder when not done — cuts meaningful traffic mid-episode
                 travels = (
                     np.asarray(env._travel, dtype=np.float64)
                     if done
@@ -119,7 +119,7 @@ class SubprocMicroEnvs:
         obs = np.stack([o[0] for o in outs], axis=0)
         g = np.stack([o[1] for o in outs], axis=0)
         m = np.stack([o[2] for o in outs], axis=0)
-        rewards = np.asarray([o[3] for o in outs], dtype=np.float64)
+        rewards = np.stack([o[3] for o in outs], axis=0).astype(np.float32)  # [E,A]
         dones = np.asarray([o[4] for o in outs], dtype=np.bool_)
         travels = np.stack([o[5] for o in outs], axis=0)
         return obs, g, m, rewards, dones, travels

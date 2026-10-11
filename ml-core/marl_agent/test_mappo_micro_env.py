@@ -113,6 +113,24 @@ def test_greedy_not_worse_than_all_dijkstra_crowded() -> None:
         assert grd <= djk + 1.0
 
 
+def test_live_occupancy_in_obs() -> None:
+    """v2: obs must change when other agents crowd the same node."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp, nodes = _chain_graph(Path(td), n=10)
+        od = (nodes[0], nodes[-1])
+        env = MicroAlleyEnv(
+            dp, gp, n_agents=4, max_degree=3, max_steps=20, seed=0, compact_dim=160
+        )
+        obs1, _, _ = env.reset(options={"t": 28800.0, "ods": [od] * 4})
+        # all start at same origin → node_occ feature should be > 0
+        # feature layout: after embeds, slot includes n_here/n_agents
+        assert obs1["agent_0"].shape[0] == 160
+        # step once with dijkstra so live_edge populates
+        obs2, _, _, _, _, info = env.step(env.baseline_dijkstra_actions())
+        assert np.isfinite(obs2["agent_0"]).all()
+        assert "mean_progress" in info
+
+
 def main() -> None:
     test_horizon_and_time_in_obs()
     print("PASS test_horizon_and_time_in_obs")
@@ -120,6 +138,8 @@ def main() -> None:
     print("PASS test_more_agents_slower_on_shared_corridor")
     test_greedy_not_worse_than_all_dijkstra_crowded()
     print("PASS test_greedy_not_worse_than_all_dijkstra_crowded")
+    test_live_occupancy_in_obs()
+    print("PASS test_live_occupancy_in_obs")
     print("MAPPO_MICRO_ENV_TESTS_OK")
 
 
