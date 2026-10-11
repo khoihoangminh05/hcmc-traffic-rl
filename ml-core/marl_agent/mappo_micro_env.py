@@ -82,9 +82,9 @@ class MicroAlleyEnv:
         }
         self._nodes = sorted(self._g.nodes())
         self._aids = sorted({d["alley_id"] for _, _, d in self._g.edges(data=True)})
-        self._out: dict[str, list[str]] = {
-            n: sorted(self._g.successors(n)) for n in self._nodes
-        }
+        # Placeholder; rebuilt after density load so neighbor order can use free-time.
+        self._out: dict[str, list[str]] = {n: list(self._g.successors(n)) for n in self._nodes}
+        self._rebuild_out_order()
         self._od_pool: list[tuple[str, str]] = []
         self._remain_cache: dict[tuple[str, str], float] = {}
         self._bg_load = self._background_load()
@@ -179,6 +179,7 @@ class MicroAlleyEnv:
         self._dens_cache = self._density_summaries()
         self._unc_cache = self._uncertainty_summaries()
         self._bg_load = self._background_load()
+        self._rebuild_out_order()
         self._remain_cache.clear()
         self._active_peak = peak
         self.density_path = path
@@ -186,6 +187,15 @@ class MicroAlleyEnv:
 
     def set_od_pool(self, pairs: list[tuple[str, str]]) -> None:
         self._od_pool = [(str(o), str(d)) for o, d in pairs if o != d]
+
+    def _rebuild_out_order(self) -> None:
+        """Order successors by free-flow time (fast edges first) so truncation keeps useful actions."""
+        out: dict[str, list[str]] = {}
+        for n in self._nodes:
+            succ = list(self._g.successors(n))
+            succ.sort(key=lambda v: self._edge_free_time(n, v))
+            out[n] = succ
+        self._out = out
 
     def _background_load(self) -> dict[tuple[str, str], float]:
         out: dict[tuple[str, str], float] = {}

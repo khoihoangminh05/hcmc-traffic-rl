@@ -34,8 +34,10 @@ data:
 
 env:
   n_agents: 16
-  max_degree: 6
-  max_steps: 64
+  # Cover nearly all nodes (pct outdeg>8 is tiny); neighbors ordered by free-time
+  max_degree: 8
+  # hops p90~57 max~76; headroom for congestion detours / no infinite loops
+  max_steps: 120
   compact_dim: 128
   bpr_alpha: 0.15
   bpr_beta: 4.0
