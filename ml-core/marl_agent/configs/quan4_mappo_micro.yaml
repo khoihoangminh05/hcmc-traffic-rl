@@ -60,11 +60,11 @@ optim:
   grad_clip_norm: 1.0
 
 ppo:
-  rollout_episodes: 128          # must be multiple of n_envs
-  n_envs: 32                     # subproc workers (sol1: 80 CPU threads)
-  use_subproc: true              # true CPU parallel — DummyVec was GIL-bound
+  rollout_episodes: 96           # multiple of n_envs; fewer waves → less IPC
+  n_envs: 24                     # subproc workers (sweet spot vs pipe overhead)
+  use_subproc: true              # true CPU parallel
   minibatch_size: 8192           # fat GPU PPO batches (4090 ~24GB)
-  ppo_epochs: 4                  # fewer epochs; more samples/sec from n_envs
+  ppo_epochs: 4
   clip_eps: 0.2
   value_coef: 0.5
   entropy_coef: 0.03

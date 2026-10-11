@@ -437,20 +437,24 @@ def run_training(
 
         for update in range(1, max_updates + 1):
             last_update = update
-            obs_buf: list[torch.Tensor] = []
-            act_buf: list[torch.Tensor] = []
-            logp_buf: list[torch.Tensor] = []
-            ret_buf: list[torch.Tensor] = []
-            adv_buf: list[torch.Tensor] = []
-            mask_buf: list[torch.Tensor] = []
-            g_buf: list[torch.Tensor] = []
             ep_returns: list[float] = []
             ep_fleet: list[float] = []
             ep_lens: list[float] = []
 
             # --- rollouts: subproc CPU envs + batched GPU act ---
+            # Keep trajectories in preallocated numpy; ONE GPU upload after collect.
             t_collect0 = time.time()
             ep_i = 0
+            # flat sample lists (numpy) — concat once
+            all_obs: list[np.ndarray] = []
+            all_act: list[np.ndarray] = []
+            all_logp: list[np.ndarray] = []
+            all_mask: list[np.ndarray] = []
+            all_g: list[np.ndarray] = []
+            all_adv: list[np.ndarray] = []
+            all_ret: list[np.ndarray] = []
+            max_t = int(env.max_steps)
+
             while ep_i < rollout_n:
                 chunk = min(n_envs, rollout_n - ep_i)
                 seeds = [
@@ -480,58 +484,60 @@ def run_training(
                     g_b = np.stack(g_list, axis=0).astype(np.float32)
                     m_b = np.stack(m_list, axis=0).astype(np.float32)
 
-                # per-env trajectory buffers (numpy → torch once at end)
-                step_o: list[list[np.ndarray]] = [[] for _ in range(chunk)]
-                step_a: list[list[np.ndarray]] = [[] for _ in range(chunk)]
-                step_lp: list[list[np.ndarray]] = [[] for _ in range(chunk)]
-                step_m: list[list[np.ndarray]] = [[] for _ in range(chunk)]
-                step_g: list[list[np.ndarray]] = [[] for _ in range(chunk)]
-                step_r: list[list[float]] = [[] for _ in range(chunk)]
-                step_v: list[list[float]] = [[] for _ in range(chunk)]
-                step_done: list[list[bool]] = [[] for _ in range(chunk)]
+                # [T, E, ...] prealloc — no per-step Python list growth
+                buf_o = np.zeros((max_t, chunk, n_agents, obs_dim), np.float32)
+                buf_a = np.zeros((max_t, chunk, n_agents), np.int64)
+                buf_lp = np.zeros((max_t, chunk, n_agents), np.float32)
+                buf_m = np.zeros((max_t, chunk, n_agents, n_actions), np.float32)
+                buf_g = np.zeros((max_t, chunk, global_dim), np.float32)
+                buf_r = np.zeros((max_t, chunk), np.float32)
+                buf_v = np.zeros((max_t, chunk), np.float32)
+                buf_d = np.zeros((max_t, chunk), np.bool_)
+                ep_len = np.zeros(chunk, dtype=np.int32)
                 alive = np.ones(chunk, dtype=np.bool_)
                 last_travel = np.zeros((chunk, n_agents), dtype=np.float64)
 
-                for _ in range(env.max_steps):
+                for t in range(max_t):
                     if not alive.any():
                         break
-                    # Flat batch over alive envs × agents
                     alive_idx = np.flatnonzero(alive)
-                    o_flat = obs_b[alive_idx].reshape(-1, obs_dim)
-                    m_flat = m_b[alive_idx].reshape(-1, n_actions)
-                    o_t = torch.as_tensor(o_flat, device=device)
-                    m_t = torch.as_tensor(m_flat, device=device)
+                    n_alive = int(alive_idx.size)
+                    o_flat = np.ascontiguousarray(obs_b[alive_idx].reshape(-1, obs_dim))
+                    m_flat = np.ascontiguousarray(m_b[alive_idx].reshape(-1, n_actions))
+                    o_t = torch.from_numpy(o_flat).to(device, non_blocking=True)
+                    m_t = torch.from_numpy(m_flat).to(device, non_blocking=True)
                     with torch.no_grad():
                         dist = masked_categorical(actor(o_t), m_t)
                         act_t = dist.sample()
                         logp_t = dist.log_prob(act_t)
                         if ippo:
-                            v_agent = (
+                            v_env_t = (
                                 critic(o_t)
-                                .detach()
-                                .view(len(alive_idx), n_agents)
+                                .view(n_alive, n_agents)
+                                .mean(dim=1)
                             )
-                            v_env = v_agent.mean(dim=1).cpu().numpy()
                         else:
-                            g_t = torch.as_tensor(g_b[alive_idx], device=device)
-                            v_env = (
-                                critic(g_t).detach().view(-1).cpu().numpy()
-                            )
+                            g_t = torch.from_numpy(
+                                np.ascontiguousarray(g_b[alive_idx])
+                            ).to(device, non_blocking=True)
+                            v_env_t = critic(g_t).view(-1)
+                        # one sync for act/logp/v
+                        act_np = (
+                            act_t.view(n_alive, n_agents).cpu().numpy().astype(np.int64)
+                        )
+                        logp_np = (
+                            logp_t.view(n_alive, n_agents).cpu().numpy().astype(np.float32)
+                        )
+                        v_np = v_env_t.detach().cpu().numpy().astype(np.float32)
 
-                    acts_np = (
-                        act_t.view(len(alive_idx), n_agents).cpu().numpy().astype(np.int64)
-                    )
-                    logp_np = logp_t.view(len(alive_idx), n_agents).cpu().numpy()
-                    # full action matrix (dead envs get 0)
                     acts_full = np.zeros((chunk, n_agents), dtype=np.int64)
-                    for k, j in enumerate(alive_idx):
-                        acts_full[j] = acts_np[k]
-                        step_o[j].append(obs_b[j].copy())
-                        step_a[j].append(acts_np[k].copy())
-                        step_lp[j].append(logp_np[k].copy())
-                        step_m[j].append(m_b[j].copy())
-                        step_g[j].append(g_b[j].copy())
-                        step_v[j].append(float(v_env[k]))
+                    acts_full[alive_idx] = act_np
+                    buf_o[t, alive_idx] = obs_b[alive_idx]
+                    buf_a[t, alive_idx] = act_np
+                    buf_lp[t, alive_idx] = logp_np
+                    buf_m[t, alive_idx] = m_b[alive_idx]
+                    buf_g[t, alive_idx] = g_b[alive_idx]
+                    buf_v[t, alive_idx] = v_np
 
                     if vec is not None:
                         obs_b, g_b, m_b, rewards, dones, travels = vec.step_batch(
@@ -561,67 +567,62 @@ def run_training(
                             dones[j] = bool(info["all_done"])
                             travels[j] = np.asarray(e._travel, dtype=np.float64)
 
-                    for k, j in enumerate(alive_idx):
-                        r_team = float(rewards[j])
-                        if not math.isfinite(r_team):
-                            raise RuntimeError("NaN reward")
-                        step_r[j].append(r_team)
-                        done_team = bool(dones[j])
-                        step_done[j].append(done_team)
-                        last_travel[j] = travels[j]
-                        if done_team:
-                            alive[j] = False
+                    buf_r[t, alive_idx] = rewards[alive_idx].astype(np.float32)
+                    if not np.isfinite(buf_r[t, alive_idx]).all():
+                        raise RuntimeError("NaN reward")
+                    buf_d[t, alive_idx] = dones[alive_idx]
+                    ep_len[alive_idx] = t + 1
+                    newly_done = alive_idx[dones[alive_idx]]
+                    if newly_done.size:
+                        last_travel[newly_done] = travels[newly_done]
+                    alive[alive_idx] = ~dones[alive_idx]
 
                 for j in range(chunk):
-                    adv_t, ret_t = compute_gae(
-                        step_r[j], step_v[j], step_done[j], gamma, gae_lam
+                    L = int(ep_len[j])
+                    if L <= 0:
+                        continue
+                    r_j = buf_r[:L, j].tolist()
+                    v_j = buf_v[:L, j].tolist()
+                    d_j = buf_d[:L, j].tolist()
+                    adv_t, ret_t = compute_gae(r_j, v_j, d_j, gamma, gae_lam)
+                    # [L, A, ...] → [L*A, ...]
+                    o_flat = buf_o[:L, j].reshape(L * n_agents, obs_dim)
+                    a_flat = buf_a[:L, j].reshape(L * n_agents)
+                    lp_flat = buf_lp[:L, j].reshape(L * n_agents)
+                    m_flat = buf_m[:L, j].reshape(L * n_agents, n_actions)
+                    if ippo:
+                        g_flat = o_flat
+                    else:
+                        g_flat = np.repeat(buf_g[:L, j], n_agents, axis=0)
+                    adv_flat = np.repeat(
+                        np.asarray(adv_t, dtype=np.float32), n_agents
                     )
-                    for ti in range(len(step_r[j])):
-                        for i in range(n_agents):
-                            obs_buf.append(
-                                torch.as_tensor(step_o[j][ti][i], device=device)
-                            )
-                            act_buf.append(
-                                torch.as_tensor(step_a[j][ti][i], device=device)
-                            )
-                            logp_buf.append(
-                                torch.as_tensor(step_lp[j][ti][i], device=device)
-                            )
-                            mask_buf.append(
-                                torch.as_tensor(step_m[j][ti][i], device=device)
-                            )
-                            g_buf.append(
-                                torch.as_tensor(
-                                    step_g[j][ti] if not ippo else step_o[j][ti][i],
-                                    device=device,
-                                )
-                            )
-                            adv_buf.append(
-                                torch.tensor(
-                                    adv_t[ti], dtype=torch.float32, device=device
-                                )
-                            )
-                            ret_buf.append(
-                                torch.tensor(
-                                    ret_t[ti], dtype=torch.float32, device=device
-                                )
-                            )
-                    ep_returns.append(float(np.sum(step_r[j])))
+                    ret_flat = np.repeat(
+                        np.asarray(ret_t, dtype=np.float32), n_agents
+                    )
+                    all_obs.append(o_flat)
+                    all_act.append(a_flat)
+                    all_logp.append(lp_flat)
+                    all_mask.append(m_flat)
+                    all_g.append(g_flat)
+                    all_adv.append(adv_flat)
+                    all_ret.append(ret_flat)
+                    ep_returns.append(float(np.sum(buf_r[:L, j])))
                     ep_fleet.append(float(np.mean(last_travel[j])))
-                    ep_lens.append(float(len(step_r[j])))
+                    ep_lens.append(float(L))
                 ep_i += chunk
             collect_sec = time.time() - t_collect0
 
-            advantages = torch.stack(adv_buf)
+            batch_obs = torch.from_numpy(np.concatenate(all_obs, axis=0)).to(device)
+            batch_act = torch.from_numpy(np.concatenate(all_act, axis=0)).long().to(device)
+            batch_logp = torch.from_numpy(np.concatenate(all_logp, axis=0)).to(device)
+            batch_mask = torch.from_numpy(np.concatenate(all_mask, axis=0)).to(device)
+            batch_g = torch.from_numpy(np.concatenate(all_g, axis=0)).to(device)
+            advantages = torch.from_numpy(np.concatenate(all_adv, axis=0)).to(device)
+            batch_ret = torch.from_numpy(np.concatenate(all_ret, axis=0)).to(device)
             if normalize_adv and advantages.numel() > 1:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            batch_obs = torch.stack(obs_buf)
-            batch_act = torch.stack(act_buf).long()
-            batch_logp = torch.stack(logp_buf)
-            batch_ret = torch.stack(ret_buf)
-            batch_mask = torch.stack(mask_buf)
-            batch_g = torch.stack(g_buf)
-            n_samples = batch_obs.shape[0]
+            n_samples = int(batch_obs.shape[0])
 
             t_ppo0 = time.time()
             last_loss = 0.0

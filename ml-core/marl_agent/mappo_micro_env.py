@@ -89,6 +89,10 @@ class MicroAlleyEnv:
         self._sp_from: dict[str, dict[str, float]] = {}
         # peak -> (free_t, out, sp_from, bg_load, dens_cache, unc_cache, density, speed, unc)
         self._peak_bundle: dict[str, dict[str, Any]] = {}
+        self._node_emb = {
+            n: self._hash_embed(n, 8) for n in self._nodes
+        }
+        self._bg_hist = np.zeros(6, dtype=np.float32)
         self._bg_load = self._background_load()
         self._dens_cache = self._density_summaries()
         self._unc_cache = self._uncertainty_summaries()
@@ -219,6 +223,7 @@ class MicroAlleyEnv:
         self._dens_cache = b["dens_cache"]
         self._unc_cache = b["unc_cache"]
         self._bg_load = b["bg_load"]
+        self._bg_hist = b["bg_hist"]
         self._free_t = b["free_t"]
         self._out = b["out"]
         self._sp_from = b["sp_from"]
@@ -242,6 +247,12 @@ class MicroAlleyEnv:
             )
         self._sp_from = sp_from
         self._remain_cache.clear()
+        bg = np.array(list(self._bg_load.values()), dtype=np.float32)
+        if bg.size:
+            hist = np.histogram(bg, bins=6, range=(0.0, 4.0))[0].astype(np.float32)
+            self._bg_hist = hist / max(float(hist.sum()), 1.0)
+        else:
+            self._bg_hist = np.zeros(6, dtype=np.float32)
         key = peak or self._active_peak or "default"
         self._peak_bundle[key] = {
             "density": self._density,
@@ -250,6 +261,7 @@ class MicroAlleyEnv:
             "dens_cache": self._dens_cache,
             "unc_cache": self._unc_cache,
             "bg_load": self._bg_load,
+            "bg_hist": self._bg_hist,
             "free_t": self._free_t,
             "out": self._out,
             "sp_from": self._sp_from,
@@ -371,13 +383,12 @@ class MicroAlleyEnv:
         o, d = self._ods[i]
         curr = self._pos[i]
         t_feat = np.array([self._t / 86400.0, self._step_i / max(self.max_steps, 1)], dtype=np.float32)
-        emb = 8
         feat_parts = [
             t_feat,
             self._peak_onehot(),
-            self._hash_embed(o, emb),
-            self._hash_embed(d, emb),
-            self._hash_embed(curr, emb),
+            self._node_emb.get(o, self._hash_embed(o, 8)),
+            self._node_emb.get(d, self._hash_embed(d, 8)),
+            self._node_emb.get(curr, self._hash_embed(curr, 8)),
             np.array(
                 [
                     1.0 if self._done[i] else 0.0,
@@ -423,14 +434,12 @@ class MicroAlleyEnv:
         locs = np.stack([obs[a] for a in self.agents], axis=0)
         mean_loc = locs.mean(axis=0)
         active = float(sum(1 for d in self._done if not d)) / self.n_agents
-        bg = np.array(list(self._bg_load.values()), dtype=np.float32)
-        if bg.size:
-            hist = np.histogram(bg, bins=6, range=(0.0, 4.0))[0].astype(np.float32)
-            hist = hist / max(float(hist.sum()), 1.0)
-        else:
-            hist = np.zeros(6, dtype=np.float32)
         return np.concatenate(
-            [mean_loc, hist, np.array([active, self._step_i / self.max_steps], dtype=np.float32)]
+            [
+                mean_loc,
+                self._bg_hist,
+                np.array([active, self._step_i / self.max_steps], dtype=np.float32),
+            ]
         ).astype(np.float32)
 
     def _global_state(self) -> np.ndarray:

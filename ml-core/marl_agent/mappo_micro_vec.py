@@ -40,16 +40,14 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 obs, rewards, _, _, gstate, info = env.step(actions)
                 o, m = _pack_obs(obs, info, agents)
                 r = float(np.mean([rewards[a] for a in agents]))
-                remote.send(
-                    (
-                        o,
-                        np.asarray(gstate, dtype=np.float32),
-                        m,
-                        r,
-                        bool(info["all_done"]),
-                        np.asarray(env._travel, dtype=np.float64),
-                    )
+                done = bool(info["all_done"])
+                # zero placeholder when not done — cuts meaningful traffic mid-episode
+                travels = (
+                    np.asarray(env._travel, dtype=np.float64)
+                    if done
+                    else np.zeros(len(agents), dtype=np.float64)
                 )
+                remote.send((o, np.asarray(gstate, dtype=np.float32), m, r, done, travels))
             elif cmd == "close":
                 remote.close()
                 break
