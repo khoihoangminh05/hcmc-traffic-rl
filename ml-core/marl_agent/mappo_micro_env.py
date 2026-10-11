@@ -82,14 +82,18 @@ class MicroAlleyEnv:
         }
         self._nodes = sorted(self._g.nodes())
         self._aids = sorted({d["alley_id"] for _, _, d in self._g.edges(data=True)})
-        # Placeholder; rebuilt after density load so neighbor order can use free-time.
         self._out: dict[str, list[str]] = {n: list(self._g.successors(n)) for n in self._nodes}
-        self._rebuild_out_order()
         self._od_pool: list[tuple[str, str]] = []
         self._remain_cache: dict[tuple[str, str], float] = {}
+        self._free_t: dict[tuple[str, str], float] = {}
+        self._sp_from: dict[str, dict[str, float]] = {}
+        # peak -> (free_t, out, sp_from, bg_load, dens_cache, unc_cache, density, speed, unc)
+        self._peak_bundle: dict[str, dict[str, Any]] = {}
         self._bg_load = self._background_load()
         self._dens_cache = self._density_summaries()
         self._unc_cache = self._uncertainty_summaries()
+        # free_t + out-order + all-pairs SP (cached per density peak)
+        self._refresh_travel_caches(peak=self.peak_for_t(28800.0))
 
         # episode state
         self._t = 0.0
@@ -175,18 +179,28 @@ class MicroAlleyEnv:
                     break
             else:
                 return None
+        self._active_peak = peak
+        self.density_path = path
+        if peak in self._peak_bundle:
+            self._restore_peak_bundle(peak)
+            return peak
         self._density, self._speed, self._unc = self._load_density_file(path)
         self._dens_cache = self._density_summaries()
         self._unc_cache = self._uncertainty_summaries()
         self._bg_load = self._background_load()
-        self._rebuild_out_order()
-        self._remain_cache.clear()
-        self._active_peak = peak
-        self.density_path = path
+        self._refresh_travel_caches(peak=peak)
         return peak
 
     def set_od_pool(self, pairs: list[tuple[str, str]]) -> None:
         self._od_pool = [(str(o), str(d)) for o, d in pairs if o != d]
+
+    def warmup_peak_caches(self) -> None:
+        """Build free-time/SP bundles for every catalog peak (pay once at spawn)."""
+        if not self.density_catalog:
+            return
+        # representative seconds for morning / afternoon / evening
+        for t in (8 * 3600, 14 * 3600, 19 * 3600):
+            self.ensure_density_for_t(float(t))
 
     def _rebuild_out_order(self) -> None:
         """Order successors by free-flow time (fast edges first) so truncation keeps useful actions."""
@@ -197,6 +211,50 @@ class MicroAlleyEnv:
             out[n] = succ
         self._out = out
 
+    def _restore_peak_bundle(self, peak: str) -> None:
+        b = self._peak_bundle[peak]
+        self._density = b["density"]
+        self._speed = b["speed"]
+        self._unc = b["unc"]
+        self._dens_cache = b["dens_cache"]
+        self._unc_cache = b["unc_cache"]
+        self._bg_load = b["bg_load"]
+        self._free_t = b["free_t"]
+        self._out = b["out"]
+        self._sp_from = b["sp_from"]
+        for (u, v), ft in self._free_t.items():
+            self._g.edges[u, v]["free_t"] = ft
+        self._remain_cache.clear()
+
+    def _refresh_travel_caches(self, peak: str | None = None) -> None:
+        """Cache edge free-times + all-pairs SP (O(1) remain). Stored per peak."""
+        free_t: dict[tuple[str, str], float] = {}
+        for u, v in self._edge_index:
+            ft = self._compute_edge_free_time(u, v)
+            free_t[(u, v)] = ft
+            self._g.edges[u, v]["free_t"] = ft
+        self._free_t = free_t
+        self._rebuild_out_order()
+        sp_from: dict[str, dict[str, float]] = {}
+        for src in self._nodes:
+            sp_from[src] = nx.single_source_dijkstra_path_length(
+                self._g, src, weight="free_t"
+            )
+        self._sp_from = sp_from
+        self._remain_cache.clear()
+        key = peak or self._active_peak or "default"
+        self._peak_bundle[key] = {
+            "density": self._density,
+            "speed": self._speed,
+            "unc": self._unc,
+            "dens_cache": self._dens_cache,
+            "unc_cache": self._unc_cache,
+            "bg_load": self._bg_load,
+            "free_t": self._free_t,
+            "out": self._out,
+            "sp_from": self._sp_from,
+        }
+
     def _background_load(self) -> dict[tuple[str, str], float]:
         out: dict[tuple[str, str], float] = {}
         for u, v in self._edge_index:
@@ -205,7 +263,7 @@ class MicroAlleyEnv:
             out[(u, v)] = float(np.clip(k / 0.06, 0.2, 3.0))
         return out
 
-    def _edge_free_time(self, u: str, v: str) -> float:
+    def _compute_edge_free_time(self, u: str, v: str) -> float:
         data = self._g.edges[u, v]
         length = float(data["length_m"])
         aid = data["alley_id"]
@@ -219,6 +277,12 @@ class MicroAlleyEnv:
             speed = max(0.5, v_free * (1.0 - min(k, k_jam * 0.99) / k_jam))
         return length / speed
 
+    def _edge_free_time(self, u: str, v: str) -> float:
+        cached = getattr(self, "_free_t", {}).get((u, v))
+        if cached is not None:
+            return float(cached)
+        return self._compute_edge_free_time(u, v)
+
     def _edge_unc(self, u: str, v: str) -> float:
         return float(self._unc.get(self._g.edges[u, v]["alley_id"], 0.05))
 
@@ -229,23 +293,23 @@ class MicroAlleyEnv:
         return float(t0 * (1.0 + self.bpr_alpha * (load_c / cap) ** self.bpr_beta))
 
     def _remain_free(self, curr: str, dest: str) -> float:
+        if curr == dest:
+            return 0.0
+        dist = self._sp_from.get(curr, {}).get(dest)
+        if dist is not None:
+            return float(dist)
         key = (curr, dest)
         if key in self._remain_cache:
             return self._remain_cache[key]
-        if curr == dest:
-            self._remain_cache[key] = 0.0
-            return 0.0
+        # Fallback (should be rare if APSP built)
         try:
-            path = nx.shortest_path(
-                self._g, curr, dest, weight=lambda a, b, d: self._edge_free_time(a, b)
+            total = float(
+                nx.shortest_path_length(self._g, curr, dest, weight="free_t")
             )
-            total = 0.0
-            for a, b in zip(path[:-1], path[1:]):
-                total += self._edge_free_time(a, b)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             total = 1e5
-        self._remain_cache[key] = float(total)
-        return float(total)
+        self._remain_cache[key] = total
+        return total
 
     def _density_summaries(self) -> np.ndarray:
         dens = np.array(
@@ -354,8 +418,9 @@ class MicroAlleyEnv:
             feat = np.pad(feat, (0, self.compact_dim - feat.size))
         return feat[: self.compact_dim].astype(np.float32)
 
-    def _global_state(self) -> np.ndarray:
-        locs = np.stack([self._local_obs(i) for i in range(self.n_agents)], axis=0)
+    def _global_state_from_obs(self, obs: dict[str, np.ndarray]) -> np.ndarray:
+        """Build critic state from already-computed local obs (no recompute)."""
+        locs = np.stack([obs[a] for a in self.agents], axis=0)
         mean_loc = locs.mean(axis=0)
         active = float(sum(1 for d in self._done if not d)) / self.n_agents
         bg = np.array(list(self._bg_load.values()), dtype=np.float32)
@@ -367,6 +432,10 @@ class MicroAlleyEnv:
         return np.concatenate(
             [mean_loc, hist, np.array([active, self._step_i / self.max_steps], dtype=np.float32)]
         ).astype(np.float32)
+
+    def _global_state(self) -> np.ndarray:
+        obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
+        return self._global_state_from_obs(obs)
 
     def local_obs_dim(self) -> int:
         return self.compact_dim
@@ -417,7 +486,7 @@ class MicroAlleyEnv:
         self._travel = [0.0] * self.n_agents
         self._path_hist = [[self._pos[i]] for i in range(self.n_agents)]
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
-        gstate = self._global_state()
+        gstate = self._global_state_from_obs(obs)
         info = {
             "t": self._t,
             "peak": self._active_peak or self.peak_for_t(self._t),
@@ -437,6 +506,7 @@ class MicroAlleyEnv:
     ]:
         # resolve intended edges
         intended: list[tuple[str, str] | None] = [None] * self.n_agents
+        edge_counts: dict[tuple[str, str], int] = {}
         for i, a in enumerate(self.agents):
             if self._done[i]:
                 continue
@@ -449,15 +519,9 @@ class MicroAlleyEnv:
             if mask[raw] < 0.5:
                 raw = int(np.argmax(mask))
             if raw < len(neigh):
-                intended[i] = (curr, neigh[raw])
-
-        # loads this step = bg + agents using edge
-        load: dict[tuple[str, str], float] = {
-            e: float(self._bg_load.get(e, 0.0)) for e in self._edge_index
-        }
-        for e in intended:
-            if e is not None:
-                load[e] = load.get(e, 0.0) + 1.0
+                e = (curr, neigh[raw])
+                intended[i] = e
+                edge_counts[e] = edge_counts.get(e, 0) + 1
 
         w = self.reward_weights
         rewards: dict[str, float] = {}
@@ -472,9 +536,10 @@ class MicroAlleyEnv:
                 rewards[a] = -0.2
                 continue
             u, v = e
-            tt = self._bpr_time(u, v, load[e])
+            load_e = float(self._bg_load.get(e, 0.0)) + float(edge_counts.get(e, 0))
+            tt = self._bpr_time(u, v, load_e)
             cap = max(0.5, self._cap[e])
-            cong = (min(load[e], self.bpr_load_cap) / cap) ** self.bpr_beta
+            cong = (min(load_e, self.bpr_load_cap) / cap) ** self.bpr_beta
             risk = self._edge_unc(u, v) * float(self._g.edges[u, v]["length_m"]) / 100.0
             self._travel[i] += tt
             self._pos[i] = v
@@ -507,7 +572,7 @@ class MicroAlleyEnv:
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
         terms = {a: bool(self._done[i]) for i, a in enumerate(self.agents)}
         truncs = {a: bool(truncated and terms[a]) for a in self.agents}
-        gstate = self._global_state()
+        gstate = self._global_state_from_obs(obs)
         travels = list(self._travel)
         t_arr = np.asarray(travels, dtype=np.float64)
         t_bar = float(np.mean(t_arr))
@@ -540,10 +605,13 @@ class MicroAlleyEnv:
                 acts[a] = 0
                 continue
             try:
-                path = nx.shortest_path(
-                    self._g, curr, dest, weight=lambda x, y, d: self._edge_free_time(x, y)
-                )
-                nxt = path[1] if len(path) > 1 else curr
+                # Prefer next hop from precomputed SP tree via remain distances
+                best_n, best_d = neigh[0], 1e18
+                for nxt in neigh:
+                    d = self._remain_free(nxt, dest)
+                    if d < best_d:
+                        best_d, best_n = d, nxt
+                nxt = best_n
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 nxt = neigh[0]
             acts[a] = int(neigh.index(nxt)) if nxt in neigh else 0

@@ -22,6 +22,7 @@ import yaml
 
 from .early_stop import EarlyStopping
 from .mappo_micro_env import MicroAlleyEnv
+from .mappo_micro_vec import SubprocMicroEnvs
 from .mappo_nets import CentralCritic, IndependentCritic, SharedActor
 from .od_split import build_connected_od_pool, save_split, split_od_pairs
 
@@ -288,6 +289,7 @@ def run_training(
         density_catalog=density_catalog or None,
     )
     env.set_od_pool(train_ods)
+    env.warmup_peak_caches()
     obs0, g0, _ = env.reset(options={"t": 28800.0})
     obs_dim = int(obs0[env.agents[0]].shape[0])
     global_dim = int(g0.shape[0])
@@ -317,9 +319,12 @@ def run_training(
     eval_every = int(train_cfg.get("eval_every", 25))
     log_every = int(train_cfg.get("log_every", 1))
     save_every = int(train_cfg.get("save_every", 50))
-    rollout_n = int(ppo_cfg.get("rollout_episodes", 64))
-    n_envs = max(1, int(ppo_cfg.get("n_envs", 8)))
-    minibatch_size = int(ppo_cfg.get("minibatch_size", 4096))
+    n_envs = max(1, int(ppo_cfg.get("n_envs", 32)))
+    rollout_n = int(ppo_cfg.get("rollout_episodes", 128))
+    if rollout_n % n_envs != 0:
+        rollout_n = max(n_envs, (rollout_n // n_envs) * n_envs)
+    use_subproc = bool(ppo_cfg.get("use_subproc", True)) and n_envs > 1
+    minibatch_size = int(ppo_cfg.get("minibatch_size", 8192))
     ppo_epochs = int(ppo_cfg.get("ppo_epochs", 4))
     clip_eps = float(ppo_cfg.get("clip_eps", 0.2))
     value_coef = float(ppo_cfg.get("value_coef", 0.5))
@@ -333,27 +338,44 @@ def run_training(
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
 
-    # Parallel env instances (vectorized rollouts → fatter GPU batches)
-    def _make_env(i: int) -> MicroAlleyEnv:
-        e = MicroAlleyEnv(
-            density_path=density,
-            graph_path=graph,
-            seed=seed + 17 * (i + 1),
-            n_agents=n_agents,
-            max_degree=int(env_cfg.get("max_degree", 8)),
-            max_steps=int(env_cfg.get("max_steps", 120)),
-            compact_dim=int(env_cfg.get("compact_dim", 128)),
-            bpr_alpha=float(env_cfg.get("bpr_alpha", 0.15)),
-            bpr_beta=float(env_cfg.get("bpr_beta", 4.0)),
-            bpr_load_cap=float(env_cfg.get("bpr_load_cap", 12.0)),
-            corridor_prob=float(env_cfg.get("corridor_prob", 0.4)),
-            reward_weights=env_cfg.get("reward_weights"),
-            density_catalog=density_catalog or None,
-        )
-        e.set_od_pool(train_ods)
-        return e
+    def _env_kwargs(i: int) -> dict[str, Any]:
+        return {
+            "density_path": density,
+            "graph_path": graph,
+            "seed": seed + 17 * (i + 1),
+            "n_agents": n_agents,
+            "max_degree": int(env_cfg.get("max_degree", 8)),
+            "max_steps": int(env_cfg.get("max_steps", 120)),
+            "compact_dim": int(env_cfg.get("compact_dim", 128)),
+            "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
+            "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
+            "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
+            "corridor_prob": float(env_cfg.get("corridor_prob", 0.4)),
+            "reward_weights": env_cfg.get("reward_weights"),
+            "density_catalog": density_catalog or None,
+        }
 
-    envs = [env] + [_make_env(i) for i in range(1, n_envs)]
+    vec: SubprocMicroEnvs | None = None
+    local_envs: list[MicroAlleyEnv] = []
+    if use_subproc:
+        print(
+            f"[mappo_micro] spawning {n_envs} subproc envs (CPU parallel)…",
+            flush=True,
+        )
+        t_spawn = time.time()
+        vec = SubprocMicroEnvs([_env_kwargs(i) for i in range(n_envs)])
+        vec.set_od_pool(train_ods)
+        print(
+            f"[mappo_micro] subproc ready in {time.time() - t_spawn:.1f}s",
+            flush=True,
+        )
+    else:
+        print(f"[mappo_micro] in-process envs={n_envs} (no subproc)", flush=True)
+        local_envs = [env] + [MicroAlleyEnv(**_env_kwargs(i)) for i in range(1, n_envs)]
+        for e in local_envs:
+            e.set_od_pool(train_ods)
+            if e is not env:
+                e.warmup_peak_caches()
 
     t_train = [float(x) for x in data_cfg.get("t_train", [28800])]
     t_eval = [float(x) for x in data_cfg.get("t_eval", [28800])]
@@ -376,7 +398,8 @@ def run_training(
         f"[mappo_micro] mode=FULL algo={algo} device={device} N={n_agents} "
         f"max_degree={n_actions} max_steps={env.max_steps} obs={obs_dim} "
         f"train_od={len(train_ods)} mean_hops={float(np.mean(lens)):.1f} "
-        f"max_updates={max_updates} n_envs={n_envs} minibatch={minibatch_size}",
+        f"max_updates={max_updates} n_envs={n_envs} subproc={use_subproc} "
+        f"minibatch={minibatch_size}",
         flush=True,
     )
     print(f"[mappo_micro] run_dir={run_dir}", flush=True)
@@ -392,12 +415,23 @@ def run_training(
     best_state: dict[str, Any] | None = None
     last_update = 0
 
-    with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(
+    try:
+      with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(
         "w", encoding="utf-8", newline=""
-    ) as cf:
+      ) as cf:
         csv_w = csv.DictWriter(
             cf,
-            fieldnames=["update", "mean_return", "fleet_mean", "loss", "entropy", "ep_len"],
+            fieldnames=[
+                "update",
+                "mean_return",
+                "fleet_mean",
+                "loss",
+                "entropy",
+                "ep_len",
+                "collect_sec",
+                "ppo_sec",
+                "n_samples",
+            ],
         )
         csv_w.writeheader()
 
@@ -414,150 +448,182 @@ def run_training(
             ep_fleet: list[float] = []
             ep_lens: list[float] = []
 
-            # --- vectorized rollouts: n_envs in parallel, batched GPU act ---
+            # --- rollouts: subproc CPU envs + batched GPU act ---
+            t_collect0 = time.time()
             ep_i = 0
             while ep_i < rollout_n:
                 chunk = min(n_envs, rollout_n - ep_i)
-                states: list[dict[str, Any]] = []
-                for j in range(chunk):
-                    e = envs[j]
-                    e.set_od_pool(train_ods)
-                    t = float(rng.choice(t_train))
-                    obs, gstate, info = e.reset(
-                        seed=seed + update * 100_000 + ep_i + j,
-                        options={"t": t},
-                    )
-                    states.append(
-                        {
-                            "obs": obs,
-                            "g": gstate,
-                            "info": info,
-                            "step_obs": [],
-                            "step_act": [],
-                            "step_logp": [],
-                            "step_mask": [],
-                            "step_g": [],
-                            "step_r": [],
-                            "step_v": [],
-                            "step_done": [],
-                            "alive": True,
-                        }
-                    )
+                seeds = [
+                    seed + update * 100_000 + ep_i + j for j in range(chunk)
+                ]
+                ts = [float(rng.choice(t_train)) for _ in range(chunk)]
+
+                if vec is not None:
+                    obs_b, g_b, m_b = vec.reset_batch(seeds, ts)  # [E,A,D]
+                else:
+                    o_list, g_list, m_list = [], [], []
+                    for j in range(chunk):
+                        e = local_envs[j]
+                        obs, gstate, info = e.reset(
+                            seed=seeds[j], options={"t": ts[j]}
+                        )
+                        o_list.append(
+                            np.stack([obs[a] for a in e.agents], axis=0)
+                        )
+                        g_list.append(gstate)
+                        m_list.append(
+                            np.stack(
+                                [info["masks"][a] for a in e.agents], axis=0
+                            )
+                        )
+                    obs_b = np.stack(o_list, axis=0).astype(np.float32)
+                    g_b = np.stack(g_list, axis=0).astype(np.float32)
+                    m_b = np.stack(m_list, axis=0).astype(np.float32)
+
+                # per-env trajectory buffers (numpy → torch once at end)
+                step_o: list[list[np.ndarray]] = [[] for _ in range(chunk)]
+                step_a: list[list[np.ndarray]] = [[] for _ in range(chunk)]
+                step_lp: list[list[np.ndarray]] = [[] for _ in range(chunk)]
+                step_m: list[list[np.ndarray]] = [[] for _ in range(chunk)]
+                step_g: list[list[np.ndarray]] = [[] for _ in range(chunk)]
+                step_r: list[list[float]] = [[] for _ in range(chunk)]
+                step_v: list[list[float]] = [[] for _ in range(chunk)]
+                step_done: list[list[bool]] = [[] for _ in range(chunk)]
+                alive = np.ones(chunk, dtype=np.bool_)
+                last_travel = np.zeros((chunk, n_agents), dtype=np.float64)
 
                 for _ in range(env.max_steps):
-                    alive_idx = [j for j, st in enumerate(states) if st["alive"]]
-                    if not alive_idx:
+                    if not alive.any():
                         break
-                    # Batch ALL agents from ALL alive envs → one actor forward
-                    o_rows, m_rows, owners = [], [], []
-                    for j in alive_idx:
-                        st = states[j]
-                        e = envs[j]
-                        for i, a in enumerate(e.agents):
-                            o_rows.append(st["obs"][a])
-                            m_rows.append(st["info"]["masks"][a])
-                            owners.append((j, i, a))
-                    o_t = torch.tensor(np.stack(o_rows), dtype=torch.float32, device=device)
-                    m_t = torch.tensor(np.stack(m_rows), dtype=torch.float32, device=device)
+                    # Flat batch over alive envs × agents
+                    alive_idx = np.flatnonzero(alive)
+                    o_flat = obs_b[alive_idx].reshape(-1, obs_dim)
+                    m_flat = m_b[alive_idx].reshape(-1, n_actions)
+                    o_t = torch.as_tensor(o_flat, device=device)
+                    m_t = torch.as_tensor(m_flat, device=device)
                     with torch.no_grad():
                         dist = masked_categorical(actor(o_t), m_t)
                         act_t = dist.sample()
                         logp_t = dist.log_prob(act_t)
-                        # critic values per env (central) or mean local (ippo)
-                        g_stack = []
-                        for j in alive_idx:
-                            g_stack.append(states[j]["g"])
                         if ippo:
-                            v_t = critic(o_t).detach()
-                            # mean over agents within each env
-                            v_env: dict[int, list[float]] = {j: [] for j in alive_idx}
-                            for k, (j, i, a) in enumerate(owners):
-                                v_env[j].append(float(v_t[k].item()))
-                            v_map = {j: float(np.mean(v_env[j])) for j in alive_idx}
-                        else:
-                            g_t = torch.tensor(
-                                np.stack(g_stack), dtype=torch.float32, device=device
+                            v_agent = (
+                                critic(o_t)
+                                .detach()
+                                .view(len(alive_idx), n_agents)
                             )
-                            v_batch = critic(g_t).detach()
-                            v_map = {
-                                j: float(v_batch[k].item())
-                                for k, j in enumerate(alive_idx)
-                            }
+                            v_env = v_agent.mean(dim=1).cpu().numpy()
+                        else:
+                            g_t = torch.as_tensor(g_b[alive_idx], device=device)
+                            v_env = (
+                                critic(g_t).detach().view(-1).cpu().numpy()
+                            )
 
-                    # scatter actions back per env
-                    act_maps: dict[int, dict[str, int]] = {j: {} for j in alive_idx}
-                    packed: dict[int, dict[str, list]] = {
-                        j: {"o": [], "a": [], "lp": [], "m": []} for j in alive_idx
-                    }
-                    for k, (j, i, a) in enumerate(owners):
-                        act_maps[j][a] = int(act_t[k].item())
-                        packed[j]["o"].append(o_t[k])
-                        packed[j]["a"].append(act_t[k])
-                        packed[j]["lp"].append(logp_t[k])
-                        packed[j]["m"].append(m_t[k])
+                    acts_np = (
+                        act_t.view(len(alive_idx), n_agents).cpu().numpy().astype(np.int64)
+                    )
+                    logp_np = logp_t.view(len(alive_idx), n_agents).cpu().numpy()
+                    # full action matrix (dead envs get 0)
+                    acts_full = np.zeros((chunk, n_agents), dtype=np.int64)
+                    for k, j in enumerate(alive_idx):
+                        acts_full[j] = acts_np[k]
+                        step_o[j].append(obs_b[j].copy())
+                        step_a[j].append(acts_np[k].copy())
+                        step_lp[j].append(logp_np[k].copy())
+                        step_m[j].append(m_b[j].copy())
+                        step_g[j].append(g_b[j].copy())
+                        step_v[j].append(float(v_env[k]))
 
-                    for j in alive_idx:
-                        st = states[j]
-                        e = envs[j]
-                        g_tensor = torch.tensor(
-                            st["g"], dtype=torch.float32, device=device
+                    if vec is not None:
+                        obs_b, g_b, m_b, rewards, dones, travels = vec.step_batch(
+                            acts_full
                         )
-                        obs, rewards, _, _, gstate, step_info = e.step(act_maps[j])
-                        r_team = float(np.mean([rewards[a] for a in e.agents]))
+                    else:
+                        rewards = np.zeros(chunk, dtype=np.float64)
+                        dones = np.zeros(chunk, dtype=np.bool_)
+                        travels = last_travel.copy()
+                        for j in alive_idx:
+                            e = local_envs[j]
+                            actions = {
+                                e.agents[i]: int(acts_full[j, i])
+                                for i in range(n_agents)
+                            }
+                            obs, rew, _, _, gstate, info = e.step(actions)
+                            obs_b[j] = np.stack(
+                                [obs[a] for a in e.agents], axis=0
+                            )
+                            g_b[j] = gstate
+                            m_b[j] = np.stack(
+                                [info["masks"][a] for a in e.agents], axis=0
+                            )
+                            rewards[j] = float(
+                                np.mean([rew[a] for a in e.agents])
+                            )
+                            dones[j] = bool(info["all_done"])
+                            travels[j] = np.asarray(e._travel, dtype=np.float64)
+
+                    for k, j in enumerate(alive_idx):
+                        r_team = float(rewards[j])
                         if not math.isfinite(r_team):
                             raise RuntimeError("NaN reward")
-                        done_team = bool(step_info["all_done"])
-                        st["obs"] = obs
-                        st["g"] = gstate
-                        st["info"] = step_info
-                        st["step_obs"].append(packed[j]["o"])
-                        st["step_act"].append(packed[j]["a"])
-                        st["step_logp"].append(packed[j]["lp"])
-                        st["step_mask"].append(packed[j]["m"])
-                        st["step_g"].append(g_tensor)
-                        st["step_r"].append(r_team)
-                        st["step_v"].append(v_map[j])
-                        st["step_done"].append(done_team)
+                        step_r[j].append(r_team)
+                        done_team = bool(dones[j])
+                        step_done[j].append(done_team)
+                        last_travel[j] = travels[j]
                         if done_team:
-                            st["alive"] = False
+                            alive[j] = False
 
                 for j in range(chunk):
-                    st = states[j]
-                    e = envs[j]
                     adv_t, ret_t = compute_gae(
-                        st["step_r"], st["step_v"], st["step_done"], gamma, gae_lam
+                        step_r[j], step_v[j], step_done[j], gamma, gae_lam
                     )
-                    for ti in range(len(st["step_r"])):
+                    for ti in range(len(step_r[j])):
                         for i in range(n_agents):
-                            obs_buf.append(st["step_obs"][ti][i])
-                            act_buf.append(st["step_act"][ti][i])
-                            logp_buf.append(st["step_logp"][ti][i].detach())
-                            mask_buf.append(st["step_mask"][ti][i])
+                            obs_buf.append(
+                                torch.as_tensor(step_o[j][ti][i], device=device)
+                            )
+                            act_buf.append(
+                                torch.as_tensor(step_a[j][ti][i], device=device)
+                            )
+                            logp_buf.append(
+                                torch.as_tensor(step_lp[j][ti][i], device=device)
+                            )
+                            mask_buf.append(
+                                torch.as_tensor(step_m[j][ti][i], device=device)
+                            )
                             g_buf.append(
-                                st["step_g"][ti] if not ippo else st["step_obs"][ti][i]
+                                torch.as_tensor(
+                                    step_g[j][ti] if not ippo else step_o[j][ti][i],
+                                    device=device,
+                                )
                             )
                             adv_buf.append(
-                                torch.tensor(adv_t[ti], dtype=torch.float32, device=device)
+                                torch.tensor(
+                                    adv_t[ti], dtype=torch.float32, device=device
+                                )
                             )
                             ret_buf.append(
-                                torch.tensor(ret_t[ti], dtype=torch.float32, device=device)
+                                torch.tensor(
+                                    ret_t[ti], dtype=torch.float32, device=device
+                                )
                             )
-                    ep_returns.append(float(np.sum(st["step_r"])))
-                    ep_fleet.append(float(np.mean(e._travel)))
-                    ep_lens.append(float(len(st["step_r"])))
+                    ep_returns.append(float(np.sum(step_r[j])))
+                    ep_fleet.append(float(np.mean(last_travel[j])))
+                    ep_lens.append(float(len(step_r[j])))
                 ep_i += chunk
+            collect_sec = time.time() - t_collect0
 
             advantages = torch.stack(adv_buf)
             if normalize_adv and advantages.numel() > 1:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             batch_obs = torch.stack(obs_buf)
-            batch_act = torch.stack(act_buf)
+            batch_act = torch.stack(act_buf).long()
             batch_logp = torch.stack(logp_buf)
             batch_ret = torch.stack(ret_buf)
             batch_mask = torch.stack(mask_buf)
             batch_g = torch.stack(g_buf)
             n_samples = batch_obs.shape[0]
 
+            t_ppo0 = time.time()
             last_loss = 0.0
             last_ent = 0.0
             idx_all = np.arange(n_samples)
@@ -583,8 +649,8 @@ def run_training(
                     surr1 = ratio * b_adv
                     surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * b_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
-                    values = critic(b_g if not ippo else b_obs)
-                    value_loss = F.mse_loss(values, b_ret)
+                    values = critic(b_g if not ippo else b_obs).view(-1)
+                    value_loss = F.mse_loss(values, b_ret.view(-1))
                     loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
                     opt_actor.zero_grad()
                     opt_critic.zero_grad()
@@ -596,6 +662,7 @@ def run_training(
                     opt_critic.step()
                     last_loss = float(loss.item())
                     last_ent = float(entropy.item())
+            ppo_sec = time.time() - t_ppo0
 
             row = {
                 "update": update,
@@ -604,6 +671,9 @@ def run_training(
                 "loss": last_loss,
                 "entropy": last_ent,
                 "ep_len": float(np.mean(ep_lens)),
+                "collect_sec": collect_sec,
+                "ppo_sec": ppo_sec,
+                "n_samples": int(n_samples),
             }
             csv_w.writerow(row)
             cf.flush()
@@ -613,7 +683,8 @@ def run_training(
                 print(
                     f"[train] {update}/{max_updates} | ret={row['mean_return']:.3f} "
                     f"fleet={row['fleet_mean']:.1f}s len={row['ep_len']:.1f} | "
-                    f"loss={row['loss']:.3f} ent={row['entropy']:.4f}",
+                    f"loss={row['loss']:.3f} ent={row['entropy']:.4f} | "
+                    f"collect={collect_sec:.1f}s ppo={ppo_sec:.1f}s n={n_samples}",
                     flush=True,
                 )
 
@@ -662,18 +733,23 @@ def run_training(
                     {"actor": actor.state_dict(), "critic": critic.state_dict(), "update": update},
                     run_dir / f"ckpt_{update}.pt",
                 )
+    finally:
+        if vec is not None:
+            vec.close()
+            vec = None
 
     if bool(es_cfg.get("restore_best", True)) and best_state is not None:
         actor.load_state_dict(best_state["actor"])
         critic.load_state_dict(best_state["critic"])
         print(f"[mappo_micro] restored best @{best_state['update']}", flush=True)
 
-    test = evaluate_policy(env, actor, test_ods, t_eval, device, n_episodes=30)
+    n_test_ep = int(cfg.get("baseline", {}).get("n_episodes", 30))
+    test = evaluate_policy(env, actor, test_ods, t_eval, device, n_episodes=n_test_ep)
     baselines: dict[str, dict[str, float]] = {}
     if bool(cfg.get("baseline", {}).get("run_on_eval", True)):
         for mode in ("dijkstra", "random", "greedy_load"):
             ms = []
-            for ep in range(30):
+            for ep in range(n_test_ep):
                 ms.append(
                     run_episode_baseline(
                         env, mode, test_ods, float(t_eval[ep % len(t_eval)]), 70_000 + ep
@@ -755,6 +831,7 @@ def main() -> None:
         cfg.setdefault("train", {})["eval_every"] = 1
         cfg.setdefault("ppo", {})["rollout_episodes"] = 4
         cfg.setdefault("ppo", {})["n_envs"] = 2
+        cfg.setdefault("ppo", {})["use_subproc"] = False  # faster local smoke
         cfg.setdefault("ppo", {})["minibatch_size"] = 256
         cfg.setdefault("ppo", {})["ppo_epochs"] = 2
         cfg.setdefault("env", {})["n_agents"] = 4
@@ -762,6 +839,8 @@ def main() -> None:
         cfg.setdefault("data", {}).setdefault("split", {})["min_path_edges"] = 3
         cfg.setdefault("data", {}).setdefault("split", {})["min_length_m"] = 100
         cfg.setdefault("early_stopping", {})["patience"] = 5
+        cfg.setdefault("baseline", {})["n_episodes"] = 2
+        cfg.setdefault("train", {})["eval_every"] = 1
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"
         )
