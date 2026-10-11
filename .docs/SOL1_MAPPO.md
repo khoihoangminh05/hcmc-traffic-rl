@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `data_tag=mappo_micro_v2`, `n_envs=24 subproc=True`, dòng `[bc] greedy warm-start…`, rồi `collect=…s ppo=…s`.
+Boot: `mappo_micro_v2b`, `n_envs=24`, `[bc] teacher=dijkstra…`. Eval log có `arr=`. Pass chính: `beats_dijkstra_fair` (không chỉ fleet vs random).
 
 Ablation IPPO: thêm `--ippo`.
 

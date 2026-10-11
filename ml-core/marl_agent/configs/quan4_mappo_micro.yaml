@@ -1,14 +1,14 @@
 # Quận 4 — MAPPO MICRO next-hop (MAIN train) v2
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v2
-# Fixes vs v1: live occupancy obs, per-agent GAE, BC greedy warm-start, stronger cong/progress.
+# data_tag: mappo_micro_v2b
+# Audit-driven: longer horizon, fair truncate cost, arrival_rate; plus live-obs/BC experiments.
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v2
+  data_tag: mappo_micro_v2b
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -36,7 +36,8 @@ data:
 env:
   n_agents: 16
   max_degree: 8
-  max_steps: 120
+  # OD mean hops~36 p90~57; load-aware detours need headroom (120 was too tight — greedy true_arr~0.16)
+  max_steps: 200
   compact_dim: 160
   bpr_alpha: 0.15
   bpr_beta: 4.0
@@ -51,6 +52,9 @@ env:
     w_progress: 0.4
     w_revisit: 0.25
     w_team: 0.15
+    # Must exceed typical successful Dijkstra fleet (~4–6k) so non-arrival cannot "win"
+    truncate_fail_mult: 4.0
+    truncate_fail_floor: 8000.0
 
 model:
   hidden: 256
@@ -63,6 +67,7 @@ optim:
 
 bc:
   enabled: true
+  teacher: dijkstra   # greedy looks good on old fleet but true arrival ~0.18 in audit
   updates: 80
   episodes_per_update: 24
 

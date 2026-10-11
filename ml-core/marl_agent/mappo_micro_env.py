@@ -110,7 +110,8 @@ class MicroAlleyEnv:
         self._done: list[bool] = []
         self._travel: list[float] = []
         self._path_hist: list[list[str]] = []
-        # live multi-agent state (what greedy sees; v1 obs lacked this)
+        self._true_arrived: list[bool] = []
+        # live multi-agent state (coordination features; usefulness = empirical)
         self._node_occ: dict[str, float] = {}
         self._live_edge: dict[tuple[str, str], float] = {}
         self._prev_remain: list[float] = []
@@ -529,6 +530,7 @@ class MicroAlleyEnv:
         self._done = [o == d for o, d in self._ods]
         self._travel = [0.0] * self.n_agents
         self._path_hist = [[self._pos[i]] for i in range(self.n_agents)]
+        self._true_arrived = [bool(self._done[i]) for i in range(self.n_agents)]
         self._live_edge = {}
         self._rebuild_node_occ()
         self._prev_remain = [
@@ -612,6 +614,7 @@ class MicroAlleyEnv:
             arrived = v == self._ods[i][1]
             if arrived:
                 self._done[i] = True
+                self._true_arrived[i] = True
                 rem_after = 0.0
             else:
                 rem_after = self._remain_free(v, self._ods[i][1])
@@ -629,7 +632,7 @@ class MicroAlleyEnv:
             rewards[a] = float(-cost + bonus + shaped)
             cong_vals.append(float(cong))
 
-        # mild team penalty so selfish pile-ups hurt everyone
+        # optional team congestion coupling (ablation-friendly; not assumed necessary)
         team_cong = float(np.mean(cong_vals)) if cong_vals else 0.0
         w_team = float(w.get("w_team", 0.15))
         if w_team > 0 and cong_vals:
@@ -651,11 +654,16 @@ class MicroAlleyEnv:
         self._step_i += 1
         truncated = self._step_i >= self.max_steps
         if truncated:
+            # Free-flow remain under-penalizes failure vs congested Dijkstra success.
+            # Use inflated fail cost so non-arrival cannot "win" on fleet_mean.
+            fail_mult = float(w.get("truncate_fail_mult", 4.0))
+            fail_floor = float(w.get("truncate_fail_floor", 8000.0))
             for i in range(self.n_agents):
                 if not self._done[i]:
                     rem = self._remain_free(self._pos[i], self._ods[i][1])
-                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - rem / 40.0
-                    self._travel[i] += rem
+                    pen = max(fail_floor, fail_mult * rem)
+                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - pen / 40.0
+                    self._travel[i] += pen
                     self._done[i] = True
 
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
@@ -667,12 +675,17 @@ class MicroAlleyEnv:
         t_bar = float(np.mean(t_arr))
         cvar_thr = float(np.quantile(t_arr, 0.9))
         cvar = float(np.mean(t_arr[t_arr >= cvar_thr])) if np.any(t_arr >= cvar_thr) else t_bar
+        n_true = int(sum(self._true_arrived))
         info = {
             "travels": travels,
             "fleet_mean": t_bar,
             "fleet_cvar90": cvar,
             "congestion": team_cong,
+            # n_arrived includes truncate-forced done; n_true_arrived is destination hits
             "n_arrived": int(sum(self._done)),
+            "n_true_arrived": n_true,
+            "arrival_rate": float(n_true) / max(self.n_agents, 1),
+            "truncated": bool(truncated),
             "step": self._step_i,
             "all_done": all(self._done),
             "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},

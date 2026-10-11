@@ -88,7 +88,7 @@ def run_episode_baseline(
 ) -> dict[str, float]:
     env.set_od_pool(ods_pool)
     env.reset(seed=seed, options={"t": t})
-    last = {"congestion": 0.0}
+    last = {"congestion": 0.0, "arrival_rate": 0.0}
     for _ in range(env.max_steps):
         if mode == "dijkstra":
             acts = env.baseline_dijkstra_actions()
@@ -109,6 +109,7 @@ def run_episode_baseline(
         "fleet_mean": float(np.mean(travels)),
         "fleet_cvar90": cvar,
         "congestion": float(last.get("congestion", 0.0)),
+        "arrival_rate": float(last.get("arrival_rate", 0.0)),
     }
 
 
@@ -151,12 +152,12 @@ def evaluate_policy(
     n_episodes: int = 16,
 ) -> dict[str, float]:
     actor.eval()
-    means, cvars, congs = [], [], []
+    means, cvars, congs, arrs = [], [], [], []
     for ep in range(n_episodes):
         t = float(t_list[ep % len(t_list)])
         env.set_od_pool(ods_pool)
         obs, _, info = env.reset(seed=50_000 + ep, options={"t": t})
-        last = {"congestion": 0.0}
+        last = {"congestion": 0.0, "arrival_rate": 0.0}
         for _ in range(env.max_steps):
             actions, _, _, _, _ = _batched_actions(
                 actor, env, obs, info, device, greedy=True
@@ -176,11 +177,13 @@ def evaluate_policy(
         means.append(float(np.mean(travels)))
         cvars.append(cvar)
         congs.append(float(last.get("congestion", 0.0)))
+        arrs.append(float(last.get("arrival_rate", 0.0)))
     actor.train()
     return {
         "fleet_mean": float(np.mean(means)),
         "fleet_cvar90": float(np.mean(cvars)),
         "congestion": float(np.mean(congs)),
+        "arrival_rate": float(np.mean(arrs)),
         "n": float(n_episodes),
     }
 
@@ -208,7 +211,7 @@ def compute_gae(
     return adv, rets
 
 
-def behavioral_clone_greedy(
+def behavioral_clone_baseline(
     env: MicroAlleyEnv,
     actor: SharedActor,
     opt_actor: torch.optim.Optimizer,
@@ -219,12 +222,19 @@ def behavioral_clone_greedy(
     updates: int,
     episodes_per_update: int,
     seed: int,
+    teacher: str = "dijkstra",
 ) -> None:
-    """Warm-start actor toward load-aware greedy (closes gap vs strongest baseline)."""
+    """Warm-start actor by cloning a teacher policy.
+
+    Default teacher=dijkstra: only baseline that reliably reaches destinations in audit.
+    greedy_load looks strong on old fleet_mean but true arrival stays low (~0.18).
+    """
     if updates <= 0:
         return
+    if teacher not in ("dijkstra", "greedy_load"):
+        raise ValueError(teacher)
     print(
-        f"[bc] greedy warm-start updates={updates} eps/upd={episodes_per_update}",
+        f"[bc] teacher={teacher} updates={updates} eps/upd={episodes_per_update}",
         flush=True,
     )
     rng = np.random.default_rng(seed + 7)
@@ -239,14 +249,17 @@ def behavioral_clone_greedy(
                 seed=seed + 9_000_000 + u * 1000 + ep, options={"t": t}
             )
             for _ in range(env.max_steps):
-                greedy = env.baseline_greedy_load_actions()
+                if teacher == "dijkstra":
+                    teach = env.baseline_dijkstra_actions()
+                else:
+                    teach = env.baseline_greedy_load_actions()
                 for i, a in enumerate(env.agents):
                     if env._done[i]:
                         continue
                     obs_rows.append(obs[a])
                     mask_rows.append(info["masks"][a])
-                    act_rows.append(int(greedy[a]))
-                obs, _, _, _, _, info = env.step(greedy)
+                    act_rows.append(int(teach[a]))
+                obs, _, _, _, _, info = env.step(teach)
                 if info["all_done"]:
                     break
         if len(act_rows) < 16:
@@ -486,7 +499,7 @@ def run_training(
 
     bc_cfg = cfg.get("bc", {})
     if bool(bc_cfg.get("enabled", True)):
-        behavioral_clone_greedy(
+        behavioral_clone_baseline(
             env,
             actor,
             opt_actor,
@@ -496,11 +509,12 @@ def run_training(
             updates=int(bc_cfg.get("updates", 80)),
             episodes_per_update=int(bc_cfg.get("episodes_per_update", 24)),
             seed=seed,
+            teacher=str(bc_cfg.get("teacher", "dijkstra")),
         )
-        # quick val after BC
         bc_val = evaluate_policy(env, actor, val_ods, t_eval, device, n_episodes=12)
         print(
             f"[bc] val fleet_mean={bc_val['fleet_mean']:.1f}s "
+            f"arr={bc_val.get('arrival_rate', 0.0):.2f} "
             f"cong={bc_val['congestion']:.3f}",
             flush=True,
         )
@@ -574,7 +588,7 @@ def run_training(
                     g_b = np.stack(g_list, axis=0).astype(np.float32)
                     m_b = np.stack(m_list, axis=0).astype(np.float32)
 
-                # [T, E, A, ...] — per-agent rewards (fix: team-mean killed credit)
+                # [T, E, A, ...] — per-agent rewards (experiment; MAPPO paper often uses shared r)
                 buf_o = np.zeros((max_t, chunk, n_agents, obs_dim), np.float32)
                 buf_a = np.zeros((max_t, chunk, n_agents), np.int64)
                 buf_lp = np.zeros((max_t, chunk, n_agents), np.float32)
@@ -792,7 +806,8 @@ def run_training(
                 val = evaluate_policy(env, actor, val_ods, t_eval, device, n_episodes=20)
                 print(
                     f"[eval]  fleet_mean={val['fleet_mean']:.1f}s "
-                    f"cvar90={val['fleet_cvar90']:.1f}s cong={val['congestion']:.3f} | "
+                    f"cvar90={val['fleet_cvar90']:.1f}s cong={val['congestion']:.3f} "
+                    f"arr={val.get('arrival_rate', 0.0):.2f} | "
                     f"best={early.best_metric if early.best_update >= 0 else val['fleet_mean']:.1f}",
                     flush=True,
                 )
@@ -859,10 +874,12 @@ def run_training(
                 "fleet_mean": float(np.mean([m["fleet_mean"] for m in ms])),
                 "fleet_cvar90": float(np.mean([m["fleet_cvar90"] for m in ms])),
                 "congestion": float(np.mean([m["congestion"] for m in ms])),
+                "arrival_rate": float(np.mean([m.get("arrival_rate", 0.0) for m in ms])),
             }
             print(
                 f"  [base] {mode:14s} fleet={baselines[mode]['fleet_mean']:.1f}s "
-                f"cvar={baselines[mode]['fleet_cvar90']:.1f}s",
+                f"cvar={baselines[mode]['fleet_cvar90']:.1f}s "
+                f"arr={baselines[mode]['arrival_rate']:.2f}",
                 flush=True,
             )
 
@@ -885,10 +902,25 @@ def run_training(
         "test_fleet_mean": test["fleet_mean"],
         "test_fleet_cvar90": test["fleet_cvar90"],
         "test_congestion": test["congestion"],
+        "test_arrival_rate": test.get("arrival_rate"),
         "baselines_test": baselines,
+        # Primary comparisons require competitive arrival_rate; fleet alone misleads
+        # when truncate used to add only free-flow remain (see _audit_v1_failure).
         "beats_dijkstra_mean": bool(test["fleet_mean"] < djk["fleet_mean"]) if djk else None,
         "beats_random_mean": bool(test["fleet_mean"] < rnd["fleet_mean"]) if rnd else None,
         "beats_greedy_mean": bool(test["fleet_mean"] < grd["fleet_mean"]) if grd else None,
+        "beats_dijkstra_fair": bool(
+            djk
+            and test["fleet_mean"] < djk["fleet_mean"]
+            and float(test.get("arrival_rate", 0.0))
+            >= float(djk.get("arrival_rate", 0.0)) - 0.05
+        ),
+        "beats_random_fair": bool(
+            rnd
+            and test["fleet_mean"] < rnd["fleet_mean"]
+            and float(test.get("arrival_rate", 0.0))
+            >= max(0.5, float(rnd.get("arrival_rate", 0.0)))
+        ),
         "train_od_mean_hops": float(np.mean(lens)),
         "elapsed_sec": time.time() - t0,
         "run_dir": str(run_dir),
