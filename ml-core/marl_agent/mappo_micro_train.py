@@ -112,6 +112,35 @@ def run_episode_baseline(
 
 
 @torch.no_grad()
+def _batched_actions(
+    actor: SharedActor,
+    env: MicroAlleyEnv,
+    obs: dict[str, np.ndarray],
+    info: dict[str, Any],
+    device: torch.device,
+    *,
+    greedy: bool = False,
+) -> tuple[dict[str, int], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    """One GPU forward for all agents."""
+    o_mat = np.stack([obs[a] for a in env.agents], axis=0)
+    m_mat = np.stack([info["masks"][a] for a in env.agents], axis=0)
+    o_t = torch.tensor(o_mat, dtype=torch.float32, device=device)
+    m_t = torch.tensor(m_mat, dtype=torch.float32, device=device)
+    dist = masked_categorical(actor(o_t), m_t)
+    if greedy:
+        act_t = torch.argmax(dist.logits, dim=-1)
+    else:
+        act_t = dist.sample()
+    logp_t = dist.log_prob(act_t)
+    actions = {a: int(act_t[i].item()) for i, a in enumerate(env.agents)}
+    o_list = [o_t[i] for i in range(len(env.agents))]
+    a_list = [act_t[i] for i in range(len(env.agents))]
+    lp_list = [logp_t[i] for i in range(len(env.agents))]
+    m_list = [m_t[i] for i in range(len(env.agents))]
+    return actions, o_list, a_list, lp_list, m_list
+
+
+@torch.no_grad()
 def evaluate_policy(
     env: MicroAlleyEnv,
     actor: SharedActor,
@@ -128,12 +157,9 @@ def evaluate_policy(
         obs, _, info = env.reset(seed=50_000 + ep, options={"t": t})
         last = {"congestion": 0.0}
         for _ in range(env.max_steps):
-            actions = {}
-            for i, a in enumerate(env.agents):
-                o = torch.tensor(obs[a], dtype=torch.float32, device=device).unsqueeze(0)
-                m = torch.tensor(info["masks"][a], dtype=torch.float32, device=device).unsqueeze(0)
-                dist = masked_categorical(actor(o), m)
-                actions[a] = int(torch.argmax(dist.logits, dim=-1).item())
+            actions, _, _, _, _ = _batched_actions(
+                actor, env, obs, info, device, greedy=True
+            )
             obs, _, _, _, _, step_info = env.step(actions)
             info = step_info
             last = step_info
@@ -292,6 +318,8 @@ def run_training(
     log_every = int(train_cfg.get("log_every", 1))
     save_every = int(train_cfg.get("save_every", 50))
     rollout_n = int(ppo_cfg.get("rollout_episodes", 64))
+    n_envs = max(1, int(ppo_cfg.get("n_envs", 8)))
+    minibatch_size = int(ppo_cfg.get("minibatch_size", 4096))
     ppo_epochs = int(ppo_cfg.get("ppo_epochs", 4))
     clip_eps = float(ppo_cfg.get("clip_eps", 0.2))
     value_coef = float(ppo_cfg.get("value_coef", 0.5))
@@ -300,6 +328,32 @@ def run_training(
     gae_lam = float(ppo_cfg.get("gae_lambda", 0.95))
     grad_clip = float(optim_cfg.get("grad_clip_norm", 1.0))
     normalize_adv = bool(ppo_cfg.get("normalize_advantage", True))
+
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
+
+    # Parallel env instances (vectorized rollouts → fatter GPU batches)
+    def _make_env(i: int) -> MicroAlleyEnv:
+        e = MicroAlleyEnv(
+            density_path=density,
+            graph_path=graph,
+            seed=seed + 17 * (i + 1),
+            n_agents=n_agents,
+            max_degree=int(env_cfg.get("max_degree", 8)),
+            max_steps=int(env_cfg.get("max_steps", 120)),
+            compact_dim=int(env_cfg.get("compact_dim", 128)),
+            bpr_alpha=float(env_cfg.get("bpr_alpha", 0.15)),
+            bpr_beta=float(env_cfg.get("bpr_beta", 4.0)),
+            bpr_load_cap=float(env_cfg.get("bpr_load_cap", 12.0)),
+            corridor_prob=float(env_cfg.get("corridor_prob", 0.4)),
+            reward_weights=env_cfg.get("reward_weights"),
+            density_catalog=density_catalog or None,
+        )
+        e.set_od_pool(train_ods)
+        return e
+
+    envs = [env] + [_make_env(i) for i in range(1, n_envs)]
 
     t_train = [float(x) for x in data_cfg.get("t_train", [28800])]
     t_eval = [float(x) for x in data_cfg.get("t_eval", [28800])]
@@ -322,10 +376,16 @@ def run_training(
         f"[mappo_micro] mode=FULL algo={algo} device={device} N={n_agents} "
         f"max_degree={n_actions} max_steps={env.max_steps} obs={obs_dim} "
         f"train_od={len(train_ods)} mean_hops={float(np.mean(lens)):.1f} "
-        f"max_updates={max_updates}",
+        f"max_updates={max_updates} n_envs={n_envs} minibatch={minibatch_size}",
         flush=True,
     )
     print(f"[mappo_micro] run_dir={run_dir}", flush=True)
+    if device.type == "cuda":
+        print(
+            f"[mappo_micro] GPU={torch.cuda.get_device_name(0)} "
+            f"mem={torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB",
+            flush=True,
+        )
 
     t0 = time.time()
     stop_reason = "max_updates"
@@ -354,82 +414,138 @@ def run_training(
             ep_fleet: list[float] = []
             ep_lens: list[float] = []
 
-            for ep in range(rollout_n):
-                t = float(rng.choice(t_train))
-                env.set_od_pool(train_ods)
-                obs, gstate, info = env.reset(
-                    seed=seed + update * 10000 + ep, options={"t": t}
-                )
-                step_obs: list[list[torch.Tensor]] = []
-                step_act: list[list[torch.Tensor]] = []
-                step_logp: list[list[torch.Tensor]] = []
-                step_mask: list[list[torch.Tensor]] = []
-                step_g: list[torch.Tensor] = []
-                step_r: list[float] = []
-                step_v: list[float] = []
-                step_done: list[bool] = []
+            # --- vectorized rollouts: n_envs in parallel, batched GPU act ---
+            ep_i = 0
+            while ep_i < rollout_n:
+                chunk = min(n_envs, rollout_n - ep_i)
+                states: list[dict[str, Any]] = []
+                for j in range(chunk):
+                    e = envs[j]
+                    e.set_od_pool(train_ods)
+                    t = float(rng.choice(t_train))
+                    obs, gstate, info = e.reset(
+                        seed=seed + update * 100_000 + ep_i + j,
+                        options={"t": t},
+                    )
+                    states.append(
+                        {
+                            "obs": obs,
+                            "g": gstate,
+                            "info": info,
+                            "step_obs": [],
+                            "step_act": [],
+                            "step_logp": [],
+                            "step_mask": [],
+                            "step_g": [],
+                            "step_r": [],
+                            "step_v": [],
+                            "step_done": [],
+                            "alive": True,
+                        }
+                    )
 
                 for _ in range(env.max_steps):
-                    g_t = torch.tensor(gstate, dtype=torch.float32, device=device)
-                    if ippo:
-                        # mean local value
-                        vs = []
-                        for a in env.agents:
-                            o = torch.tensor(obs[a], dtype=torch.float32, device=device)
-                            vs.append(float(critic(o.unsqueeze(0)).item()))
-                        v = float(np.mean(vs))
-                    else:
-                        v = float(critic(g_t.unsqueeze(0)).item())
-
-                    actions: dict[str, int] = {}
-                    o_list, a_list, lp_list, m_list = [], [], [], []
-                    for i, a in enumerate(env.agents):
-                        o = torch.tensor(obs[a], dtype=torch.float32, device=device)
-                        m = torch.tensor(info["masks"][a], dtype=torch.float32, device=device)
-                        dist = masked_categorical(actor(o.unsqueeze(0)), m.unsqueeze(0))
-                        action = dist.sample()
-                        logp = dist.log_prob(action)
-                        actions[a] = int(action.item())
-                        o_list.append(o)
-                        a_list.append(action.squeeze(0))
-                        lp_list.append(logp.squeeze(0))
-                        m_list.append(m)
-
-                    obs, rewards, terms, _, gstate, step_info = env.step(actions)
-                    info = step_info
-                    r_team = float(np.mean([rewards[a] for a in env.agents]))
-                    if not math.isfinite(r_team):
-                        raise RuntimeError("NaN reward")
-                    done_team = bool(step_info["all_done"])
-
-                    step_obs.append(o_list)
-                    step_act.append(a_list)
-                    step_logp.append(lp_list)
-                    step_mask.append(m_list)
-                    step_g.append(g_t)
-                    step_r.append(r_team)
-                    step_v.append(v)
-                    step_done.append(done_team)
-                    if done_team:
+                    alive_idx = [j for j, st in enumerate(states) if st["alive"]]
+                    if not alive_idx:
                         break
+                    # Batch ALL agents from ALL alive envs → one actor forward
+                    o_rows, m_rows, owners = [], [], []
+                    for j in alive_idx:
+                        st = states[j]
+                        e = envs[j]
+                        for i, a in enumerate(e.agents):
+                            o_rows.append(st["obs"][a])
+                            m_rows.append(st["info"]["masks"][a])
+                            owners.append((j, i, a))
+                    o_t = torch.tensor(np.stack(o_rows), dtype=torch.float32, device=device)
+                    m_t = torch.tensor(np.stack(m_rows), dtype=torch.float32, device=device)
+                    with torch.no_grad():
+                        dist = masked_categorical(actor(o_t), m_t)
+                        act_t = dist.sample()
+                        logp_t = dist.log_prob(act_t)
+                        # critic values per env (central) or mean local (ippo)
+                        g_stack = []
+                        for j in alive_idx:
+                            g_stack.append(states[j]["g"])
+                        if ippo:
+                            v_t = critic(o_t).detach()
+                            # mean over agents within each env
+                            v_env: dict[int, list[float]] = {j: [] for j in alive_idx}
+                            for k, (j, i, a) in enumerate(owners):
+                                v_env[j].append(float(v_t[k].item()))
+                            v_map = {j: float(np.mean(v_env[j])) for j in alive_idx}
+                        else:
+                            g_t = torch.tensor(
+                                np.stack(g_stack), dtype=torch.float32, device=device
+                            )
+                            v_batch = critic(g_t).detach()
+                            v_map = {
+                                j: float(v_batch[k].item())
+                                for k, j in enumerate(alive_idx)
+                            }
 
-                adv_t, ret_t = compute_gae(step_r, step_v, step_done, gamma, gae_lam)
-                for ti in range(len(step_r)):
-                    for i in range(n_agents):
-                        obs_buf.append(step_obs[ti][i])
-                        act_buf.append(step_act[ti][i])
-                        logp_buf.append(step_logp[ti][i].detach())
-                        mask_buf.append(step_mask[ti][i])
-                        g_buf.append(step_g[ti] if not ippo else step_obs[ti][i])
-                        adv_buf.append(
-                            torch.tensor(adv_t[ti], dtype=torch.float32, device=device)
+                    # scatter actions back per env
+                    act_maps: dict[int, dict[str, int]] = {j: {} for j in alive_idx}
+                    packed: dict[int, dict[str, list]] = {
+                        j: {"o": [], "a": [], "lp": [], "m": []} for j in alive_idx
+                    }
+                    for k, (j, i, a) in enumerate(owners):
+                        act_maps[j][a] = int(act_t[k].item())
+                        packed[j]["o"].append(o_t[k])
+                        packed[j]["a"].append(act_t[k])
+                        packed[j]["lp"].append(logp_t[k])
+                        packed[j]["m"].append(m_t[k])
+
+                    for j in alive_idx:
+                        st = states[j]
+                        e = envs[j]
+                        g_tensor = torch.tensor(
+                            st["g"], dtype=torch.float32, device=device
                         )
-                        ret_buf.append(
-                            torch.tensor(ret_t[ti], dtype=torch.float32, device=device)
-                        )
-                ep_returns.append(float(np.sum(step_r)))
-                ep_fleet.append(float(np.mean(env._travel)))
-                ep_lens.append(float(len(step_r)))
+                        obs, rewards, _, _, gstate, step_info = e.step(act_maps[j])
+                        r_team = float(np.mean([rewards[a] for a in e.agents]))
+                        if not math.isfinite(r_team):
+                            raise RuntimeError("NaN reward")
+                        done_team = bool(step_info["all_done"])
+                        st["obs"] = obs
+                        st["g"] = gstate
+                        st["info"] = step_info
+                        st["step_obs"].append(packed[j]["o"])
+                        st["step_act"].append(packed[j]["a"])
+                        st["step_logp"].append(packed[j]["lp"])
+                        st["step_mask"].append(packed[j]["m"])
+                        st["step_g"].append(g_tensor)
+                        st["step_r"].append(r_team)
+                        st["step_v"].append(v_map[j])
+                        st["step_done"].append(done_team)
+                        if done_team:
+                            st["alive"] = False
+
+                for j in range(chunk):
+                    st = states[j]
+                    e = envs[j]
+                    adv_t, ret_t = compute_gae(
+                        st["step_r"], st["step_v"], st["step_done"], gamma, gae_lam
+                    )
+                    for ti in range(len(st["step_r"])):
+                        for i in range(n_agents):
+                            obs_buf.append(st["step_obs"][ti][i])
+                            act_buf.append(st["step_act"][ti][i])
+                            logp_buf.append(st["step_logp"][ti][i].detach())
+                            mask_buf.append(st["step_mask"][ti][i])
+                            g_buf.append(
+                                st["step_g"][ti] if not ippo else st["step_obs"][ti][i]
+                            )
+                            adv_buf.append(
+                                torch.tensor(adv_t[ti], dtype=torch.float32, device=device)
+                            )
+                            ret_buf.append(
+                                torch.tensor(ret_t[ti], dtype=torch.float32, device=device)
+                            )
+                    ep_returns.append(float(np.sum(st["step_r"])))
+                    ep_fleet.append(float(np.mean(e._travel)))
+                    ep_lens.append(float(len(st["step_r"])))
+                ep_i += chunk
 
             advantages = torch.stack(adv_buf)
             if normalize_adv and advantages.numel() > 1:
@@ -440,31 +556,46 @@ def run_training(
             batch_ret = torch.stack(ret_buf)
             batch_mask = torch.stack(mask_buf)
             batch_g = torch.stack(g_buf)
+            n_samples = batch_obs.shape[0]
 
             last_loss = 0.0
             last_ent = 0.0
+            idx_all = np.arange(n_samples)
             for _ in range(ppo_epochs):
-                logits = actor(batch_obs)
-                dist = masked_categorical(logits, batch_mask)
-                logp = dist.log_prob(batch_act)
-                entropy = dist.entropy().mean()
-                ratio = torch.exp(logp - batch_logp)
-                surr1 = ratio * advantages
-                surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-                values = critic(batch_g if not ippo else batch_obs)
-                value_loss = F.mse_loss(values, batch_ret)
-                loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
-                opt_actor.zero_grad()
-                opt_critic.zero_grad()
-                loss.backward()
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(actor.parameters(), grad_clip)
-                    torch.nn.utils.clip_grad_norm_(critic.parameters(), grad_clip)
-                opt_actor.step()
-                opt_critic.step()
-                last_loss = float(loss.item())
-                last_ent = float(entropy.item())
+                rng.shuffle(idx_all)
+                for start in range(0, n_samples, minibatch_size):
+                    mb = idx_all[start : start + minibatch_size]
+                    if len(mb) < 8:
+                        continue
+                    mb_t = torch.tensor(mb, dtype=torch.long, device=device)
+                    b_obs = batch_obs.index_select(0, mb_t)
+                    b_act = batch_act.index_select(0, mb_t)
+                    b_logp = batch_logp.index_select(0, mb_t)
+                    b_ret = batch_ret.index_select(0, mb_t)
+                    b_mask = batch_mask.index_select(0, mb_t)
+                    b_g = batch_g.index_select(0, mb_t)
+                    b_adv = advantages.index_select(0, mb_t)
+                    logits = actor(b_obs)
+                    dist = masked_categorical(logits, b_mask)
+                    logp = dist.log_prob(b_act)
+                    entropy = dist.entropy().mean()
+                    ratio = torch.exp(logp - b_logp)
+                    surr1 = ratio * b_adv
+                    surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * b_adv
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    values = critic(b_g if not ippo else b_obs)
+                    value_loss = F.mse_loss(values, b_ret)
+                    loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+                    opt_actor.zero_grad()
+                    opt_critic.zero_grad()
+                    loss.backward()
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(actor.parameters(), grad_clip)
+                        torch.nn.utils.clip_grad_norm_(critic.parameters(), grad_clip)
+                    opt_actor.step()
+                    opt_critic.step()
+                    last_loss = float(loss.item())
+                    last_ent = float(entropy.item())
 
             row = {
                 "update": update,
@@ -620,9 +751,12 @@ def main() -> None:
         cfg.setdefault("env", {})["n_agents"] = int(args.n_agents)
     if args.smoke:
         print("*** SMOKE MODE - not a paper run ***", flush=True)
-        cfg.setdefault("train", {})["max_updates"] = 3
+        cfg.setdefault("train", {})["max_updates"] = 2
         cfg.setdefault("train", {})["eval_every"] = 1
-        cfg.setdefault("ppo", {})["rollout_episodes"] = 2
+        cfg.setdefault("ppo", {})["rollout_episodes"] = 4
+        cfg.setdefault("ppo", {})["n_envs"] = 2
+        cfg.setdefault("ppo", {})["minibatch_size"] = 256
+        cfg.setdefault("ppo", {})["ppo_epochs"] = 2
         cfg.setdefault("env", {})["n_agents"] = 4
         cfg.setdefault("env", {})["max_steps"] = 20
         cfg.setdefault("data", {}).setdefault("split", {})["min_path_edges"] = 3

@@ -9,6 +9,8 @@ export PATH="/mnt/data8tb/minhkhoi/tools-env/bin:$PATH"
 cd ~/hcmc-traffic-rl && git pull && cd ml-core
 python -m marl_agent.test_mappo_micro_env
 
+# Boot line must show: n_envs=8 minibatch=4096 + GPU name (4090)
+# Watch utilization: watch -n1 nvidia-smi
 CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 ```

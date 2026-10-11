@@ -60,8 +60,10 @@ optim:
   grad_clip_norm: 1.0
 
 ppo:
-  rollout_episodes: 64
-  ppo_epochs: 4
+  rollout_episodes: 128          # total episodes / update
+  n_envs: 8                      # parallel env instances (vectorized GPU batch)
+  minibatch_size: 4096           # PPO GPU minibatches (4090-friendly)
+  ppo_epochs: 8
   clip_eps: 0.2
   value_coef: 0.5
   entropy_coef: 0.03

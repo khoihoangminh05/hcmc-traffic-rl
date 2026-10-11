@@ -18,11 +18,14 @@ tmux new -s mappo_micro
 mkdir -p /mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs
 LOG=/mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/mappo_micro_$(date +%Y%m%d_%H%M%S).log
 
+# n_envs=8 parallel + batched GPU act/PPO (4090). Watch: nvidia-smi
 CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   --config marl_agent/configs/quan4_mappo_micro.yaml \
   --device cuda \
   2>&1 | tee "$LOG"
 ```
+
+Dòng boot phải có `n_envs=8 minibatch=4096` và tên GPU.
 
 Ablation IPPO: thêm `--ippo`.
 
