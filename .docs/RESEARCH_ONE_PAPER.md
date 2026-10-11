@@ -1,65 +1,42 @@
-# One paper (locked) — MAPPO multi-agent alley routing (Quận 4)
+# One paper (locked) — MAPPO micro next-hop alley routing (Quận 4)
 
-> **Research lock:** một conference paper. Twin hẻm + **MAPPO** đa agent dưới congestion.  
-> UAKP single-agent / binary v5 → **appendix too-easy** (không còn claim chính).  
-> Train: [SOL1_MAPPO.md](./SOL1_MAPPO.md).
+> **Main claim:** MAPPO (CTDE) đa agent chọn **cạnh kế (micro)** trên twin hẻm + BPR congestion.  
+> Macro K-path / UAKP / binary → **legacy appendix** (quá dễ hoặc thua greedy trên travel).
 
 ```mermaid
 flowchart LR
-  twin[Twin_k_u_WCC] --> cand[K_paths_per_agent]
-  cand --> actors[Shared_Actor_MAPPO]
-  actors --> loads[Edge_loads_N_agents]
-  loads --> bpr[BPR_plus_risk]
-  bpr --> rew[Multi_obj_reward]
-  rew --> critic[Central_Critic_CTDE]
+  twin[Twin_k_u_peak] --> obs[Local_obs_time_peak_neighbors]
+  obs --> actor[Shared_Actor_next_hop]
+  actor --> step[Sync_step_BPR_loads]
+  step --> rew[Travel_aligned_reward]
+  rew --> critic[Central_Critic_GAE]
 ```
-
----
 
 ## Bài toán
 
-Mỗi episode peak `t`: **N=16** agent, mỗi agent một OD trên WCC Quận 4; mỗi agent chọn **1 trong K=8** path ứng viên. Load cộng trên cạnh; travel theo **BPR + density twin + capacity road_class**. Partial obs lúc act; critic trung tâm (CTDE).
+N=16 agent; mỗi bước chọn **1 outgoing edge** (masked); horizon tới đích / `max_steps`.  
+OD lọc **≥6 hops và ≥400 m**. Time trong state: `t_norm` + **peak one-hot** + density peak.  
+Reward: **travel-dominant** (+ mild congestion/risk). Eval: fleet mean/CVaR vs Dijkstra / random / greedy-load next-hop.
 
-### Ràng buộc
+## Vì sao micro
 
-| | |
-|--|--|
-| Domain | Largest alley-core WCC |
-| Capacity | Alley thấp (2–3); trục cao hơn |
-| Congestion | BPR `α=0.15`, `β=4` + base `k` |
-| OD | 50% episode correlated corridor |
-| Action | Categorical(K) path — payoff **phụ thuộc joint** |
-
-### Một claim
-
-> Trên twin hẻm Quận 4, MAPPO điều phối đa agent chọn path dưới congestion + uncertainty giảm mean/CVaR fleet travel và chỉ số ùn tắc so với selfish Dijkstra / random / IPPO.
-
-### Appendix (không claim chính)
-
-- Binary `v5_l1l5`: regret=0, không phải MARL  
-- UAKP 1-agent: gap=0 = Dijkstra — ceiling quá dễ  
-
-Venue: ITSC / IEEE ITS workshop.
-
----
+Macro K-path nhốt policy trong menu path; greedy tuần tự thắng travel.  
+Micro = điều hướng thật, đổi hướng theo load/local obs, time/peak có đất diễn.
 
 ## Artifact
 
-| Vai trò | Path |
-|---------|------|
-| **Train chính** | `marl_agent/configs/quan4_mappo.yaml` (`mappo_v1`) |
-| Env / nets / train | `mappo_env.py`, `mappo_nets.py`, `mappo_train.py` |
+| | |
+|--|--|
+| Config | `marl_agent/configs/quan4_mappo_micro.yaml` |
+| Env / train | `mappo_micro_env.py`, `mappo_micro_train.py` |
 | Sol1 | [SOL1_MAPPO.md](./SOL1_MAPPO.md) |
 | Outline | [PAPER_OUTLINE_MAPPO.md](./PAPER_OUTLINE_MAPPO.md) |
-| Legacy UAKP | `quan4_uakp.yaml` |
-| Legacy binary | `quan4_v5_final.yaml` |
+| Legacy macro | `quan4_mappo.yaml` |
 
----
+## Pass
 
-## Pass checklist
-
-- [ ] Unit tests: N↑ → T↑ trên corridor; all-Dijkstra xấu hơn mixed khi cap thấp  
-- [ ] Full train sol1 MAPPO → `MAPPO_TRAIN_OK`  
-- [ ] MAPPO thắng All-Dijkstra trên fleet mean hoặc CVaR / congestion  
-- [ ] Ablation IPPO (independent critic)  
-- [ ] Tables + learning curves + limitations  
+- [ ] `MAPPO_MICRO_ENV_TESTS_OK`  
+- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK`  
+- [ ] `beats_dijkstra_mean` và **`beats_random_mean`** (ideal: gần / thắng greedy)  
+- [ ] Ablation `--ippo`  
+- [ ] Limitations trung thực (BPR stylized, Mapbox twin)  

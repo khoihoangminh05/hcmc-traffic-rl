@@ -1,18 +1,18 @@
 # Progress Tracker — HCMC Urban Traffic Optimization
 
 > Living checklist. Update after every working block.  
-> **Research lock:** [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) — MAPPO multi-agent alley congestion.
+> **Research lock:** [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) — MAPPO **micro** next-hop.
 
-**Last updated:** 2026-10-10  
-**Current phase:** MAPPO N-agent BPR (UAKP/binary = appendix too-easy).  
+**Last updated:** 2026-10-11  
+**Current phase:** MAPPO micro (macro K-path / UAKP = legacy).  
 Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_MAPPO.md](./SOL1_MAPPO.md).
 
 **Focus (locked):** Quận 4 — Mapbox-first trong hẻm; camera chỉ secondary.  
 **Server:** sol1 — `CUDA_VISIBLE_DEVICES=1`, outputs `/mnt/data8tb/minhkhoi/...`.
 
 **North star (locked):**
-- **One paper:** Twin + **MAPPO** N agents × K-path under BPR congestion (multi-obj reward).  
-- Legacy appendix: binary v5 / UAKP single-agent (too easy = Dijkstra).
+- **One paper:** Twin + **MAPPO micro** (next-hop, long OD, peak/time, travel-aligned reward).  
+- Legacy: macro K-path / UAKP / binary.
 
 **Deployment note (locked):**
 - **Node 1** = local NestJS + Redis (pause/resume).  

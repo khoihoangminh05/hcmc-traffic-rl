@@ -6,8 +6,9 @@
 
 - Twin domain = largest alley-core WCC Quận 4 (~886 nodes / ~1.8k edges).
 - Density primary = Mapbox OD seeds + interpolation; camera secondary at entries only.
-- Decision = **N agents × K-path** under **BPR congestion**; MAPPO CTDE.
-- Episode = one joint route choice (multi-agent congestion game), not microscopic car-following.
+- Decision = **N agents × next-hop (micro)** under **BPR congestion**; MAPPO CTDE + GAE.
+- Episode = multi-step until destination / max_steps (not car-following / SUMO).
+- Legacy macro K-path = appendix only.
 
 ## Twin / data
 
