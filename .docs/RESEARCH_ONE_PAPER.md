@@ -60,11 +60,18 @@ Early-stop best val ~4038 @ update 50. MAPPO không thắng baseline trên fleet
 
 **Giả thuyết còn mở** (có code, chưa có full retrain chứng minh): live occupancy; BC **Dijkstra**; reward shaping.
 
-## v2b chỉnh theo audit
+## v2b full run (sol1) — facts từ metrics
 
-- `max_steps: 200`; truncate fail floor lớn; `arrival_rate` trong eval/summary
-- BC teacher mặc định **`dijkstra`** (không greedy)
-- Pass chính: `beats_dijkstra_fair` (fleet + arrival), không phải “thắng random trên fleet”
+- Best @125 val fleet~9594 arr~0.16; test fleet~9205 arr~0.23 — **không** `beats_dijkstra_fair`
+- Train fleet @125 ~5090 (gần Dijkstra) nhưng **greedy/val lệch**; sau u125 val cong nổ (65→200+)
+- Entropy sau BC thấp (~0.14) rồi ~0.5 — không phải collapse entropy muộn
+
+## v2c (theo metrics v2b)
+
+- Eval ckpt = **stochastic** (khớp train); log thêm greedy
+- Early-stop score = fleet + 12000*(1−arr)
+- BC ngắn hơn (40), LR thấp hơn, entropy 0.08, clip 0.15
+- **Chưa khẳng định sẽ thắng Dijkstra** — chỉ sửa lệch đã đo được
 
 ## Pass (cập nhật)
 

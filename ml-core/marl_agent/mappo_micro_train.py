@@ -150,7 +150,10 @@ def evaluate_policy(
     t_list: list[float],
     device: torch.device,
     n_episodes: int = 16,
+    *,
+    greedy: bool = False,
 ) -> dict[str, float]:
+    """Eval policy. Default stochastic — v2b showed large train(~5k) vs greedy-val(~9.5k) gap."""
     actor.eval()
     means, cvars, congs, arrs = [], [], [], []
     for ep in range(n_episodes):
@@ -160,7 +163,7 @@ def evaluate_policy(
         last = {"congestion": 0.0, "arrival_rate": 0.0}
         for _ in range(env.max_steps):
             actions, _, _, _, _ = _batched_actions(
-                actor, env, obs, info, device, greedy=True
+                actor, env, obs, info, device, greedy=greedy
             )
             obs, _, _, _, _, step_info = env.step(actions)
             info = step_info
@@ -184,8 +187,14 @@ def evaluate_policy(
         "fleet_cvar90": float(np.mean(cvars)),
         "congestion": float(np.mean(congs)),
         "arrival_rate": float(np.mean(arrs)),
+        "greedy": float(1.0 if greedy else 0.0),
         "n": float(n_episodes),
     }
+
+
+def early_stop_score(fleet_mean: float, arrival_rate: float, *, arr_penalty: float = 12_000.0) -> float:
+    """Minimize. Penalize low arrival so checkpoints like v2b@125 (arr~0.16) are not preferred."""
+    return float(fleet_mean) + float(arr_penalty) * (1.0 - float(arrival_rate))
 
 
 def compute_gae(
@@ -803,18 +812,41 @@ def run_training(
                 )
 
             if update % eval_every == 0 or update == max_updates:
-                val = evaluate_policy(env, actor, val_ods, t_eval, device, n_episodes=20)
+                # Stochastic eval matches training collection (v2b: greedy val diverged hard)
+                val = evaluate_policy(
+                    env, actor, val_ods, t_eval, device, n_episodes=20, greedy=False
+                )
+                val_g = evaluate_policy(
+                    env, actor, val_ods, t_eval, device, n_episodes=10, greedy=True
+                )
+                arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
+                score = early_stop_score(
+                    val["fleet_mean"], val.get("arrival_rate", 0.0), arr_penalty=arr_pen
+                )
                 print(
-                    f"[eval]  fleet_mean={val['fleet_mean']:.1f}s "
-                    f"cvar90={val['fleet_cvar90']:.1f}s cong={val['congestion']:.3f} "
-                    f"arr={val.get('arrival_rate', 0.0):.2f} | "
-                    f"best={early.best_metric if early.best_update >= 0 else val['fleet_mean']:.1f}",
+                    f"[eval]  stoch fleet={val['fleet_mean']:.1f}s arr={val.get('arrival_rate', 0.0):.2f} "
+                    f"cong={val['congestion']:.3f} | greedy fleet={val_g['fleet_mean']:.1f}s "
+                    f"arr={val_g.get('arrival_rate', 0.0):.2f} | score={score:.1f} "
+                    f"best={early.best_metric if early.best_update >= 0 else score:.1f}",
                     flush=True,
                 )
-                jf.write(json.dumps({"type": "eval", "update": update, **val}) + "\n")
+                jf.write(
+                    json.dumps(
+                        {
+                            "type": "eval",
+                            "update": update,
+                            **val,
+                            "score": score,
+                            "greedy_fleet_mean": val_g["fleet_mean"],
+                            "greedy_arrival_rate": val_g.get("arrival_rate", 0.0),
+                            "greedy_congestion": val_g["congestion"],
+                        }
+                    )
+                    + "\n"
+                )
                 jf.flush()
                 if bool(es_cfg.get("enabled", True)):
-                    st = early.step(val["fleet_mean"], update)
+                    st = early.step(score, update)
                     if st.reason == "improved" or best_state is None:
                         best_state = {
                             "actor": {k: v.detach().cpu().clone() for k, v in actor.state_dict().items()},
@@ -823,6 +855,7 @@ def run_training(
                             },
                             "update": update,
                             "val": val,
+                            "score": score,
                         }
                         torch.save(
                             {
@@ -834,11 +867,16 @@ def run_training(
                                 "ippo": ippo,
                                 "update": update,
                                 "val": val,
+                                "score": score,
                                 "cfg_tag": data_tag,
                             },
                             best_path,
                         )
-                        print(f"  [ckpt] best.pt fleet_mean={val['fleet_mean']:.2f}s", flush=True)
+                        print(
+                            f"  [ckpt] best.pt score={score:.1f} "
+                            f"fleet={val['fleet_mean']:.1f}s arr={val.get('arrival_rate', 0.0):.2f}",
+                            flush=True,
+                        )
                     if st.stopped:
                         print(f"  [early_stop] {st.reason}", flush=True)
                         stop_reason = st.reason
@@ -859,7 +897,12 @@ def run_training(
         print(f"[mappo_micro] restored best @{best_state['update']}", flush=True)
 
     n_test_ep = int(cfg.get("baseline", {}).get("n_episodes", 30))
-    test = evaluate_policy(env, actor, test_ods, t_eval, device, n_episodes=n_test_ep)
+    test = evaluate_policy(
+        env, actor, test_ods, t_eval, device, n_episodes=n_test_ep, greedy=False
+    )
+    test_g = evaluate_policy(
+        env, actor, test_ods, t_eval, device, n_episodes=min(20, n_test_ep), greedy=True
+    )
     baselines: dict[str, dict[str, float]] = {}
     if bool(cfg.get("baseline", {}).get("run_on_eval", True)):
         for mode in ("dijkstra", "random", "greedy_load"):
@@ -897,12 +940,17 @@ def run_training(
         "ippo": ippo,
         "updates_ran": int(last_update),
         "stop_reason": stop_reason,
-        "best_val_fleet_mean": early.best_metric if early.best_update >= 0 else test["fleet_mean"],
+        "best_val_score": early.best_metric if early.best_update >= 0 else None,
+        "best_val_fleet_mean": (
+            best_state["val"]["fleet_mean"] if best_state is not None else test["fleet_mean"]
+        ),
         "best_update": early.best_update,
         "test_fleet_mean": test["fleet_mean"],
         "test_fleet_cvar90": test["fleet_cvar90"],
         "test_congestion": test["congestion"],
         "test_arrival_rate": test.get("arrival_rate"),
+        "test_greedy_fleet_mean": test_g["fleet_mean"],
+        "test_greedy_arrival_rate": test_g.get("arrival_rate"),
         "baselines_test": baselines,
         # Primary comparisons require competitive arrival_rate; fleet alone misleads
         # when truncate used to add only free-flow remain (see _audit_v1_failure).
