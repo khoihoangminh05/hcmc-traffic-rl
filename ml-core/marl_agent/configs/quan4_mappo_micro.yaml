@@ -1,17 +1,17 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2d
+# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2e
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v2d
+# data_tag: mappo_micro_v2e
 #
-# Root cause (v1–v2c): BC never cloned Dijkstra (CE~0.87 ≈ acc~0.42) so long
-# OD paths (~36 hops) fail; PPO then trains a random-ish policy. Fixed BC reaches
-# acc≥0.98 / greedy arr≈1.0. v2d: accuracy-gated BC, critic fit, softer PPO.
+# v2d: accuracy-gated BC + critic fit + soft PPO.
+# v2e: fair paired test — same OD/t/seed/step/reward for policy vs baselines
+#      (old bug: policy seed 50k+ep, baseline 70k+ep → different episodes).
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v2d
+  data_tag: mappo_micro_v2e
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs

@@ -79,16 +79,57 @@ def masked_categorical(
     return torch.distributions.Categorical(logits=logits.masked_fill(mask < 0.5, neg))
 
 
+# Shared eval seed base: policy and baselines MUST use the same (seed, t, OD).
+EVAL_SEED_BASE = 50_000
+
+
+def _fleet_metrics_from_env(env: MicroAlleyEnv, last: dict[str, Any]) -> dict[str, float]:
+    travels = np.asarray(env._travel, dtype=np.float64)
+    thr = float(np.quantile(travels, 0.9))
+    cvar = (
+        float(np.mean(travels[travels >= thr]))
+        if np.any(travels >= thr)
+        else float(np.mean(travels))
+    )
+    return {
+        "fleet_mean": float(np.mean(travels)),
+        "fleet_cvar90": cvar,
+        "congestion": float(last.get("congestion", 0.0)),
+        "arrival_rate": float(last.get("arrival_rate", 0.0)),
+    }
+
+
+def _mean_metric_dicts(rows: list[dict[str, float]]) -> dict[str, float]:
+    if not rows:
+        return {
+            "fleet_mean": 0.0,
+            "fleet_cvar90": 0.0,
+            "congestion": 0.0,
+            "arrival_rate": 0.0,
+            "n": 0.0,
+        }
+    keys = ("fleet_mean", "fleet_cvar90", "congestion", "arrival_rate")
+    out = {k: float(np.mean([r[k] for r in rows])) for k in keys}
+    out["n"] = float(len(rows))
+    return out
+
+
 def run_episode_baseline(
     env: MicroAlleyEnv,
     mode: str,
     ods_pool: list[tuple[str, str]],
     t: float,
     seed: int,
+    *,
+    ods: list[tuple[str, str]] | None = None,
 ) -> dict[str, float]:
+    """One baseline episode. Prefer evaluate_fair_suite for paired comparisons."""
     env.set_od_pool(ods_pool)
-    env.reset(seed=seed, options={"t": t})
-    last = {"congestion": 0.0, "arrival_rate": 0.0}
+    opts: dict[str, Any] = {"t": t}
+    if ods is not None:
+        opts["ods"] = ods
+    env.reset(seed=seed, options=opts)
+    last: dict[str, Any] = {"congestion": 0.0, "arrival_rate": 0.0}
     for _ in range(env.max_steps):
         if mode == "dijkstra":
             acts = env.baseline_dijkstra_actions()
@@ -102,15 +143,7 @@ def run_episode_baseline(
         last = info
         if info["all_done"]:
             break
-    travels = np.asarray(env._travel, dtype=np.float64)
-    thr = float(np.quantile(travels, 0.9))
-    cvar = float(np.mean(travels[travels >= thr])) if np.any(travels >= thr) else float(np.mean(travels))
-    return {
-        "fleet_mean": float(np.mean(travels)),
-        "fleet_cvar90": cvar,
-        "congestion": float(last.get("congestion", 0.0)),
-        "arrival_rate": float(last.get("arrival_rate", 0.0)),
-    }
+    return _fleet_metrics_from_env(env, last)
 
 
 @torch.no_grad()
@@ -143,6 +176,34 @@ def _batched_actions(
 
 
 @torch.no_grad()
+def _run_policy_episode(
+    env: MicroAlleyEnv,
+    actor: SharedActor,
+    device: torch.device,
+    *,
+    seed: int,
+    t: float,
+    ods: list[tuple[str, str]] | None,
+    greedy: bool,
+) -> dict[str, float]:
+    opts: dict[str, Any] = {"t": t}
+    if ods is not None:
+        opts["ods"] = ods
+    obs, _, info = env.reset(seed=seed, options=opts)
+    last: dict[str, Any] = {"congestion": 0.0, "arrival_rate": 0.0}
+    for _ in range(env.max_steps):
+        actions, _, _, _, _ = _batched_actions(
+            actor, env, obs, info, device, greedy=greedy
+        )
+        obs, _, _, _, _, step_info = env.step(actions)
+        info = step_info
+        last = step_info
+        if step_info["all_done"]:
+            break
+    return _fleet_metrics_from_env(env, last)
+
+
+@torch.no_grad()
 def evaluate_policy(
     env: MicroAlleyEnv,
     actor: SharedActor,
@@ -152,43 +213,108 @@ def evaluate_policy(
     n_episodes: int = 16,
     *,
     greedy: bool = False,
+    seed_base: int = EVAL_SEED_BASE,
 ) -> dict[str, float]:
-    """Eval policy. Default stochastic — v2b showed large train(~5k) vs greedy-val(~9.5k) gap."""
+    """Eval policy alone (val loop). Final test must use evaluate_fair_suite."""
     actor.eval()
-    means, cvars, congs, arrs = [], [], [], []
+    rows: list[dict[str, float]] = []
+    env.set_od_pool(ods_pool)
     for ep in range(n_episodes):
         t = float(t_list[ep % len(t_list)])
-        env.set_od_pool(ods_pool)
-        obs, _, info = env.reset(seed=50_000 + ep, options={"t": t})
-        last = {"congestion": 0.0, "arrival_rate": 0.0}
-        for _ in range(env.max_steps):
-            actions, _, _, _, _ = _batched_actions(
-                actor, env, obs, info, device, greedy=greedy
+        rows.append(
+            _run_policy_episode(
+                env,
+                actor,
+                device,
+                seed=seed_base + ep,
+                t=t,
+                ods=None,
+                greedy=greedy,
             )
-            obs, _, _, _, _, step_info = env.step(actions)
-            info = step_info
-            last = step_info
-            if step_info["all_done"]:
-                break
-        travels = np.asarray(env._travel, dtype=np.float64)
-        thr = float(np.quantile(travels, 0.9))
-        cvar = (
-            float(np.mean(travels[travels >= thr]))
-            if np.any(travels >= thr)
-            else float(np.mean(travels))
         )
-        means.append(float(np.mean(travels)))
-        cvars.append(cvar)
-        congs.append(float(last.get("congestion", 0.0)))
-        arrs.append(float(last.get("arrival_rate", 0.0)))
     actor.train()
+    out = _mean_metric_dicts(rows)
+    out["greedy"] = float(1.0 if greedy else 0.0)
+    return out
+
+
+@torch.no_grad()
+def evaluate_fair_suite(
+    env: MicroAlleyEnv,
+    actor: SharedActor,
+    ods_pool: list[tuple[str, str]],
+    t_list: list[float],
+    device: torch.device,
+    n_episodes: int = 30,
+    *,
+    seed_base: int = EVAL_SEED_BASE,
+    baseline_modes: tuple[str, ...] = ("dijkstra", "random", "greedy_load"),
+) -> dict[str, Any]:
+    """Paired comparison: identical env / OD / t / seed / step+reward for every controller.
+
+    Only the action-selection rule differs. Locks ODs from the first reset of each
+    episode so policy and baselines cannot drift.
+    """
+    actor.eval()
+    env.set_od_pool(ods_pool)
+    buckets: dict[str, list[dict[str, float]]] = {
+        "policy_stoch": [],
+        "policy_greedy": [],
+        **{m: [] for m in baseline_modes},
+    }
+    for ep in range(n_episodes):
+        t = float(t_list[ep % len(t_list)])
+        seed = int(seed_base + ep)
+        # Probe reset → freeze exact OD assignment for this episode.
+        env.reset(seed=seed, options={"t": t})
+        ods_ep = [(str(o), str(d)) for o, d in env._ods]
+        buckets["policy_stoch"].append(
+            _run_policy_episode(
+                env, actor, device, seed=seed, t=t, ods=ods_ep, greedy=False
+            )
+        )
+        buckets["policy_greedy"].append(
+            _run_policy_episode(
+                env, actor, device, seed=seed, t=t, ods=ods_ep, greedy=True
+            )
+        )
+        for mode in baseline_modes:
+            buckets[mode].append(
+                run_episode_baseline(
+                    env, mode, ods_pool, t, seed, ods=ods_ep
+                )
+            )
+    actor.train()
+    agg = {name: _mean_metric_dicts(rows) for name, rows in buckets.items()}
+    djk = agg.get("dijkstra", {})
+    pol_g = agg["policy_greedy"]
+    pol_s = agg["policy_stoch"]
+    # Primary fair flag: deterministic policy vs Dijkstra on the same episodes.
+    beats_dijkstra_fair = bool(
+        djk
+        and pol_g["fleet_mean"] < djk["fleet_mean"]
+        and float(pol_g.get("arrival_rate", 0.0))
+        >= float(djk.get("arrival_rate", 0.0)) - 0.05
+    )
+    # Stoch reported too, but not used as primary fairness claim.
+    beats_dijkstra_stoch = bool(
+        djk
+        and pol_s["fleet_mean"] < djk["fleet_mean"]
+        and float(pol_s.get("arrival_rate", 0.0))
+        >= float(djk.get("arrival_rate", 0.0)) - 0.05
+    )
     return {
-        "fleet_mean": float(np.mean(means)),
-        "fleet_cvar90": float(np.mean(cvars)),
-        "congestion": float(np.mean(congs)),
-        "arrival_rate": float(np.mean(arrs)),
-        "greedy": float(1.0 if greedy else 0.0),
-        "n": float(n_episodes),
+        **agg,
+        "eval_protocol": "paired_identical_od_t_seed_step",
+        "seed_base": int(seed_base),
+        "n_episodes": int(n_episodes),
+        "beats_dijkstra_fair": beats_dijkstra_fair,
+        "beats_dijkstra_stoch": beats_dijkstra_stoch,
+        "delta_fleet_greedy_minus_dijkstra": float(
+            pol_g["fleet_mean"] - float(djk.get("fleet_mean", 0.0))
+        )
+        if djk
+        else None,
     }
 
 
@@ -1085,38 +1211,58 @@ def run_training(
         print(f"[mappo_micro] restored best @{best_state['update']}", flush=True)
 
     n_test_ep = int(cfg.get("baseline", {}).get("n_episodes", 30))
-    test = evaluate_policy(
-        env, actor, test_ods, t_eval, device, n_episodes=n_test_ep, greedy=False
-    )
-    test_g = evaluate_policy(
-        env, actor, test_ods, t_eval, device, n_episodes=min(20, n_test_ep), greedy=True
-    )
-    baselines: dict[str, dict[str, float]] = {}
+    fair: dict[str, Any] = {}
     if bool(cfg.get("baseline", {}).get("run_on_eval", True)):
-        for mode in ("dijkstra", "random", "greedy_load"):
-            ms = []
-            for ep in range(n_test_ep):
-                ms.append(
-                    run_episode_baseline(
-                        env, mode, test_ods, float(t_eval[ep % len(t_eval)]), 70_000 + ep
-                    )
-                )
-            baselines[mode] = {
-                "fleet_mean": float(np.mean([m["fleet_mean"] for m in ms])),
-                "fleet_cvar90": float(np.mean([m["fleet_cvar90"] for m in ms])),
-                "congestion": float(np.mean([m["congestion"] for m in ms])),
-                "arrival_rate": float(np.mean([m.get("arrival_rate", 0.0) for m in ms])),
-            }
+        print(
+            f"[fair] paired eval n={n_test_ep} seed_base={EVAL_SEED_BASE} "
+            "(same OD/t/seed/step/reward; only action rule differs)",
+            flush=True,
+        )
+        fair = evaluate_fair_suite(
+            env,
+            actor,
+            test_ods,
+            t_eval,
+            device,
+            n_episodes=n_test_ep,
+            seed_base=EVAL_SEED_BASE,
+        )
+        for name in ("policy_greedy", "policy_stoch", "dijkstra", "random", "greedy_load"):
+            m = fair.get(name)
+            if not m:
+                continue
             print(
-                f"  [base] {mode:14s} fleet={baselines[mode]['fleet_mean']:.1f}s "
-                f"cvar={baselines[mode]['fleet_cvar90']:.1f}s "
-                f"arr={baselines[mode]['arrival_rate']:.2f}",
+                f"  [fair] {name:14s} fleet={m['fleet_mean']:.1f}s "
+                f"cvar={m['fleet_cvar90']:.1f}s arr={m['arrival_rate']:.2f}",
                 flush=True,
             )
+        print(
+            f"  [fair] delta_greedy-djk={fair.get('delta_fleet_greedy_minus_dijkstra')} "
+            f"beats_dijkstra_fair={fair.get('beats_dijkstra_fair')}",
+            flush=True,
+        )
+    else:
+        # Fallback: policy-only (no baseline compare).
+        fair = {
+            "policy_stoch": evaluate_policy(
+                env, actor, test_ods, t_eval, device, n_episodes=n_test_ep, greedy=False
+            ),
+            "policy_greedy": evaluate_policy(
+                env, actor, test_ods, t_eval, device, n_episodes=n_test_ep, greedy=True
+            ),
+            "eval_protocol": "policy_only",
+        }
 
-    djk = baselines.get("dijkstra", {})
-    rnd = baselines.get("random", {})
-    grd = baselines.get("greedy_load", {})
+    test = fair.get("policy_stoch", {})
+    test_g = fair.get("policy_greedy", {})
+    djk = fair.get("dijkstra", {})
+    rnd = fair.get("random", {})
+    grd = fair.get("greedy_load", {})
+    baselines = {
+        k: fair[k]
+        for k in ("dijkstra", "random", "greedy_load")
+        if k in fair and isinstance(fair[k], dict) and "fleet_mean" in fair[k]
+    }
     summary = {
         "algo": algo,
         "data_tag": data_tag,
@@ -1130,33 +1276,60 @@ def run_training(
         "stop_reason": stop_reason,
         "best_val_score": early.best_metric if early.best_update >= 0 else None,
         "best_val_fleet_mean": (
-            best_state["val"]["fleet_mean"] if best_state is not None else test["fleet_mean"]
+            best_state["val"]["fleet_mean"] if best_state is not None else test_g.get("fleet_mean")
         ),
         "best_update": early.best_update,
-        "test_fleet_mean": test["fleet_mean"],
-        "test_fleet_cvar90": test["fleet_cvar90"],
-        "test_congestion": test["congestion"],
+        "eval_protocol": fair.get("eval_protocol"),
+        "test_fleet_mean": test.get("fleet_mean"),
+        "test_fleet_cvar90": test.get("fleet_cvar90"),
+        "test_congestion": test.get("congestion"),
         "test_arrival_rate": test.get("arrival_rate"),
-        "test_greedy_fleet_mean": test_g["fleet_mean"],
+        "test_greedy_fleet_mean": test_g.get("fleet_mean"),
         "test_greedy_arrival_rate": test_g.get("arrival_rate"),
         "baselines_test": baselines,
-        # Primary comparisons require competitive arrival_rate; fleet alone misleads
-        # when truncate used to add only free-flow remain (see _audit_v1_failure).
-        "beats_dijkstra_mean": bool(test["fleet_mean"] < djk["fleet_mean"]) if djk else None,
-        "beats_random_mean": bool(test["fleet_mean"] < rnd["fleet_mean"]) if rnd else None,
-        "beats_greedy_mean": bool(test["fleet_mean"] < grd["fleet_mean"]) if grd else None,
-        "beats_dijkstra_fair": bool(
-            djk
-            and test["fleet_mean"] < djk["fleet_mean"]
-            and float(test.get("arrival_rate", 0.0))
-            >= float(djk.get("arrival_rate", 0.0)) - 0.05
-        ),
+        "fair_suite": {
+            k: fair[k]
+            for k in (
+                "policy_greedy",
+                "policy_stoch",
+                "dijkstra",
+                "random",
+                "greedy_load",
+                "delta_fleet_greedy_minus_dijkstra",
+                "beats_dijkstra_fair",
+                "beats_dijkstra_stoch",
+                "seed_base",
+                "n_episodes",
+                "eval_protocol",
+            )
+            if k in fair
+        },
+        # Primary: greedy policy vs Dijkstra on identical paired episodes.
+        "beats_dijkstra_mean": bool(
+            djk and test_g.get("fleet_mean", 1e18) < djk["fleet_mean"]
+        )
+        if djk
+        else None,
+        "beats_random_mean": bool(
+            rnd and test_g.get("fleet_mean", 1e18) < rnd["fleet_mean"]
+        )
+        if rnd
+        else None,
+        "beats_greedy_mean": bool(
+            grd and test_g.get("fleet_mean", 1e18) < grd["fleet_mean"]
+        )
+        if grd
+        else None,
+        "beats_dijkstra_fair": fair.get("beats_dijkstra_fair"),
+        "beats_dijkstra_stoch": fair.get("beats_dijkstra_stoch"),
         "beats_random_fair": bool(
             rnd
-            and test["fleet_mean"] < rnd["fleet_mean"]
-            and float(test.get("arrival_rate", 0.0))
+            and test_g.get("fleet_mean", 1e18) < rnd["fleet_mean"]
+            and float(test_g.get("arrival_rate", 0.0))
             >= max(0.5, float(rnd.get("arrival_rate", 0.0)))
-        ),
+        )
+        if rnd
+        else None,
         "train_od_mean_hops": float(np.mean(lens)),
         "elapsed_sec": time.time() - t0,
         "run_dir": str(run_dir),
