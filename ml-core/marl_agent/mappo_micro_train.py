@@ -223,7 +223,6 @@ def compute_gae(
 def behavioral_clone_baseline(
     env: MicroAlleyEnv,
     actor: SharedActor,
-    opt_actor: torch.optim.Optimizer,
     train_ods: list[tuple[str, str]],
     t_train: list[float],
     device: torch.device,
@@ -232,23 +231,31 @@ def behavioral_clone_baseline(
     episodes_per_update: int,
     seed: int,
     teacher: str = "dijkstra",
-) -> None:
-    """Warm-start actor by cloning a teacher policy.
+    lr: float = 1e-3,
+    target_acc: float = 0.98,
+    epochs_per_update: int = 4,
+) -> dict[str, float]:
+    """Clone teacher until action accuracy is high enough for long OD paths.
 
-    Default teacher=dijkstra: only baseline that reliably reaches destinations in audit.
-    greedy_load looks strong on old fleet_mean but true arrival stays low (~0.18).
+    Evidence: obs progress feature matches Dijkstra next-hop 100%, but old BC
+    (PPO lr, CE~0.87 ~ acc~0.42) cannot follow ~36-hop routes. Need acc >= ~0.98.
     """
     if updates <= 0:
-        return
+        return {"bc_updates": 0.0, "bc_acc": 0.0, "bc_ce": 0.0}
     if teacher not in ("dijkstra", "greedy_load"):
         raise ValueError(teacher)
+    opt = torch.optim.Adam(actor.parameters(), lr=float(lr))
     print(
-        f"[bc] teacher={teacher} updates={updates} eps/upd={episodes_per_update}",
+        f"[bc] teacher={teacher} max_updates={updates} eps/upd={episodes_per_update} "
+        f"lr={lr} target_acc={target_acc} epochs={epochs_per_update}",
         flush=True,
     )
     rng = np.random.default_rng(seed + 7)
     env.set_od_pool(train_ods)
+    last_acc, last_ce = 0.0, 9.0
+    used = 0
     for u in range(1, updates + 1):
+        used = u
         obs_rows: list[np.ndarray] = []
         mask_rows: list[np.ndarray] = []
         act_rows: list[int] = []
@@ -276,27 +283,147 @@ def behavioral_clone_baseline(
         o_t = torch.tensor(np.stack(obs_rows), dtype=torch.float32, device=device)
         m_t = torch.tensor(np.stack(mask_rows), dtype=torch.float32, device=device)
         a_t = torch.tensor(act_rows, dtype=torch.long, device=device)
-        # minibatch CE
-        n = o_t.shape[0]
+        n = int(o_t.shape[0])
         idx = np.arange(n)
+        for _ep in range(max(1, int(epochs_per_update))):
+            rng.shuffle(idx)
+            for start in range(0, n, 2048):
+                mb = idx[start : start + 2048]
+                if len(mb) < 8:
+                    continue
+                mb_t = torch.tensor(mb, dtype=torch.long, device=device)
+                dist = masked_categorical(
+                    actor(o_t.index_select(0, mb_t)), m_t.index_select(0, mb_t)
+                )
+                loss = -dist.log_prob(a_t.index_select(0, mb_t)).mean()
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+                opt.step()
+        with torch.no_grad():
+            dist = masked_categorical(actor(o_t), m_t)
+            pred = torch.argmax(dist.logits, dim=-1)
+            last_acc = float((pred == a_t).float().mean().item())
+            last_ce = float((-dist.log_prob(a_t)).mean().item())
+        if (
+            u == 1
+            or u % max(1, updates // 10) == 0
+            or u == updates
+            or last_acc >= target_acc
+        ):
+            print(
+                f"[bc] {u}/{updates} acc={last_acc:.4f} ce={last_ce:.4f} n={n}",
+                flush=True,
+            )
+        if last_acc >= target_acc:
+            print(f"[bc] reached target_acc={target_acc} at update {u}", flush=True)
+            break
+    if last_acc < target_acc:
+        print(
+            f"[bc] WARNING acc={last_acc:.4f} below target={target_acc} "
+            f"— long-horizon clone may fail",
+            flush=True,
+        )
+    return {
+        "bc_updates": float(used),
+        "bc_acc": float(last_acc),
+        "bc_ce": float(last_ce),
+    }
+
+
+def fit_critic_on_teacher(
+    env: MicroAlleyEnv,
+    actor: SharedActor,
+    critic: nn.Module,
+    opt_critic: torch.optim.Optimizer,
+    train_ods: list[tuple[str, str]],
+    t_train: list[float],
+    device: torch.device,
+    *,
+    episodes: int,
+    seed: int,
+    gamma: float,
+    ippo: bool,
+) -> float:
+    """Fit critic on greedy-actor rollouts before PPO (cold critic wrecks BC)."""
+    env.set_od_pool(train_ods)
+    rng = np.random.default_rng(seed + 99)
+    returns_buf: list[np.ndarray] = []
+    state_buf: list[np.ndarray] = []
+    for ep in range(episodes):
+        t = float(rng.choice(t_train))
+        obs, gstate, info = env.reset(
+            seed=seed + 8_000_000 + ep, options={"t": t}
+        )
+        rewards_ep: list[np.ndarray] = []
+        states_ep: list[np.ndarray] = []
+        for _ in range(env.max_steps):
+            if ippo:
+                states_ep.append(np.stack([obs[a] for a in env.agents], axis=0))
+            else:
+                states_ep.append(np.asarray(gstate, dtype=np.float32))
+            with torch.no_grad():
+                actions, _, _, _, _ = _batched_actions(
+                    actor, env, obs, info, device, greedy=True
+                )
+            obs, rew, _, _, gstate, info = env.step(actions)
+            rewards_ep.append(
+                np.asarray([float(rew[a]) for a in env.agents], dtype=np.float32)
+            )
+            if info["all_done"]:
+                break
+        T = len(rewards_ep)
+        if T == 0:
+            continue
+        R = np.zeros((T, len(env.agents)), dtype=np.float32)
+        running = np.zeros(len(env.agents), dtype=np.float32)
+        for ti in reversed(range(T)):
+            running = rewards_ep[ti] + float(gamma) * running
+            R[ti] = running
+        if ippo:
+            for ti in range(T):
+                state_buf.append(states_ep[ti])
+                returns_buf.append(R[ti])
+        else:
+            for ti in range(T):
+                state_buf.append(states_ep[ti])
+                returns_buf.append(
+                    np.array([float(np.mean(R[ti]))], dtype=np.float32)
+                )
+    if not returns_buf:
+        return 0.0
+    if ippo:
+        x = torch.tensor(
+            np.concatenate(state_buf, axis=0), dtype=torch.float32, device=device
+        )
+        y = torch.tensor(
+            np.concatenate(returns_buf, axis=0), dtype=torch.float32, device=device
+        )
+    else:
+        x = torch.tensor(
+            np.stack(state_buf, axis=0), dtype=torch.float32, device=device
+        )
+        y = torch.tensor(
+            np.concatenate(returns_buf, axis=0), dtype=torch.float32, device=device
+        )
+    last = 0.0
+    idx = np.arange(x.shape[0])
+    for _ in range(8):
         rng.shuffle(idx)
-        last_loss = 0.0
-        for start in range(0, n, 2048):
+        for start in range(0, len(idx), 2048):
             mb = idx[start : start + 2048]
             if len(mb) < 8:
                 continue
             mb_t = torch.tensor(mb, dtype=torch.long, device=device)
-            dist = masked_categorical(
-                actor(o_t.index_select(0, mb_t)), m_t.index_select(0, mb_t)
-            )
-            loss = -dist.log_prob(a_t.index_select(0, mb_t)).mean()
-            opt_actor.zero_grad()
+            pred = critic(x.index_select(0, mb_t)).view(-1)
+            loss = F.mse_loss(pred, y.index_select(0, mb_t).view(-1))
+            opt_critic.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
-            opt_actor.step()
-            last_loss = float(loss.item())
-        if u == 1 or u % max(1, updates // 5) == 0 or u == updates:
-            print(f"[bc] {u}/{updates} ce_loss={last_loss:.4f} n={n}", flush=True)
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
+            opt_critic.step()
+            last = float(loss.item())
+    print(f"[bc] critic_fit mse={last:.3f} n={x.shape[0]}", flush=True)
+    return last
 
 
 def run_training(
@@ -508,25 +635,86 @@ def run_training(
 
     bc_cfg = cfg.get("bc", {})
     if bool(bc_cfg.get("enabled", True)):
-        behavioral_clone_baseline(
+        bc_stats = behavioral_clone_baseline(
             env,
             actor,
-            opt_actor,
             train_ods,
             t_train,
             device,
-            updates=int(bc_cfg.get("updates", 80)),
+            updates=int(bc_cfg.get("updates", 120)),
             episodes_per_update=int(bc_cfg.get("episodes_per_update", 24)),
             seed=seed,
             teacher=str(bc_cfg.get("teacher", "dijkstra")),
+            lr=float(bc_cfg.get("lr", 1e-3)),
+            target_acc=float(bc_cfg.get("target_acc", 0.98)),
+            epochs_per_update=int(bc_cfg.get("epochs_per_update", 4)),
         )
-        bc_val = evaluate_policy(env, actor, val_ods, t_eval, device, n_episodes=12)
+        fit_critic_on_teacher(
+            env,
+            actor,
+            critic,
+            opt_critic,
+            train_ods,
+            t_train,
+            device,
+            episodes=int(bc_cfg.get("critic_fit_episodes", 48)),
+            seed=seed,
+            gamma=gamma,
+            ippo=ippo,
+        )
+        bc_val = evaluate_policy(
+            env, actor, val_ods, t_eval, device, n_episodes=12, greedy=False
+        )
+        bc_val_g = evaluate_policy(
+            env, actor, val_ods, t_eval, device, n_episodes=12, greedy=True
+        )
         print(
-            f"[bc] val fleet_mean={bc_val['fleet_mean']:.1f}s "
-            f"arr={bc_val.get('arrival_rate', 0.0):.2f} "
-            f"cong={bc_val['congestion']:.3f}",
+            f"[bc] done acc={bc_stats['bc_acc']:.4f} ce={bc_stats['bc_ce']:.4f} "
+            f"updates={bc_stats['bc_updates']:.0f} | "
+            f"stoch fleet={bc_val['fleet_mean']:.1f}s arr={bc_val.get('arrival_rate', 0.0):.2f} | "
+            f"greedy fleet={bc_val_g['fleet_mean']:.1f}s arr={bc_val_g.get('arrival_rate', 0.0):.2f}",
             flush=True,
         )
+        min_arr = float(bc_cfg.get("min_arrival_rate", 0.85))
+        if float(bc_val_g.get("arrival_rate", 0.0)) < min_arr:
+            raise RuntimeError(
+                f"BC greedy arrival={bc_val_g.get('arrival_rate', 0.0):.2f} "
+                f"< min_arrival_rate={min_arr} (acc={bc_stats['bc_acc']:.4f}). "
+                "Aborting PPO — fix BC before burning GPU."
+            )
+        # Seed early-stop / best with greedy BC so PPO cannot discard a working clone.
+        arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
+        bc_score = early_stop_score(
+            bc_val_g["fleet_mean"],
+            float(bc_val_g.get("arrival_rate", 0.0)),
+            arr_penalty=arr_pen,
+        )
+        early.step(bc_score, 0)
+        best_state = {
+            "actor": {k: v.detach().cpu().clone() for k, v in actor.state_dict().items()},
+            "critic": {
+                k: v.detach().cpu().clone() for k, v in critic.state_dict().items()
+            },
+            "update": 0,
+            "val": bc_val_g,
+            "score": bc_score,
+        }
+        torch.save(
+            {
+                "actor": actor.state_dict(),
+                "critic": critic.state_dict(),
+                "obs_dim": obs_dim,
+                "global_dim": global_dim,
+                "n_actions": n_actions,
+                "ippo": ippo,
+                "update": 0,
+                "val": bc_val_g,
+                "score": bc_score,
+                "bc": bc_stats,
+            },
+            best_path,
+        )
+        print(f"[bc] seeded best.pt score={bc_score:.1f} (greedy BC)", flush=True)
 
     try:
       with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(

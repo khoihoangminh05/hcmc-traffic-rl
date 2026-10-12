@@ -1,15 +1,17 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2c
+# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2d
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v2c
-# From v2b metrics: train~5k vs greedy-val~9.5k; after u125 val cong exploded.
-# v2c: stochastic eval for ckpt, arrival-aware early-stop score, milder BC, lower LR, higher entropy.
+# data_tag: mappo_micro_v2d
+#
+# Root cause (v1–v2c): BC never cloned Dijkstra (CE~0.87 ≈ acc~0.42) so long
+# OD paths (~36 hops) fail; PPO then trains a random-ish policy. Fixed BC reaches
+# acc≥0.98 / greedy arr≈1.0. v2d: accuracy-gated BC, critic fit, softer PPO.
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v2c
+  data_tag: mappo_micro_v2d
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -59,7 +61,8 @@ model:
   hidden: 256
 
 optim:
-  lr_actor: 1.0e-4
+  # Keep actor LR low so PPO does not erase a good Dijkstra clone.
+  lr_actor: 5.0e-5
   lr_critic: 5.0e-4
   weight_decay: 1.0e-5
   grad_clip_norm: 1.0
@@ -67,8 +70,13 @@ optim:
 bc:
   enabled: true
   teacher: dijkstra
-  updates: 40
+  updates: 120
   episodes_per_update: 24
+  lr: 1.0e-3
+  target_acc: 0.98
+  epochs_per_update: 4
+  critic_fit_episodes: 48
+  min_arrival_rate: 0.85
 
 ppo:
   rollout_episodes: 96
@@ -76,9 +84,10 @@ ppo:
   use_subproc: true
   minibatch_size: 8192
   ppo_epochs: 3
-  clip_eps: 0.15
+  clip_eps: 0.1
   value_coef: 0.5
-  entropy_coef: 0.08
+  # Low entropy: high entropy after BC destroys the clone within ~100 updates.
+  entropy_coef: 0.02
   gamma: 0.99
   gae_lambda: 0.95
   normalize_advantage: true

@@ -22,7 +22,7 @@ Eval: fleet mean/CVaR **và arrival_rate** vs Dijkstra / random / greedy-load ne
 
 | | |
 |--|--|
-| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v2b`) |
+| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v2d`) |
 | Env / train | `mappo_micro_env.py`, `mappo_micro_train.py` |
 | Audit | `python -m marl_agent._audit_v1_failure` |
 | Sol1 | [SOL1_MAPPO.md](./SOL1_MAPPO.md) |
@@ -71,12 +71,20 @@ Early-stop best val ~4038 @ update 50. MAPPO không thắng baseline trên fleet
 - Eval ckpt = **stochastic** (khớp train); log thêm greedy
 - Early-stop score = fleet + 12000*(1−arr)
 - BC ngắn hơn (40), LR thấp hơn, entropy 0.08, clip 0.15
-- **Chưa khẳng định sẽ thắng Dijkstra** — chỉ sửa lệch đã đo được
+- **Không đủ** — BC vẫn undertrained
+
+## Root cause (local probe) → v2d
+
+- Obs progress ≡ Dijkstra next-hop **100%** — không phải thiếu feature
+- BC cũ (PPO lr, ~1 epoch) dừng ở CE~0.87 ≈ **acc~0.42** → ~36-hop path fail chắc
+- BC riêng Adam `lr=1e-3`, multi-epoch → **acc≥0.999**, greedy/stoch arr≈1.0
+- Cold critic sau BC → value loss khổng lồ → PPO đạp mất clone
+- v2d: BC tới `target_acc=0.98`, fit critic, abort nếu greedy arr&lt;0.85, entropy/LR thấp, seed `best.pt` = BC
 
 ## Pass (cập nhật)
 
 - [ ] `MAPPO_MICRO_ENV_TESTS_OK`
-- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v2b`)
+- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v2d`)
 - [ ] `beats_dijkstra_fair`
-- [ ] Ablation `--ippo` (sau baseline v2b)
+- [ ] Ablation `--ippo` (sau baseline v2d)
 - [ ] Limitations trung thực (BPR, metric, greedy arrival yếu)

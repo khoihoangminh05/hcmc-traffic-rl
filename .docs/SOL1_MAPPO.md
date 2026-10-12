@@ -25,7 +25,10 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `mappo_micro_v2b`, `n_envs=24`, `[bc] teacher=dijkstra…`. Eval log có `arr=`. Pass chính: `beats_dijkstra_fair` (không chỉ fleet vs random).
+Boot: `mappo_micro_v2d`, `n_envs=24`, BC Dijkstra tới `target_acc=0.98` rồi fit critic.
+Expect log: `[bc] reached target_acc=0.98` + greedy `arr≥0.85` (không thì abort, không chạy PPO).
+Pass chính: `beats_dijkstra_fair` (không chỉ fleet vs random).
+
 
 Ablation IPPO: thêm `--ippo`.
 
