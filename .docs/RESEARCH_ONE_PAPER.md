@@ -22,7 +22,7 @@ Eval: fleet mean/CVaR **và arrival_rate** vs Dijkstra / random / greedy-load ne
 
 | | |
 |--|--|
-| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v2e`) |
+| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v2f`) |
 | Env / train | `mappo_micro_env.py`, `mappo_micro_train.py` |
 | Audit | `python -m marl_agent._audit_v1_failure` |
 | Sol1 | [SOL1_MAPPO.md](./SOL1_MAPPO.md) |
@@ -81,15 +81,16 @@ Early-stop best val ~4038 @ update 50. MAPPO không thắng baseline trên fleet
 - Cold critic sau BC → value loss khổng lồ → PPO đạp mất clone
 - v2d: BC tới `target_acc=0.98`, fit critic, abort nếu greedy arr&lt;0.85, entropy/LR thấp, seed `best.pt` = BC
 
-## Fair compare (v2e)
+## Fair compare (v2e→v2f)
 
 Trước đây policy eval seed `50_000+ep`, baseline `70_000+ep` → **khác OD/episode**.
-`evaluate_fair_suite`: mỗi ep lock OD từ reset chung; chạy policy_stoch / policy_greedy / dijkstra / random / greedy_load trên **cùng** `(seed, t, ods)`; cùng `env.step` (reward/travel/BPR). `beats_dijkstra_fair` = greedy vs Dijkstra paired.
+`evaluate_fair_suite`: lock OD; cùng `(seed, t, ods)` + `env.step`. `beats_dijkstra_fair` = greedy vs Dijkstra.
+v2f thêm: early-stop/ckpt theo greedy (không trộn stoch); BC paired fleet-ratio gate trước PPO.
 
 ## Pass (cập nhật)
 
 - [ ] `MAPPO_MICRO_ENV_TESTS_OK`
-- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v2e`)
+- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v2f`)
 - [ ] `beats_dijkstra_fair` (paired)
-- [ ] Ablation `--ippo` (sau baseline v2e)
+- [ ] Ablation `--ippo` (sau baseline v2f)
 - [ ] Limitations trung thực (BPR, metric, greedy arrival yếu)

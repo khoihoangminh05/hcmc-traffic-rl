@@ -808,7 +808,33 @@ def run_training(
                 f"< min_arrival_rate={min_arr} (acc={bc_stats['bc_acc']:.4f}). "
                 "Aborting PPO — fix BC before burning GPU."
             )
-        # Seed early-stop / best with greedy BC so PPO cannot discard a working clone.
+        # Paired BC vs Dijkstra on val — same OD/t/seed (catches "acc high but clone bad").
+        n_bc_fair = int(bc_cfg.get("fair_check_episodes", 12))
+        bc_fair = evaluate_fair_suite(
+            env,
+            actor,
+            val_ods,
+            t_eval,
+            device,
+            n_episodes=n_bc_fair,
+            seed_base=EVAL_SEED_BASE,
+            baseline_modes=("dijkstra",),
+        )
+        djk_f = bc_fair["dijkstra"]["fleet_mean"]
+        pol_f = bc_fair["policy_greedy"]["fleet_mean"]
+        ratio = float(pol_f / max(djk_f, 1.0))
+        print(
+            f"[bc] paired val greedy={pol_f:.1f}s djk={djk_f:.1f}s "
+            f"ratio={ratio:.3f} delta={pol_f - djk_f:.1f}",
+            flush=True,
+        )
+        max_ratio = float(bc_cfg.get("max_fleet_ratio_vs_dijkstra", 1.35))
+        if ratio > max_ratio:
+            raise RuntimeError(
+                f"BC paired greedy fleet {pol_f:.1f} > {max_ratio}× Dijkstra "
+                f"{djk_f:.1f}. Aborting PPO — clone not faithful enough."
+            )
+        # Seed early-stop with GREEDY score — must match mid-train score + final fair flag.
         arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
         bc_score = early_stop_score(
             bc_val_g["fleet_mean"],
@@ -837,6 +863,11 @@ def run_training(
                 "val": bc_val_g,
                 "score": bc_score,
                 "bc": bc_stats,
+                "bc_fair": {
+                    "policy_greedy": bc_fair["policy_greedy"],
+                    "dijkstra": bc_fair["dijkstra"],
+                    "ratio": ratio,
+                },
             },
             best_path,
         )
@@ -1126,21 +1157,25 @@ def run_training(
                 )
 
             if update % eval_every == 0 or update == max_updates:
-                # Stochastic eval matches training collection (v2b: greedy val diverged hard)
+                # Score on GREEDY — same decision mode as beats_dijkstra_fair / BC seed.
+                # Stoch logged for train-distribution monitoring only.
+                n_val = 20
                 val = evaluate_policy(
-                    env, actor, val_ods, t_eval, device, n_episodes=20, greedy=False
+                    env, actor, val_ods, t_eval, device, n_episodes=n_val, greedy=False
                 )
                 val_g = evaluate_policy(
-                    env, actor, val_ods, t_eval, device, n_episodes=10, greedy=True
+                    env, actor, val_ods, t_eval, device, n_episodes=n_val, greedy=True
                 )
                 arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
                 score = early_stop_score(
-                    val["fleet_mean"], val.get("arrival_rate", 0.0), arr_penalty=arr_pen
+                    val_g["fleet_mean"],
+                    val_g.get("arrival_rate", 0.0),
+                    arr_penalty=arr_pen,
                 )
                 print(
-                    f"[eval]  stoch fleet={val['fleet_mean']:.1f}s arr={val.get('arrival_rate', 0.0):.2f} "
-                    f"cong={val['congestion']:.3f} | greedy fleet={val_g['fleet_mean']:.1f}s "
-                    f"arr={val_g.get('arrival_rate', 0.0):.2f} | score={score:.1f} "
+                    f"[eval]  greedy fleet={val_g['fleet_mean']:.1f}s arr={val_g.get('arrival_rate', 0.0):.2f} "
+                    f"cong={val_g['congestion']:.3f} | stoch fleet={val['fleet_mean']:.1f}s "
+                    f"arr={val.get('arrival_rate', 0.0):.2f} | score={score:.1f} "
                     f"best={early.best_metric if early.best_update >= 0 else score:.1f}",
                     flush=True,
                 )
@@ -1149,8 +1184,11 @@ def run_training(
                         {
                             "type": "eval",
                             "update": update,
-                            **val,
+                            **val_g,
                             "score": score,
+                            "stoch_fleet_mean": val["fleet_mean"],
+                            "stoch_arrival_rate": val.get("arrival_rate", 0.0),
+                            "stoch_congestion": val["congestion"],
                             "greedy_fleet_mean": val_g["fleet_mean"],
                             "greedy_arrival_rate": val_g.get("arrival_rate", 0.0),
                             "greedy_congestion": val_g["congestion"],
@@ -1168,7 +1206,7 @@ def run_training(
                                 k: v.detach().cpu().clone() for k, v in critic.state_dict().items()
                             },
                             "update": update,
-                            "val": val,
+                            "val": val_g,
                             "score": score,
                         }
                         torch.save(
@@ -1180,7 +1218,7 @@ def run_training(
                                 "n_actions": n_actions,
                                 "ippo": ippo,
                                 "update": update,
-                                "val": val,
+                                "val": val_g,
                                 "score": score,
                                 "cfg_tag": data_tag,
                             },
@@ -1188,7 +1226,8 @@ def run_training(
                         )
                         print(
                             f"  [ckpt] best.pt score={score:.1f} "
-                            f"fleet={val['fleet_mean']:.1f}s arr={val.get('arrival_rate', 0.0):.2f}",
+                            f"greedy_fleet={val_g['fleet_mean']:.1f}s "
+                            f"arr={val_g.get('arrival_rate', 0.0):.2f}",
                             flush=True,
                         )
                     if st.stopped:

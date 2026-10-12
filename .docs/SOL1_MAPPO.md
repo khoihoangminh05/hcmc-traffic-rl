@@ -25,10 +25,10 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `mappo_micro_v2e`, `n_envs=24`, BC Dijkstra tới `target_acc=0.98` rồi fit critic.
-Expect log: `[bc] reached target_acc=0.98` + greedy `arr≥0.85` (không thì abort).
-Test so sánh: `[fair] paired eval` — cùng OD/t/seed/step/reward; chỉ khác action rule.
-Pass chính: `beats_dijkstra_fair` = greedy policy vs Dijkstra trên cùng episode (không so seed lệch).
+Boot: `mappo_micro_v2f`, `n_envs=24`, BC Dijkstra tới `target_acc=0.98` rồi fit critic.
+Expect: `[bc] reached target_acc=0.98`, greedy `arr≥0.85`, `[bc] paired val … ratio≤1.35`.
+Early-stop/ckpt theo **greedy** (khớp fair flag). Test: `[fair] paired eval`.
+Pass: `beats_dijkstra_fair` = greedy vs Dijkstra cùng episode.
 
 
 Ablation IPPO: thêm `--ippo`.
