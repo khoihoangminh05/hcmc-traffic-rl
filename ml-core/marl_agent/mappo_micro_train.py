@@ -1424,6 +1424,12 @@ def main() -> None:
         cfg.setdefault("bc", {})["enabled"] = True
         cfg.setdefault("bc", {})["updates"] = 2
         cfg.setdefault("bc", {})["episodes_per_update"] = 2
+        # Short BC cannot hit production gates — smoke only checks plumbing.
+        cfg.setdefault("bc", {})["target_acc"] = 0.0
+        cfg.setdefault("bc", {})["min_arrival_rate"] = 0.0
+        cfg.setdefault("bc", {})["max_fleet_ratio_vs_dijkstra"] = 99.0
+        cfg.setdefault("bc", {})["fair_check_episodes"] = 2
+        cfg.setdefault("bc", {})["critic_fit_episodes"] = 2
         cfg.setdefault("env", {})["compact_dim"] = 160
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"

@@ -10,12 +10,18 @@ Fixes vs macro K-path:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 import numpy as np
+
+
+def _stable_u32(token: str) -> int:
+    """Process-stable hash (Python hash() is salted per process → breaks subproc obs)."""
+    return int(hashlib.md5(token.encode("utf-8")).hexdigest()[:8], 16)
 
 
 def _capacity_for(data: dict[str, Any]) -> float:
@@ -358,7 +364,7 @@ class MicroAlleyEnv:
 
     @staticmethod
     def _hash_embed(token: str, dim: int) -> np.ndarray:
-        h = abs(hash(token)) % (2**31)
+        h = _stable_u32(str(token)) % (2**31)
         idx = np.arange(dim, dtype=np.float32)
         return np.sin((h % 997) * 0.1 + idx * 0.37).astype(np.float32)
 
@@ -500,8 +506,8 @@ class MicroAlleyEnv:
             anchor = pool[int(self.rng.integers(0, len(pool)))]
             scored = sorted(
                 pool,
-                key=lambda od: abs(hash(od[0]) - hash(anchor[0])) % 997
-                + abs(hash(od[1]) - hash(anchor[1])) % 997,
+                key=lambda od: abs(_stable_u32(od[0]) - _stable_u32(anchor[0])) % 997
+                + abs(_stable_u32(od[1]) - _stable_u32(anchor[1])) % 997,
             )
             picks = scored[: self.n_agents]
             while len(picks) < self.n_agents:
@@ -707,17 +713,18 @@ class MicroAlleyEnv:
             if not neigh:
                 acts[a] = 0
                 continue
+            # Only actionable neighbors (same truncation as mask / greedy_load).
+            cand = neigh[: self.max_degree]
             try:
-                # Prefer next hop from precomputed SP tree via remain distances
-                best_n, best_d = neigh[0], 1e18
-                for nxt in neigh:
+                best_n, best_d = cand[0], 1e18
+                for nxt in cand:
                     d = self._remain_free(nxt, dest)
                     if d < best_d:
                         best_d, best_n = d, nxt
                 nxt = best_n
             except (nx.NetworkXNoPath, nx.NodeNotFound):
-                nxt = neigh[0]
-            acts[a] = int(neigh.index(nxt)) if nxt in neigh else 0
+                nxt = cand[0]
+            acts[a] = int(cand.index(nxt)) if nxt in cand else 0
         return acts
 
     def baseline_random_actions(self) -> dict[str, int]:

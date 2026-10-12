@@ -9,7 +9,7 @@ export PATH="/mnt/data8tb/minhkhoi/tools-env/bin:$PATH"
 cd ~/hcmc-traffic-rl && git pull && cd ml-core
 python -m marl_agent.test_mappo_micro_env
 
-# v2f: BC gate + paired fair + greedy early-stop. Boot: mappo_micro_v2f
+# v2g: + stable md5 node embeds (subproc-safe). Boot: mappo_micro_v2g
 # Expect [bc] target_acc=0.98, greedy arr≥0.85, paired fleet ≤1.35× Dijkstra.
 # Expect [fair] paired eval … beats_dijkstra_fair=…
 CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
