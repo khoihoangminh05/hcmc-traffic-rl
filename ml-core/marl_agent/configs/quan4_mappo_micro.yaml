@@ -7,6 +7,7 @@
 #   - train-batch BC acc lied; need holdout + closed-loop agree
 #   - ratio gate 1.35 too loose; need ≤1.10 + arr≥0.98
 #   - PPO wiped clone before critic ready → freeze actor N updates
+#   - spawn 24 envs BEFORE BC → RAM + EOFError on BC abort; spawn after BC
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda

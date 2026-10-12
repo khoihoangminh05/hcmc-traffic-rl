@@ -810,27 +810,10 @@ def run_training(
             "density_catalog": density_catalog or None,
         }
 
+    # Defer heavy subproc spawn until AFTER BC gates — idle workers during BC
+    # held ~GBs RAM and printed EOFError storms when BC aborted (v2h incident).
     vec: SubprocMicroEnvs | None = None
     local_envs: list[MicroAlleyEnv] = []
-    if use_subproc:
-        print(
-            f"[mappo_micro] spawning {n_envs} subproc envs (CPU parallel)…",
-            flush=True,
-        )
-        t_spawn = time.time()
-        vec = SubprocMicroEnvs([_env_kwargs(i) for i in range(n_envs)])
-        vec.set_od_pool(train_ods)
-        print(
-            f"[mappo_micro] subproc ready in {time.time() - t_spawn:.1f}s",
-            flush=True,
-        )
-    else:
-        print(f"[mappo_micro] in-process envs={n_envs} (no subproc)", flush=True)
-        local_envs = [env] + [MicroAlleyEnv(**_env_kwargs(i)) for i in range(1, n_envs)]
-        for e in local_envs:
-            e.set_od_pool(train_ods)
-            if e is not env:
-                e.warmup_peak_caches()
 
     t_train = [float(x) for x in data_cfg.get("t_train", [28800])]
     t_eval = [float(x) for x in data_cfg.get("t_eval", [28800])]
@@ -1012,6 +995,29 @@ def run_training(
         )
 
     try:
+      # Spawn parallel envs only after BC passed — PPO collect needs them.
+      if use_subproc:
+          print(
+              f"[mappo_micro] spawning {n_envs} subproc envs (CPU parallel)…",
+              flush=True,
+          )
+          t_spawn = time.time()
+          vec = SubprocMicroEnvs([_env_kwargs(i) for i in range(n_envs)])
+          vec.set_od_pool(train_ods)
+          print(
+              f"[mappo_micro] subproc ready in {time.time() - t_spawn:.1f}s",
+              flush=True,
+          )
+      else:
+          print(f"[mappo_micro] in-process envs={n_envs} (no subproc)", flush=True)
+          local_envs = [env] + [
+              MicroAlleyEnv(**_env_kwargs(i)) for i in range(1, n_envs)
+          ]
+          for e in local_envs:
+              e.set_od_pool(train_ods)
+              if e is not env:
+                  e.warmup_peak_caches()
+
       with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(
         "w", encoding="utf-8", newline=""
       ) as cf:
