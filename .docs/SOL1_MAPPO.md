@@ -25,11 +25,10 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `mappo_micro_v2g`, `n_envs=24`, BC Dijkstra tới `target_acc=0.98` rồi fit critic.
-Obs: md5-stable node embeds (không dùng `hash()` — lệch giữa main vs subproc).
-Expect: `[bc] reached target_acc=0.98`, greedy `arr≥0.85`, `[bc] paired val … ratio≤1.35`.
-Early-stop/ckpt theo **greedy** (khớp fair flag). Test: `[fair] paired eval`.
-Pass: `beats_dijkstra_fair` = greedy vs Dijkstra cùng episode.
+Boot: `mappo_micro_v2h`. Bắt buộc thấy `[preflight] spawn embed parity OK`.
+BC abort trừ khi: holdout_acc≥0.995, paired greedy arr≥0.98, ratio≤1.10,
+closed_loop_agree≥0.95. PPO: freeze actor 75 updates (chỉ train critic).
+Pass: `beats_dijkstra_fair` (greedy paired). `best_u=0` + greedy thua Djk = fail BC.
 
 
 Ablation IPPO: thêm `--ippo`.

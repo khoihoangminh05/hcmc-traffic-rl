@@ -9,9 +9,11 @@ export PATH="/mnt/data8tb/minhkhoi/tools-env/bin:$PATH"
 cd ~/hcmc-traffic-rl && git pull && cd ml-core
 python -m marl_agent.test_mappo_micro_env
 
-# v2g: + stable md5 node embeds (subproc-safe). Boot: mappo_micro_v2g
-# Expect [bc] target_acc=0.98, greedy arr≥0.85, paired fleet ≤1.35× Dijkstra.
-# Expect [fair] paired eval … beats_dijkstra_fair=…
+# v2h: holdout BC + closed-loop agree + freeze actor + tight gates.
+# Boot: mappo_micro_v2h
+# Expect [preflight] spawn embed parity OK
+# Expect [bc] holdout_acc≥0.995, paired arr≥0.98, ratio≤1.10, agree≥0.95
+# Expect [fair] beats_dijkstra_fair (greedy paired)
 CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 ```

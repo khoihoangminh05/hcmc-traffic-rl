@@ -1,17 +1,19 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2g
+# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2h
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v2g
+# data_tag: mappo_micro_v2h
 #
-# v2d–v2f: BC gates, fair paired test, greedy early-stop.
-# v2g: stable node embeddings (md5) — Python hash() differs across spawn
-#      workers so BC/eval obs ≠ PPO subproc obs.
+# Lessons from v2f (best_u=0, greedy 5869/arr0.85 vs Djk 4474/arr1.0):
+#   - hash() broke subproc obs (fixed v2g md5)
+#   - train-batch BC acc lied; need holdout + closed-loop agree
+#   - ratio gate 1.35 too loose; need ≤1.10 + arr≥0.98
+#   - PPO wiped clone before critic ready → freeze actor N updates
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v2g
+  data_tag: mappo_micro_v2h
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -61,8 +63,7 @@ model:
   hidden: 256
 
 optim:
-  # Keep actor LR low so PPO does not erase a good Dijkstra clone.
-  lr_actor: 5.0e-5
+  lr_actor: 3.0e-5
   lr_critic: 5.0e-4
   weight_decay: 1.0e-5
   grad_clip_norm: 1.0
@@ -70,15 +71,19 @@ optim:
 bc:
   enabled: true
   teacher: dijkstra
-  updates: 120
-  episodes_per_update: 24
+  updates: 200
+  episodes_per_update: 32
+  holdout_episodes: 8
   lr: 1.0e-3
-  target_acc: 0.98
-  epochs_per_update: 4
-  critic_fit_episodes: 48
-  min_arrival_rate: 0.85
-  fair_check_episodes: 12
-  max_fleet_ratio_vs_dijkstra: 1.35
+  target_acc: 0.995
+  epochs_per_update: 6
+  critic_fit_episodes: 64
+  fair_check_episodes: 20
+  min_arrival_rate: 0.98
+  max_fleet_ratio_vs_dijkstra: 1.10
+  min_closed_loop_agree: 0.95
+  # Critic-only PPO for first N updates (protect Dijkstra clone).
+  freeze_actor_updates: 75
 
 ppo:
   rollout_episodes: 96
@@ -88,8 +93,7 @@ ppo:
   ppo_epochs: 3
   clip_eps: 0.1
   value_coef: 0.5
-  # Low entropy: high entropy after BC destroys the clone within ~100 updates.
-  entropy_coef: 0.02
+  entropy_coef: 0.01
   gamma: 0.99
   gae_lambda: 0.95
   normalize_advantage: true

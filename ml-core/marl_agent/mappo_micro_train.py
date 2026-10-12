@@ -346,6 +346,119 @@ def compute_gae(
     return adv, rets
 
 
+def _collect_teacher_batch(
+    env: MicroAlleyEnv,
+    t_train: list[float],
+    *,
+    episodes: int,
+    seed: int,
+    teacher: str,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    obs_rows: list[np.ndarray] = []
+    mask_rows: list[np.ndarray] = []
+    act_rows: list[int] = []
+    for ep in range(episodes):
+        t = float(rng.choice(t_train))
+        obs, _, info = env.reset(seed=seed + ep, options={"t": t})
+        for _ in range(env.max_steps):
+            if teacher == "dijkstra":
+                teach = env.baseline_dijkstra_actions()
+            else:
+                teach = env.baseline_greedy_load_actions()
+            for i, a in enumerate(env.agents):
+                if env._done[i]:
+                    continue
+                obs_rows.append(obs[a])
+                mask_rows.append(info["masks"][a])
+                act_rows.append(int(teach[a]))
+            obs, _, _, _, _, info = env.step(teach)
+            if info["all_done"]:
+                break
+    if not act_rows:
+        return (
+            np.zeros((0, 1), np.float32),
+            np.zeros((0, 1), np.float32),
+            np.zeros((0,), np.int64),
+        )
+    return (
+        np.stack(obs_rows).astype(np.float32),
+        np.stack(mask_rows).astype(np.float32),
+        np.asarray(act_rows, dtype=np.int64),
+    )
+
+
+@torch.no_grad()
+def measure_closed_loop_teacher_agree(
+    env: MicroAlleyEnv,
+    actor: SharedActor,
+    ods_pool: list[tuple[str, str]],
+    t_list: list[float],
+    device: torch.device,
+    *,
+    n_episodes: int,
+    seed_base: int,
+    teacher: str = "dijkstra",
+) -> float:
+    """Fraction of greedy actions matching teacher under *policy* closed-loop states.
+
+    Train-batch CE can look great while argmax drifts off the teacher trajectory;
+    v2f greedy arr=0.85 was exactly this failure mode.
+    """
+    actor.eval()
+    env.set_od_pool(ods_pool)
+    agree = 0
+    total = 0
+    for ep in range(n_episodes):
+        t = float(t_list[ep % len(t_list)])
+        obs, _, info = env.reset(seed=seed_base + ep, options={"t": t})
+        for _ in range(env.max_steps):
+            if teacher == "dijkstra":
+                teach = env.baseline_dijkstra_actions()
+            else:
+                teach = env.baseline_greedy_load_actions()
+            acts, _, _, _, _ = _batched_actions(
+                actor, env, obs, info, device, greedy=True
+            )
+            for i, a in enumerate(env.agents):
+                if env._done[i]:
+                    continue
+                agree += int(int(acts[a]) == int(teach[a]))
+                total += 1
+            obs, _, _, _, _, info = env.step(acts)
+            if info["all_done"]:
+                break
+    actor.train()
+    return float(agree / max(total, 1))
+
+
+_EMBED_PARITY_TOKEN = "__parity_node_xyz__"
+
+
+def _embed_parity_worker(q: Any) -> None:
+    """Top-level for spawn pickling (Windows)."""
+    q.put(MicroAlleyEnv._hash_embed(_EMBED_PARITY_TOKEN, 8).tolist())
+
+
+def assert_embed_parity_across_spawn() -> None:
+    """Fail fast if node embeds differ under spawn (the v2f GPU-waster)."""
+    import multiprocessing as mp
+
+    parent = MicroAlleyEnv._hash_embed(_EMBED_PARITY_TOKEN, 8).tolist()
+    ctx = mp.get_context("spawn")
+    q: Any = ctx.Queue()
+    p = ctx.Process(target=_embed_parity_worker, args=(q,))
+    p.start()
+    child = q.get(timeout=120)
+    p.join(timeout=120)
+    if parent != child:
+        raise RuntimeError(
+            "Node embeds differ across spawn workers — refusing to train. "
+            "Use md5-stable _hash_embed (v2g+)."
+        )
+    print("[preflight] spawn embed parity OK", flush=True)
+
+
 def behavioral_clone_baseline(
     env: MicroAlleyEnv,
     actor: SharedActor,
@@ -358,57 +471,41 @@ def behavioral_clone_baseline(
     seed: int,
     teacher: str = "dijkstra",
     lr: float = 1e-3,
-    target_acc: float = 0.98,
-    epochs_per_update: int = 4,
+    target_acc: float = 0.995,
+    epochs_per_update: int = 6,
+    holdout_episodes: int = 8,
 ) -> dict[str, float]:
-    """Clone teacher until action accuracy is high enough for long OD paths.
-
-    Evidence: obs progress feature matches Dijkstra next-hop 100%, but old BC
-    (PPO lr, CE~0.87 ~ acc~0.42) cannot follow ~36-hop routes. Need acc >= ~0.98.
-    """
+    """Clone teacher; gate on *holdout* next-hop accuracy (not train-batch CE)."""
     if updates <= 0:
-        return {"bc_updates": 0.0, "bc_acc": 0.0, "bc_ce": 0.0}
+        return {"bc_updates": 0.0, "bc_acc": 0.0, "bc_ce": 0.0, "bc_train_acc": 0.0}
     if teacher not in ("dijkstra", "greedy_load"):
         raise ValueError(teacher)
     opt = torch.optim.Adam(actor.parameters(), lr=float(lr))
     print(
         f"[bc] teacher={teacher} max_updates={updates} eps/upd={episodes_per_update} "
-        f"lr={lr} target_acc={target_acc} epochs={epochs_per_update}",
+        f"lr={lr} target_holdout_acc={target_acc} epochs={epochs_per_update} "
+        f"holdout_eps={holdout_episodes}",
         flush=True,
     )
     rng = np.random.default_rng(seed + 7)
     env.set_od_pool(train_ods)
-    last_acc, last_ce = 0.0, 9.0
+    last_acc, last_ce, last_train_acc = 0.0, 9.0, 0.0
     used = 0
     for u in range(1, updates + 1):
         used = u
-        obs_rows: list[np.ndarray] = []
-        mask_rows: list[np.ndarray] = []
-        act_rows: list[int] = []
-        for ep in range(episodes_per_update):
-            t = float(rng.choice(t_train))
-            obs, _, info = env.reset(
-                seed=seed + 9_000_000 + u * 1000 + ep, options={"t": t}
-            )
-            for _ in range(env.max_steps):
-                if teacher == "dijkstra":
-                    teach = env.baseline_dijkstra_actions()
-                else:
-                    teach = env.baseline_greedy_load_actions()
-                for i, a in enumerate(env.agents):
-                    if env._done[i]:
-                        continue
-                    obs_rows.append(obs[a])
-                    mask_rows.append(info["masks"][a])
-                    act_rows.append(int(teach[a]))
-                obs, _, _, _, _, info = env.step(teach)
-                if info["all_done"]:
-                    break
-        if len(act_rows) < 16:
+        O, M, A = _collect_teacher_batch(
+            env,
+            t_train,
+            episodes=episodes_per_update,
+            seed=seed + 9_000_000 + u * 10_000,
+            teacher=teacher,
+            rng=rng,
+        )
+        if A.size < 16:
             continue
-        o_t = torch.tensor(np.stack(obs_rows), dtype=torch.float32, device=device)
-        m_t = torch.tensor(np.stack(mask_rows), dtype=torch.float32, device=device)
-        a_t = torch.tensor(act_rows, dtype=torch.long, device=device)
+        o_t = torch.tensor(O, dtype=torch.float32, device=device)
+        m_t = torch.tensor(M, dtype=torch.float32, device=device)
+        a_t = torch.tensor(A, dtype=torch.long, device=device)
         n = int(o_t.shape[0])
         idx = np.arange(n)
         for _ep in range(max(1, int(epochs_per_update))):
@@ -429,8 +526,25 @@ def behavioral_clone_baseline(
         with torch.no_grad():
             dist = masked_categorical(actor(o_t), m_t)
             pred = torch.argmax(dist.logits, dim=-1)
-            last_acc = float((pred == a_t).float().mean().item())
-            last_ce = float((-dist.log_prob(a_t)).mean().item())
+            last_train_acc = float((pred == a_t).float().mean().item())
+        # Holdout batch — never used for the SGD steps above.
+        Oh, Mh, Ah = _collect_teacher_batch(
+            env,
+            t_train,
+            episodes=max(2, int(holdout_episodes)),
+            seed=seed + 7_000_000 + u * 10_000,
+            teacher=teacher,
+            rng=rng,
+        )
+        if Ah.size >= 8:
+            with torch.no_grad():
+                oh = torch.tensor(Oh, dtype=torch.float32, device=device)
+                mh = torch.tensor(Mh, dtype=torch.float32, device=device)
+                ah = torch.tensor(Ah, dtype=torch.long, device=device)
+                dist_h = masked_categorical(actor(oh), mh)
+                pred_h = torch.argmax(dist_h.logits, dim=-1)
+                last_acc = float((pred_h == ah).float().mean().item())
+                last_ce = float((-dist_h.log_prob(ah)).mean().item())
         if (
             u == 1
             or u % max(1, updates // 10) == 0
@@ -438,22 +552,26 @@ def behavioral_clone_baseline(
             or last_acc >= target_acc
         ):
             print(
-                f"[bc] {u}/{updates} acc={last_acc:.4f} ce={last_ce:.4f} n={n}",
+                f"[bc] {u}/{updates} holdout_acc={last_acc:.4f} "
+                f"train_acc={last_train_acc:.4f} ce={last_ce:.4f} n={n}",
                 flush=True,
             )
         if last_acc >= target_acc:
-            print(f"[bc] reached target_acc={target_acc} at update {u}", flush=True)
+            print(
+                f"[bc] reached target_holdout_acc={target_acc} at update {u}",
+                flush=True,
+            )
             break
     if last_acc < target_acc:
         print(
-            f"[bc] WARNING acc={last_acc:.4f} below target={target_acc} "
-            f"— long-horizon clone may fail",
+            f"[bc] WARNING holdout_acc={last_acc:.4f} below target={target_acc}",
             flush=True,
         )
     return {
         "bc_updates": float(used),
         "bc_acc": float(last_acc),
         "bc_ce": float(last_ce),
+        "bc_train_acc": float(last_train_acc),
     }
 
 
@@ -508,30 +626,23 @@ def fit_critic_on_teacher(
             R[ti] = running
         if ippo:
             for ti in range(T):
+                # states_ep[ti]: [A, obs] — flatten like PPO collect
                 state_buf.append(states_ep[ti])
                 returns_buf.append(R[ti])
         else:
             for ti in range(T):
-                state_buf.append(states_ep[ti])
-                returns_buf.append(
-                    np.array([float(np.mean(R[ti]))], dtype=np.float32)
-                )
+                # Match PPO: repeat global state per agent, target = per-agent return.
+                g = states_ep[ti]
+                state_buf.append(np.repeat(g[None, :], R.shape[1], axis=0))
+                returns_buf.append(R[ti])
     if not returns_buf:
         return 0.0
-    if ippo:
-        x = torch.tensor(
-            np.concatenate(state_buf, axis=0), dtype=torch.float32, device=device
-        )
-        y = torch.tensor(
-            np.concatenate(returns_buf, axis=0), dtype=torch.float32, device=device
-        )
-    else:
-        x = torch.tensor(
-            np.stack(state_buf, axis=0), dtype=torch.float32, device=device
-        )
-        y = torch.tensor(
-            np.concatenate(returns_buf, axis=0), dtype=torch.float32, device=device
-        )
+    x = torch.tensor(
+        np.concatenate(state_buf, axis=0), dtype=torch.float32, device=device
+    )
+    y = torch.tensor(
+        np.concatenate(returns_buf, axis=0), dtype=torch.float32, device=device
+    )
     last = 0.0
     idx = np.arange(x.shape[0])
     for _ in range(8):
@@ -622,9 +733,9 @@ def run_training(
         graph_path=graph,
         seed=seed,
         n_agents=n_agents,
-        max_degree=int(env_cfg.get("max_degree", 6)),
-        max_steps=int(env_cfg.get("max_steps", 64)),
-        compact_dim=int(env_cfg.get("compact_dim", 128)),
+        max_degree=int(env_cfg.get("max_degree", 8)),
+        max_steps=int(env_cfg.get("max_steps", 200)),
+        compact_dim=int(env_cfg.get("compact_dim", 160)),
         bpr_alpha=float(env_cfg.get("bpr_alpha", 0.15)),
         bpr_beta=float(env_cfg.get("bpr_beta", 4.0)),
         bpr_load_cap=float(env_cfg.get("bpr_load_cap", 12.0)),
@@ -689,8 +800,8 @@ def run_training(
             "seed": seed + 17 * (i + 1),
             "n_agents": n_agents,
             "max_degree": int(env_cfg.get("max_degree", 8)),
-            "max_steps": int(env_cfg.get("max_steps", 120)),
-            "compact_dim": int(env_cfg.get("compact_dim", 128)),
+            "max_steps": int(env_cfg.get("max_steps", 200)),
+            "compact_dim": int(env_cfg.get("compact_dim", 160)),
             "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
             "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
             "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
@@ -759,7 +870,12 @@ def run_training(
     best_state: dict[str, Any] | None = None
     last_update = 0
 
+    # Refuse to train if spawn workers would see different node embeds than main.
+    if use_subproc:
+        assert_embed_parity_across_spawn()
+
     bc_cfg = cfg.get("bc", {})
+    freeze_actor_updates = int(bc_cfg.get("freeze_actor_updates", 0))
     if bool(bc_cfg.get("enabled", True)):
         bc_stats = behavioral_clone_baseline(
             env,
@@ -767,13 +883,14 @@ def run_training(
             train_ods,
             t_train,
             device,
-            updates=int(bc_cfg.get("updates", 120)),
-            episodes_per_update=int(bc_cfg.get("episodes_per_update", 24)),
+            updates=int(bc_cfg.get("updates", 200)),
+            episodes_per_update=int(bc_cfg.get("episodes_per_update", 32)),
             seed=seed,
             teacher=str(bc_cfg.get("teacher", "dijkstra")),
             lr=float(bc_cfg.get("lr", 1e-3)),
-            target_acc=float(bc_cfg.get("target_acc", 0.98)),
-            epochs_per_update=int(bc_cfg.get("epochs_per_update", 4)),
+            target_acc=float(bc_cfg.get("target_acc", 0.995)),
+            epochs_per_update=int(bc_cfg.get("epochs_per_update", 6)),
+            holdout_episodes=int(bc_cfg.get("holdout_episodes", 8)),
         )
         fit_critic_on_teacher(
             env,
@@ -783,33 +900,12 @@ def run_training(
             train_ods,
             t_train,
             device,
-            episodes=int(bc_cfg.get("critic_fit_episodes", 48)),
+            episodes=int(bc_cfg.get("critic_fit_episodes", 64)),
             seed=seed,
             gamma=gamma,
             ippo=ippo,
         )
-        bc_val = evaluate_policy(
-            env, actor, val_ods, t_eval, device, n_episodes=12, greedy=False
-        )
-        bc_val_g = evaluate_policy(
-            env, actor, val_ods, t_eval, device, n_episodes=12, greedy=True
-        )
-        print(
-            f"[bc] done acc={bc_stats['bc_acc']:.4f} ce={bc_stats['bc_ce']:.4f} "
-            f"updates={bc_stats['bc_updates']:.0f} | "
-            f"stoch fleet={bc_val['fleet_mean']:.1f}s arr={bc_val.get('arrival_rate', 0.0):.2f} | "
-            f"greedy fleet={bc_val_g['fleet_mean']:.1f}s arr={bc_val_g.get('arrival_rate', 0.0):.2f}",
-            flush=True,
-        )
-        min_arr = float(bc_cfg.get("min_arrival_rate", 0.85))
-        if float(bc_val_g.get("arrival_rate", 0.0)) < min_arr:
-            raise RuntimeError(
-                f"BC greedy arrival={bc_val_g.get('arrival_rate', 0.0):.2f} "
-                f"< min_arrival_rate={min_arr} (acc={bc_stats['bc_acc']:.4f}). "
-                "Aborting PPO — fix BC before burning GPU."
-            )
-        # Paired BC vs Dijkstra on val — same OD/t/seed (catches "acc high but clone bad").
-        n_bc_fair = int(bc_cfg.get("fair_check_episodes", 12))
+        n_bc_fair = int(bc_cfg.get("fair_check_episodes", 20))
         bc_fair = evaluate_fair_suite(
             env,
             actor,
@@ -820,27 +916,63 @@ def run_training(
             seed_base=EVAL_SEED_BASE,
             baseline_modes=("dijkstra",),
         )
-        djk_f = bc_fair["dijkstra"]["fleet_mean"]
-        pol_f = bc_fair["policy_greedy"]["fleet_mean"]
+        bc_val_g = bc_fair["policy_greedy"]
+        bc_val = bc_fair["policy_stoch"]
+        djk_f = float(bc_fair["dijkstra"]["fleet_mean"])
+        pol_f = float(bc_val_g["fleet_mean"])
+        pol_arr = float(bc_val_g.get("arrival_rate", 0.0))
+        djk_arr = float(bc_fair["dijkstra"].get("arrival_rate", 0.0))
         ratio = float(pol_f / max(djk_f, 1.0))
+        agree = measure_closed_loop_teacher_agree(
+            env,
+            actor,
+            val_ods,
+            t_eval,
+            device,
+            n_episodes=n_bc_fair,
+            seed_base=EVAL_SEED_BASE + 100_000,
+            teacher=str(bc_cfg.get("teacher", "dijkstra")),
+        )
         print(
-            f"[bc] paired val greedy={pol_f:.1f}s djk={djk_f:.1f}s "
-            f"ratio={ratio:.3f} delta={pol_f - djk_f:.1f}",
+            f"[bc] done holdout_acc={bc_stats['bc_acc']:.4f} "
+            f"train_acc={bc_stats.get('bc_train_acc', 0):.4f} "
+            f"updates={bc_stats['bc_updates']:.0f} | "
+            f"paired greedy fleet={pol_f:.1f}s arr={pol_arr:.3f} | "
+            f"djk fleet={djk_f:.1f}s arr={djk_arr:.3f} | "
+            f"ratio={ratio:.3f} closed_loop_agree={agree:.4f}",
             flush=True,
         )
-        max_ratio = float(bc_cfg.get("max_fleet_ratio_vs_dijkstra", 1.35))
+        min_arr = float(bc_cfg.get("min_arrival_rate", 0.98))
+        max_ratio = float(bc_cfg.get("max_fleet_ratio_vs_dijkstra", 1.10))
+        min_agree = float(bc_cfg.get("min_closed_loop_agree", 0.95))
+        min_holdout = float(bc_cfg.get("target_acc", 0.995))
+        if float(bc_stats["bc_acc"]) < min_holdout:
+            raise RuntimeError(
+                f"BC holdout_acc={bc_stats['bc_acc']:.4f} < {min_holdout}. "
+                "Aborting PPO."
+            )
+        if pol_arr < min_arr:
+            raise RuntimeError(
+                f"BC paired greedy arrival={pol_arr:.3f} < {min_arr}. Aborting PPO."
+            )
+        if pol_arr + 1e-6 < djk_arr - 0.02:
+            raise RuntimeError(
+                f"BC paired greedy arr={pol_arr:.3f} << Dijkstra arr={djk_arr:.3f}. "
+                "Aborting PPO."
+            )
         if ratio > max_ratio:
             raise RuntimeError(
                 f"BC paired greedy fleet {pol_f:.1f} > {max_ratio}× Dijkstra "
-                f"{djk_f:.1f}. Aborting PPO — clone not faithful enough."
+                f"{djk_f:.1f} (ratio={ratio:.3f}). Aborting PPO."
             )
-        # Seed early-stop with GREEDY score — must match mid-train score + final fair flag.
+        if agree < min_agree:
+            raise RuntimeError(
+                f"BC closed-loop teacher agree={agree:.4f} < {min_agree}. "
+                "Aborting PPO — argmax drifts off Dijkstra trajectory."
+            )
+        # Seed early-stop from the *same* paired greedy metrics used for the gate.
         arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
-        bc_score = early_stop_score(
-            bc_val_g["fleet_mean"],
-            float(bc_val_g.get("arrival_rate", 0.0)),
-            arr_penalty=arr_pen,
-        )
+        bc_score = early_stop_score(pol_f, pol_arr, arr_penalty=arr_pen)
         early.step(bc_score, 0)
         best_state = {
             "actor": {k: v.detach().cpu().clone() for k, v in actor.state_dict().items()},
@@ -865,13 +997,19 @@ def run_training(
                 "bc": bc_stats,
                 "bc_fair": {
                     "policy_greedy": bc_fair["policy_greedy"],
+                    "policy_stoch": bc_fair["policy_stoch"],
                     "dijkstra": bc_fair["dijkstra"],
                     "ratio": ratio,
+                    "closed_loop_agree": agree,
                 },
             },
             best_path,
         )
-        print(f"[bc] seeded best.pt score={bc_score:.1f} (greedy BC)", flush=True)
+        print(
+            f"[bc] seeded best.pt score={bc_score:.1f} "
+            f"(paired greedy) freeze_actor_updates={freeze_actor_updates}",
+            flush=True,
+        )
 
     try:
       with jsonl_path.open("w", encoding="utf-8") as jf, csv_path.open(
@@ -1119,14 +1257,26 @@ def run_training(
                     policy_loss = -torch.min(surr1, surr2).mean()
                     values = critic(b_g if not ippo else b_obs).view(-1)
                     value_loss = F.mse_loss(values, b_ret.view(-1))
-                    loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+                    # Freeze actor for first N updates so critic catches up on BC rollouts
+                    # without wiping the Dijkstra clone (v2f: best stayed @0 after PPO noise).
+                    freeze_actor = update <= freeze_actor_updates
+                    if freeze_actor:
+                        loss = value_coef * value_loss
+                    else:
+                        loss = (
+                            policy_loss
+                            + value_coef * value_loss
+                            - entropy_coef * entropy
+                        )
                     opt_actor.zero_grad()
                     opt_critic.zero_grad()
                     loss.backward()
                     if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(actor.parameters(), grad_clip)
+                        if not freeze_actor:
+                            torch.nn.utils.clip_grad_norm_(actor.parameters(), grad_clip)
                         torch.nn.utils.clip_grad_norm_(critic.parameters(), grad_clip)
-                    opt_actor.step()
+                    if not freeze_actor:
+                        opt_actor.step()
                     opt_critic.step()
                     last_loss = float(loss.item())
                     last_ent = float(entropy.item())
@@ -1424,12 +1574,16 @@ def main() -> None:
         cfg.setdefault("bc", {})["enabled"] = True
         cfg.setdefault("bc", {})["updates"] = 2
         cfg.setdefault("bc", {})["episodes_per_update"] = 2
+        cfg.setdefault("bc", {})["holdout_episodes"] = 1
+        cfg.setdefault("bc", {})["epochs_per_update"] = 1
         # Short BC cannot hit production gates — smoke only checks plumbing.
         cfg.setdefault("bc", {})["target_acc"] = 0.0
         cfg.setdefault("bc", {})["min_arrival_rate"] = 0.0
         cfg.setdefault("bc", {})["max_fleet_ratio_vs_dijkstra"] = 99.0
+        cfg.setdefault("bc", {})["min_closed_loop_agree"] = 0.0
         cfg.setdefault("bc", {})["fair_check_episodes"] = 2
         cfg.setdefault("bc", {})["critic_fit_episodes"] = 2
+        cfg.setdefault("bc", {})["freeze_actor_updates"] = 0
         cfg.setdefault("env", {})["compact_dim"] = 160
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"
