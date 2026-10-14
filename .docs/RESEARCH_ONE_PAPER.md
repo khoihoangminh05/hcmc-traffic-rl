@@ -22,7 +22,8 @@ Eval: fleet mean/CVaR **và arrival_rate** vs Dijkstra / random / greedy-load ne
 
 | | |
 |--|--|
-| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v2h`) |
+| Config | `quan4_mappo_micro.yaml` (`mappo_micro_v3a`) |
+| MDP probe | `python -m marl_agent.probe_mdp_alignment` |
 | Env / train | `mappo_micro_env.py`, `mappo_micro_train.py` |
 | Audit | `python -m marl_agent._audit_v1_failure` |
 | Sol1 | [SOL1_MAPPO.md](./SOL1_MAPPO.md) |
@@ -89,11 +90,43 @@ v2f thêm: early-stop/ckpt theo greedy (không trộn stoch); BC paired fleet-ra
 v2g: `_hash_embed` md5 ổn định (subproc-safe).
 v2f evidence: `best_u=0`, greedy 5869/arr0.85 vs Djk 4474/arr1.0 — BC gate lỏng + PPO không cải thiện.
 v2h: holdout BC acc, closed-loop teacher agree, ratio≤1.10, arr≥0.98, freeze actor 75, entropy 0.01.
+v2h evidence: BC clone tốt (ratio 1.025) nhưng PPO phá greedy (arr→0.17 @u950); best_u=0; greedy +3% vs Djk.
+
+## v3a — sửa MDP (audit kiến trúc, không chỉnh gate)
+
+Probe `python -m marl_agent.probe_mdp_alignment` (val n=24, cùng split/seed với train):
+
+| | fleet_mean | arrival |
+|--|--|--|
+| Dijkstra (đúng: argmin free_t(u,v)+remain(v)) | 5830 | 1.0 |
+| Dijkstra rule cũ v1–v2h (argmin remain(v), bỏ cost cạnh) | 6519 (+11.8%) | 1.0 |
+| Dijkstra BPR(bg+1) tĩnh | 5831 (0%) | 1.0 |
+| greedy_load (sửa: tuần tự BPR + remain_bpr) | **784** | 1.0 |
+
+1. **Reward lệch mục tiêu:** progress free-flow corr với −BPR travel = **−0.40**; reward v2h 0.68.
+   v3: `reward_mode=marginal` — r = −(tt_own + (n_e−1)·Δtt)/1000 (difference reward → system optimum);
+   tổng return = −travel/scale (test `travel` mode khớp exact). Corr 0.84. Truncate cùng scale.
+2. **Baseline/teacher sai:** Dijkstra cũ bỏ cost cạnh; BC clone teacher yếu hơn 11.8%.
+3. **Congestion = chính đội xe:** bg nhỏ ⇒ BPR tĩnh vô ích; platoon cùng OD đi lockstep, BPR bậc 4 trên alley cap 2.5.
+4. **State thiếu thông tin phá đối xứng:** agent cùng node + cùng OD có obs giống hệt ⇒ policy chia sẻ
+   deterministic không thể tách platoon (giải thích stoch > greedy suốt v2). v3: mỗi exit có
+   tt_pred dưới tải = bg+1+#agent rank thấp hơn đã chọn, rem_bpr, q, regret. argmin(regret) ≡ greedy_load **100%**.
+5. **Credit:** critic chỉ thấy global ⇒ V giống mọi agent. v3: critic(global ⊕ obs_i); GAE per-agent cắt tại done riêng;
+   bỏ sample no-op sau done; γ=0.999 (tập ~60–200 hop).
+6. Action order theo BPR(bg+1); cảnh báo nếu out-degree>max_degree (Q4: max 4, không bị cắt).
+7. **BC distribution shift:** BC thường (state của teacher) acc 0.9993 nhưng closed-loop agree 0.966,
+   arr 0.984, ratio 1.19 → gate chặn. DAgger (β=0.7^u, buffer 8, holdout do student lái):
+   agree 1.000, ratio 1.001; test n=8: clone 848s = greedy_load 848s, Dijkstra 5276s.
+
+**Thanh đo thật:** thắng Dijkstra giờ là tầm thường (BC greedy_load đã −86%). Claim RL phải là
+`beats_greedy_load_fair` (paired greedy). Đây là giới hạn của env (BPR lockstep, cap nhỏ) — ghi rõ trong paper.
 
 ## Pass (cập nhật)
 
 - [ ] `MAPPO_MICRO_ENV_TESTS_OK`
-- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v2h`)
-- [ ] `beats_dijkstra_fair` (paired greedy)
-- [ ] Ablation `--ippo` (sau baseline v2h)
-- [ ] Limitations trung thực (BPR, metric, greedy arrival yếu)
+- [ ] `probe_mdp_alignment` → regret argmin = 1.0
+- [ ] `--bc-only` → ratio_vs_teacher≤1.10, agree≥0.95
+- [ ] Full sol1 → `MAPPO_MICRO_TRAIN_OK` (`mappo_micro_v3a`)
+- [ ] `beats_greedy_load_fair` (paired greedy) — chính; `beats_dijkstra_fair` — phụ
+- [ ] Ablation `--ippo`, `reward_mode: travel` (selfish vs marginal)
+- [ ] Limitations trung thực (BPR lockstep, cap alley, greedy_load là heuristic tập trung)

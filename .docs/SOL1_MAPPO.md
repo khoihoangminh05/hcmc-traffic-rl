@@ -25,10 +25,12 @@ CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
   2>&1 | tee "$LOG"
 ```
 
-Boot: `mappo_micro_v2h`. Bắt buộc thấy `[preflight] spawn embed parity OK`.
+Boot: `mappo_micro_v3a`. Bắt buộc thấy `[preflight] spawn embed parity OK` và
+`[env] reward_mode=marginal ... truncated_nodes=0`.
+Trước full run: `--bc-only` (BC + gate + fair test, không PPO).
 BC abort trừ khi: holdout_acc≥0.995, paired greedy arr≥0.95 và gap vs Djk≤0.05,
-ratio≤1.10, closed_loop_agree≥0.95. PPO: freeze actor 75 updates.
-Pass: `beats_dijkstra_fair` (greedy paired). `best_u=0` + greedy thua Djk = fail BC.
+ratio_vs_teacher≤1.10 (teacher = greedy_load), closed_loop_agree≥0.95. PPO: freeze actor 75 updates.
+Pass chính: `beats_greedy_load_fair`; `beats_dijkstra_fair` gần như chắc chắn (greedy_load −86% vs Djk).
 
 
 Ablation IPPO: thêm `--ippo`.

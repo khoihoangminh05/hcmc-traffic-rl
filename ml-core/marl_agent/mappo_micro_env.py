@@ -54,7 +54,17 @@ class MicroAlleyEnv:
         corridor_prob: float = 0.4,
         reward_weights: dict[str, float] | None = None,
         density_catalog: dict[str, Path] | None = None,
+        reward_mode: str = "marginal",
+        travel_scale: float = 1000.0,
     ) -> None:
+        if reward_mode not in ("marginal", "travel", "legacy"):
+            raise ValueError(f"reward_mode={reward_mode!r}")
+        # marginal: -(own BPR tt + delay imposed on co-movers) — difference reward
+        #           for the fleet objective (system optimum, exact per-step credit).
+        # travel:   -(own BPR tt) — selfish, Wardrop-style.
+        # legacy:   v1–v2h shaped reward (free-flow progress, cong, revisit, team).
+        self.reward_mode = reward_mode
+        self.travel_scale = max(1.0, float(travel_scale))
         self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = max(2, int(n_agents))
@@ -96,6 +106,11 @@ class MicroAlleyEnv:
         self._remain_cache: dict[tuple[str, str], float] = {}
         self._free_t: dict[tuple[str, str], float] = {}
         self._sp_from: dict[str, dict[str, float]] = {}
+        # Static congested edge time BPR(bg + 1) and its APSP — cost-to-go the
+        # transition actually charges, unlike free-flow remain.
+        self._bpr_edge_t: dict[tuple[str, str], float] = {}
+        self._sp_bpr_from: dict[str, dict[str, float]] = {}
+        self._n_truncated_nodes = 0
         # peak -> (free_t, out, sp_from, bg_load, dens_cache, unc_cache, density, speed, unc)
         self._peak_bundle: dict[str, dict[str, Any]] = {}
         self._node_emb = {
@@ -121,6 +136,12 @@ class MicroAlleyEnv:
         self._node_occ: dict[str, float] = {}
         self._live_edge: dict[tuple[str, str], float] = {}
         self._prev_remain: list[float] = []
+        # Predicted same-step contention: edge -> #active agents whose
+        # congested-greedy next hop is that edge (only co-located agents can
+        # take an edge this step, so this is the load the transition will see).
+        self._intent_edge: dict[tuple[str, str], int] = {}
+        self._intent_of: list[tuple[str, str] | None] = []
+        self._prior_load: list[dict[tuple[str, str], int]] = []
 
     @staticmethod
     def _is_alley(data: dict[str, Any]) -> bool:
@@ -221,13 +242,28 @@ class MicroAlleyEnv:
             self.ensure_density_for_t(float(t))
 
     def _rebuild_out_order(self) -> None:
-        """Order successors by free-flow time (fast edges first) so truncation keeps useful actions."""
+        """Order successors by congested edge time BPR(bg+1).
+
+        Free-flow ordering made truncation keep exactly the hops Dijkstra wants
+        and drop load-relieving exits. Node degree above max_degree is reported,
+        never silently assumed away.
+        """
         out: dict[str, list[str]] = {}
+        n_trunc = 0
         for n in self._nodes:
             succ = list(self._g.successors(n))
-            succ.sort(key=lambda v: self._edge_free_time(n, v))
+            succ.sort(key=lambda v: (self._bpr_edge_t.get((n, v), 1e18), v))
+            if len(succ) > self.max_degree:
+                n_trunc += 1
             out[n] = succ
         self._out = out
+        if n_trunc and n_trunc != self._n_truncated_nodes:
+            print(
+                f"[env] WARNING {n_trunc} nodes have out-degree > max_degree="
+                f"{self.max_degree}; extra (slowest congested) exits are unreachable",
+                flush=True,
+            )
+        self._n_truncated_nodes = n_trunc
 
     def _restore_peak_bundle(self, peak: str) -> None:
         b = self._peak_bundle[peak]
@@ -241,6 +277,8 @@ class MicroAlleyEnv:
         self._free_t = b["free_t"]
         self._out = b["out"]
         self._sp_from = b["sp_from"]
+        self._bpr_edge_t = b["bpr_edge_t"]
+        self._sp_bpr_from = b["sp_bpr_from"]
         for (u, v), ft in self._free_t.items():
             self._g.edges[u, v]["free_t"] = ft
         self._remain_cache.clear()
@@ -253,13 +291,24 @@ class MicroAlleyEnv:
             free_t[(u, v)] = ft
             self._g.edges[u, v]["free_t"] = ft
         self._free_t = free_t
+        bpr_t: dict[tuple[str, str], float] = {}
+        for u, v in self._edge_index:
+            bt = self._bpr_time(u, v, float(self._bg_load.get((u, v), 0.0)) + 1.0)
+            bpr_t[(u, v)] = bt
+            self._g.edges[u, v]["bpr_t"] = bt
+        self._bpr_edge_t = bpr_t
         self._rebuild_out_order()
         sp_from: dict[str, dict[str, float]] = {}
+        sp_bpr: dict[str, dict[str, float]] = {}
         for src in self._nodes:
             sp_from[src] = nx.single_source_dijkstra_path_length(
                 self._g, src, weight="free_t"
             )
+            sp_bpr[src] = nx.single_source_dijkstra_path_length(
+                self._g, src, weight="bpr_t"
+            )
         self._sp_from = sp_from
+        self._sp_bpr_from = sp_bpr
         self._remain_cache.clear()
         bg = np.array(list(self._bg_load.values()), dtype=np.float32)
         if bg.size:
@@ -279,6 +328,8 @@ class MicroAlleyEnv:
             "free_t": self._free_t,
             "out": self._out,
             "sp_from": self._sp_from,
+            "bpr_edge_t": self._bpr_edge_t,
+            "sp_bpr_from": self._sp_bpr_from,
         }
 
     def _background_load(self) -> dict[tuple[str, str], float]:
@@ -337,6 +388,65 @@ class MicroAlleyEnv:
         self._remain_cache[key] = total
         return total
 
+    def _remain_bpr(self, curr: str, dest: str) -> float:
+        """Cost-to-go under static congestion BPR(bg+1) — what the env charges a lone agent."""
+        if curr == dest:
+            return 0.0
+        dist = self._sp_bpr_from.get(curr, {}).get(dest)
+        return float(dist) if dist is not None else 1e5
+
+    def _bpr_greedy_hop(self, i: int) -> tuple[str, str] | None:
+        """Congested shortest-path next hop of agent i (within the action set)."""
+        if self._done[i]:
+            return None
+        curr, dest = self._pos[i], self._ods[i][1]
+        cand = self._neighbors(curr)[: self.max_degree]
+        if not cand:
+            return None
+        best = min(
+            cand,
+            key=lambda nxt: self._bpr_edge_t.get((curr, nxt), 1e18)
+            + self._remain_bpr(nxt, dest),
+        )
+        return (curr, best)
+
+    def _refresh_intents(self) -> None:
+        """Rank-ordered contention (agent index = rank, like a vehicle id).
+
+        Agent i sees, per exit, how many lower-index agents at its node commit to
+        it under the sequential load-aware rule. Without this, co-located agents
+        with one OD have identical obs, so a shared deterministic policy must
+        send the whole platoon down one edge (BPR blows up quartically there).
+        """
+        committed: dict[tuple[str, str], int] = {}
+        prior: list[dict[tuple[str, str], int]] = [{} for _ in range(self.n_agents)]
+        intent_of: list[tuple[str, str] | None] = [None] * self.n_agents
+        for i in range(self.n_agents):
+            if self._done[i]:
+                continue
+            curr, dest = self._pos[i], self._ods[i][1]
+            cand = self._neighbors(curr)[: self.max_degree]
+            if not cand:
+                continue
+            prior[i] = {(curr, n): committed.get((curr, n), 0) for n in cand}
+            best = min(
+                cand,
+                key=lambda n: self._bpr_time(
+                    curr,
+                    n,
+                    float(self._bg_load.get((curr, n), 0.0))
+                    + 1.0
+                    + prior[i][(curr, n)],
+                )
+                + self._remain_bpr(n, dest),
+            )
+            e = (curr, best)
+            intent_of[i] = e
+            committed[e] = committed.get(e, 0) + 1
+        self._intent_of = intent_of
+        self._prior_load = prior
+        self._intent_edge = committed
+
     def _density_summaries(self) -> np.ndarray:
         dens = np.array(
             [self._density.get(a, 0.03) for a in self._aids], dtype=np.float32
@@ -393,10 +503,23 @@ class MicroAlleyEnv:
             mask[i] = 1.0
         return mask
 
+    # obs = [t(2), peak(3), emb O/D/curr(24), scalars(6), dens(4), unc(3)] + neighbors
+    OBS_SCALAR_DIM = 42
+    NEIGH_FEATS = 14
+    REGRET_IDX = 13
+
+    def neighbor_block(self, obs_vec: np.ndarray) -> np.ndarray:
+        """[max_degree, NEIGH_FEATS] view of the neighbor features of one local obs."""
+        s = self.OBS_SCALAR_DIM
+        return obs_vec[s : s + self.max_degree * self.NEIGH_FEATS].reshape(
+            self.max_degree, self.NEIGH_FEATS
+        )
+
     def _local_obs(self, i: int) -> np.ndarray:
         o, d = self._ods[i]
         curr = self._pos[i]
         rem_here = self._remain_free(curr, d)
+        rem_here_bpr = self._remain_bpr(curr, d)
         n_here = float(self._node_occ.get(curr, 0.0))
         revisits = 0.0
         if len(self._path_hist[i]) > 1:
@@ -412,6 +535,7 @@ class MicroAlleyEnv:
                 [
                     1.0 if self._done[i] else 0.0,
                     rem_here / 1000.0,
+                    rem_here_bpr / 1000.0,
                     self._travel[i] / 1000.0,
                     n_here / max(self.n_agents, 1),
                     min(revisits, 5.0) / 5.0,
@@ -421,41 +545,53 @@ class MicroAlleyEnv:
             self._dens_cache,
             self._unc_cache,
         ]
-        neigh = self._neighbors(curr)
-        rows = []
-        for j in range(self.max_degree):
-            if j < len(neigh):
-                nxt = neigh[j]
-                e = (curr, nxt)
-                data = self._g.edges[curr, nxt]
-                ft = self._edge_free_time(curr, nxt)
-                rem = self._remain_free(nxt, d)
-                bg = float(self._bg_load.get(e, 0.5))
-                live = float(self._live_edge.get(e, 0.0))
-                # tentative load if this agent takes the edge alone + others already here
-                tent = bg + live + max(0.0, n_here - 1.0) * 0.25 + 1.0
-                rows.append(
-                    [
-                        1.0,
-                        1.0 if self._is_alley(data) else 0.0,
-                        ft / 100.0,
-                        self._edge_unc(curr, nxt),
-                        bg / 5.0,
-                        live / max(self.n_agents, 1),
-                        float(self._node_occ.get(nxt, 0.0)) / max(self.n_agents, 1),
-                        1.0 / max(self._cap[e], 0.5),
-                        rem / 1000.0,
-                        (rem_here - rem) / 100.0,
-                        min(tent, self.bpr_load_cap) / max(self._cap[e], 0.5) / 4.0,
-                    ]
-                )
-            else:
-                rows.append([0.0] * 11)
-        feat_parts.append(np.asarray(rows, dtype=np.float32).reshape(-1))
+        neigh = self._neighbors(curr)[: self.max_degree]
+        nf = self.NEIGH_FEATS
+        rows = np.zeros((self.max_degree, nf), dtype=np.float32)
+        prior = self._prior_load[i] if i < len(self._prior_load) else {}
+        q_vals: list[float] = []
+        for j, nxt in enumerate(neigh):
+            e = (curr, nxt)
+            data = self._g.edges[curr, nxt]
+            ft = self._edge_free_time(curr, nxt)
+            bg = float(self._bg_load.get(e, 0.0))
+            # Load this step = bg + every agent that takes e now; only agents at
+            # `curr` can. Lower-rank commitments are known, higher ranks follow.
+            others = float(prior.get(e, 0))
+            tt_pred = self._bpr_time(curr, nxt, bg + 1.0 + others)
+            rem_bpr = self._remain_bpr(nxt, d)
+            q = tt_pred + rem_bpr
+            q_vals.append(q)
+            rows[j, :13] = [
+                1.0,
+                1.0 if self._is_alley(data) else 0.0,
+                ft / 100.0,
+                self._edge_unc(curr, nxt),
+                bg / 5.0,
+                float(self._live_edge.get(e, 0.0)) / max(self.n_agents, 1),
+                float(self._node_occ.get(nxt, 0.0)) / max(self.n_agents, 1),
+                1.0 / max(self._cap[e], 0.5),
+                self._remain_free(nxt, d) / 1000.0,
+                others / max(self.n_agents, 1),
+                tt_pred / 100.0,
+                rem_bpr / 1000.0,
+                q / 1000.0,
+            ]
+        if q_vals:
+            q_min = min(q_vals)
+            for j, q in enumerate(q_vals):
+                # regret vs best hop under predicted load (0 = congested-optimal)
+                rows[j, self.REGRET_IDX] = min((q - q_min) / 100.0, 50.0)
+        feat_parts.append(rows.reshape(-1))
         feat = np.concatenate(feat_parts)
+        if feat.size > self.compact_dim:
+            raise ValueError(
+                f"obs needs {feat.size} dims > compact_dim={self.compact_dim}; "
+                "raise compact_dim instead of truncating neighbor features"
+            )
         if feat.size < self.compact_dim:
             feat = np.pad(feat, (0, self.compact_dim - feat.size))
-        return feat[: self.compact_dim].astype(np.float32)
+        return feat.astype(np.float32)
 
     def _global_state_from_obs(self, obs: dict[str, np.ndarray]) -> np.ndarray:
         """Build critic state from already-computed local obs (no recompute)."""
@@ -539,6 +675,7 @@ class MicroAlleyEnv:
         self._true_arrived = [bool(self._done[i]) for i in range(self.n_agents)]
         self._live_edge = {}
         self._rebuild_node_occ()
+        self._refresh_intents()
         self._prev_remain = [
             self._remain_free(self._pos[i], self._ods[i][1]) for i in range(self.n_agents)
         ]
@@ -589,6 +726,8 @@ class MicroAlleyEnv:
                 edge_counts[e] = edge_counts.get(e, 0) + 1
 
         w = self.reward_weights
+        legacy = self.reward_mode == "legacy"
+        scale = self.travel_scale
         rewards: dict[str, float] = {}
         cong_vals: list[float] = []
         progress_vals: list[float] = []
@@ -599,11 +738,13 @@ class MicroAlleyEnv:
                 continue
             e = intended[i]
             if e is None:
-                rewards[a] = -0.5
+                # dead end: no travel happens; truncation charges the failure
+                rewards[a] = -0.5 if legacy else 0.0
                 progress_vals.append(0.0)
                 continue
             u, v = e
-            load_e = float(self._bg_load.get(e, 0.0)) + float(edge_counts.get(e, 0))
+            n_e = float(edge_counts.get(e, 0))
+            load_e = float(self._bg_load.get(e, 0.0)) + n_e
             tt = self._bpr_time(u, v, load_e)
             cap = max(0.5, self._cap[e])
             cong = (min(load_e, self.bpr_load_cap) / cap) ** self.bpr_beta
@@ -626,21 +767,30 @@ class MicroAlleyEnv:
                 rem_after = self._remain_free(v, self._ods[i][1])
             progress = (rem_before - rem_after) / 50.0
             progress_vals.append(float(progress))
-            cost = (
-                w["w_T"] * (tt / 50.0)
-                + w["w_C"] * cong
-                + w["w_R"] * risk
-                + w["w_step"]
-                + w.get("w_revisit", 0.25) * revisit
-            )
-            bonus = w["arrive_bonus"] if arrived else 0.0
-            shaped = w.get("w_progress", 0.4) * progress
-            rewards[a] = float(-cost + bonus + shaped)
             cong_vals.append(float(cong))
+            if legacy:
+                cost = (
+                    w["w_T"] * (tt / 50.0)
+                    + w["w_C"] * cong
+                    + w["w_R"] * risk
+                    + w["w_step"]
+                    + w.get("w_revisit", 0.25) * revisit
+                )
+                bonus = w["arrive_bonus"] if arrived else 0.0
+                shaped = w.get("w_progress", 0.4) * progress
+                rewards[a] = float(-cost + bonus + shaped)
+                continue
+            # Sum of rewards over an episode = -(own travel [+ externality]) / scale,
+            # so maximizing return is minimizing the reported fleet travel time.
+            cost = tt
+            if self.reward_mode == "marginal" and n_e > 1.0:
+                # Delay this agent adds to each of the other n_e-1 agents on e.
+                ext = self._bpr_time(u, v, load_e) - self._bpr_time(u, v, load_e - 1.0)
+                cost += (n_e - 1.0) * ext
+            rewards[a] = float(-cost / scale)
 
-        # optional team congestion coupling (ablation-friendly; not assumed necessary)
         team_cong = float(np.mean(cong_vals)) if cong_vals else 0.0
-        w_team = float(w.get("w_team", 0.15))
+        w_team = float(w.get("w_team", 0.0)) if legacy else 0.0
         if w_team > 0 and cong_vals:
             for a in self.agents:
                 if a in rewards:
@@ -668,10 +818,12 @@ class MicroAlleyEnv:
                 if not self._done[i]:
                     rem = self._remain_free(self._pos[i], self._ods[i][1])
                     pen = max(fail_floor, fail_mult * rem)
-                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - pen / 40.0
+                    pen_scale = 40.0 if legacy else scale
+                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - pen / pen_scale
                     self._travel[i] += pen
                     self._done[i] = True
 
+        self._refresh_intents()
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
         terms = {a: bool(self._done[i]) for i, a in enumerate(self.agents)}
         truncs = {a: bool(truncated and terms[a]) for a in self.agents}
@@ -694,6 +846,7 @@ class MicroAlleyEnv:
             "truncated": bool(truncated),
             "step": self._step_i,
             "all_done": all(self._done),
+            "agent_done": [bool(x) for x in self._done],
             "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},
             "mean_progress": float(np.mean(progress_vals)) if progress_vals else 0.0,
         }
@@ -702,29 +855,35 @@ class MicroAlleyEnv:
     # ----- baselines (micro) -----
 
     def baseline_dijkstra_actions(self) -> dict[str, int]:
-        """Follow free-flow shortest next hop."""
+        """Free-flow shortest-path next hop: argmin free_t(curr,nxt) + remain_free(nxt)."""
         acts = {}
         for i, a in enumerate(self.agents):
             if self._done[i]:
                 acts[a] = 0
                 continue
             curr, dest = self._pos[i], self._ods[i][1]
-            neigh = self._neighbors(curr)
-            if not neigh:
+            # Only actionable neighbors (same truncation as mask / greedy_load).
+            cand = self._neighbors(curr)[: self.max_degree]
+            if not cand:
                 acts[a] = 0
                 continue
-            # Only actionable neighbors (same truncation as mask / greedy_load).
-            cand = neigh[: self.max_degree]
-            try:
-                best_n, best_d = cand[0], 1e18
-                for nxt in cand:
-                    d = self._remain_free(nxt, dest)
-                    if d < best_d:
-                        best_d, best_n = d, nxt
-                nxt = best_n
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                nxt = cand[0]
-            acts[a] = int(cand.index(nxt)) if nxt in cand else 0
+            best_j, best_d = 0, 1e18
+            for j, nxt in enumerate(cand):
+                d = self._edge_free_time(curr, nxt) + self._remain_free(nxt, dest)
+                if d < best_d:
+                    best_d, best_j = d, j
+            acts[a] = best_j
+        return acts
+
+    def baseline_dijkstra_bpr_actions(self) -> dict[str, int]:
+        """Congestion-aware static Dijkstra: shortest path under BPR(bg+1) edge times."""
+        acts = {}
+        for i, a in enumerate(self.agents):
+            e = self._bpr_greedy_hop(i)
+            if e is None:
+                acts[a] = 0
+                continue
+            acts[a] = self._neighbors(e[0]).index(e[1])
         return acts
 
     def baseline_random_actions(self) -> dict[str, int]:
@@ -736,33 +895,17 @@ class MicroAlleyEnv:
         return acts
 
     def baseline_greedy_load_actions(self) -> dict[str, int]:
-        """Pick neighbor minimizing BPR time + remaining free heuristic under +1 load."""
-        # tentative loads from agents that already chose (sequential)
-        load: dict[tuple[str, str], float] = {
-            e: float(self._bg_load.get(e, 0.0)) for e in self._edge_index
-        }
+        """Sequential load-aware router: BPR(bg + already-assigned + 1) + congested cost-to-go.
+
+        Agents are assigned in index order; each sees the loads committed by
+        lower-index agents at its node this step — exactly the `others` the obs
+        exposes, so argmin of the regret feature reproduces this rule. The old
+        0.85·remain_free weighting made it loop (arr≈0.18).
+        """
         acts: dict[str, int] = {}
-        order = list(range(self.n_agents))
-        self.rng.shuffle(order)
-        pending = {i: None for i in order}
-        for i in order:
-            a = self.agents[i]
-            if self._done[i]:
-                acts[a] = 0
-                continue
-            curr, dest = self._pos[i], self._ods[i][1]
-            neigh = self._neighbors(curr)
-            best_j, best_score = 0, 1e18
-            for j, nxt in enumerate(neigh[: self.max_degree]):
-                e = (curr, nxt)
-                tt = self._bpr_time(curr, nxt, load[e] + 1.0)
-                score = tt + 0.85 * self._remain_free(nxt, dest)
-                if score < best_score:
-                    best_score, best_j = score, j
-            acts[a] = best_j
-            if neigh:
-                e = (curr, neigh[best_j])
-                load[e] = load.get(e, 0.0) + 1.0
+        for i, a in enumerate(self.agents):
+            e = self._intent_of[i] if i < len(self._intent_of) else None
+            acts[a] = 0 if e is None else self._neighbors(e[0]).index(e[1])
         return acts
 
     def roll_baseline(self, mode: str, seed: int | None = None) -> dict[str, float]:
@@ -777,6 +920,8 @@ class MicroAlleyEnv:
         for _ in range(self.max_steps):
             if mode == "dijkstra":
                 acts = self.baseline_dijkstra_actions()
+            elif mode == "dijkstra_bpr":
+                acts = self.baseline_dijkstra_bpr_actions()
             elif mode == "random":
                 acts = self.baseline_random_actions()
             elif mode == "greedy_load":

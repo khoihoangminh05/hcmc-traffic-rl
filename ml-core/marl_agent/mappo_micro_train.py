@@ -56,6 +56,33 @@ def load_config(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def env_kwargs_from_cfg(
+    env_cfg: dict[str, Any],
+    *,
+    density: Path,
+    graph: Path,
+    density_catalog: dict[str, Path],
+    seed: int,
+) -> dict[str, Any]:
+    return {
+        "density_path": density,
+        "graph_path": graph,
+        "seed": int(seed),
+        "n_agents": int(env_cfg.get("n_agents", 16)),
+        "max_degree": int(env_cfg.get("max_degree", 8)),
+        "max_steps": int(env_cfg.get("max_steps", 200)),
+        "compact_dim": int(env_cfg.get("compact_dim", 160)),
+        "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
+        "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
+        "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
+        "corridor_prob": float(env_cfg.get("corridor_prob", 0.4)),
+        "reward_weights": env_cfg.get("reward_weights"),
+        "density_catalog": density_catalog or None,
+        "reward_mode": str(env_cfg.get("reward_mode", "marginal")),
+        "travel_scale": float(env_cfg.get("travel_scale", 1000.0)),
+    }
+
+
 def set_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -133,6 +160,8 @@ def run_episode_baseline(
     for _ in range(env.max_steps):
         if mode == "dijkstra":
             acts = env.baseline_dijkstra_actions()
+        elif mode == "dijkstra_bpr":
+            acts = env.baseline_dijkstra_bpr_actions()
         elif mode == "random":
             acts = env.baseline_random_actions()
         elif mode == "greedy_load":
@@ -248,7 +277,7 @@ def evaluate_fair_suite(
     n_episodes: int = 30,
     *,
     seed_base: int = EVAL_SEED_BASE,
-    baseline_modes: tuple[str, ...] = ("dijkstra", "random", "greedy_load"),
+    baseline_modes: tuple[str, ...] = ("dijkstra", "dijkstra_bpr", "random", "greedy_load"),
 ) -> dict[str, Any]:
     """Paired comparison: identical env / OD / t / seed / step+reward for every controller.
 
@@ -303,12 +332,44 @@ def evaluate_fair_suite(
         and float(pol_s.get("arrival_rate", 0.0))
         >= float(djk.get("arrival_rate", 0.0)) - 0.05
     )
+    grd = agg.get("greedy_load", {})
+    beats_greedy_load_fair = (
+        bool(
+            pol_g["fleet_mean"] < grd["fleet_mean"]
+            and float(pol_g.get("arrival_rate", 0.0))
+            >= float(grd.get("arrival_rate", 0.0)) - 0.05
+        )
+        if grd
+        else None
+    )
+    djk_bpr = agg.get("dijkstra_bpr", {})
+    beats_dijkstra_bpr_fair = (
+        bool(
+            pol_g["fleet_mean"] < djk_bpr["fleet_mean"]
+            and float(pol_g.get("arrival_rate", 0.0))
+            >= float(djk_bpr.get("arrival_rate", 0.0)) - 0.05
+        )
+        if djk_bpr
+        else None
+    )
     return {
         **agg,
         "eval_protocol": "paired_identical_od_t_seed_step",
         "seed_base": int(seed_base),
         "n_episodes": int(n_episodes),
         "beats_dijkstra_fair": beats_dijkstra_fair,
+        "beats_dijkstra_bpr_fair": beats_dijkstra_bpr_fair,
+        "beats_greedy_load_fair": beats_greedy_load_fair,
+        "delta_fleet_greedy_minus_greedy_load": float(
+            pol_g["fleet_mean"] - float(grd["fleet_mean"])
+        )
+        if grd
+        else None,
+        "delta_fleet_greedy_minus_dijkstra_bpr": float(
+            pol_g["fleet_mean"] - float(djk_bpr["fleet_mean"])
+        )
+        if djk_bpr
+        else None,
         "beats_dijkstra_stoch": beats_dijkstra_stoch,
         "delta_fleet_greedy_minus_dijkstra": float(
             pol_g["fleet_mean"] - float(djk.get("fleet_mean", 0.0))
@@ -321,6 +382,18 @@ def evaluate_fair_suite(
 def early_stop_score(fleet_mean: float, arrival_rate: float, *, arr_penalty: float = 12_000.0) -> float:
     """Minimize. Penalize low arrival so checkpoints like v2b@125 (arr~0.16) are not preferred."""
     return float(fleet_mean) + float(arr_penalty) * (1.0 - float(arrival_rate))
+
+
+def critic_inputs(g: np.ndarray, o: np.ndarray, ippo: bool) -> np.ndarray:
+    """Per-agent critic input. g: [..., G], o: [..., A, D] -> [..., A, G+D] (MAPPO) or o (IPPO).
+
+    The global state alone is identical for every agent, so V could not tell an
+    agent next to its destination from one stuck far away.
+    """
+    if ippo:
+        return o
+    gr = np.broadcast_to(g[..., None, :], o.shape[:-1] + (g.shape[-1],))
+    return np.concatenate([gr, o], axis=-1)
 
 
 def compute_gae(
@@ -346,6 +419,19 @@ def compute_gae(
     return adv, rets
 
 
+TEACHERS = ("dijkstra", "dijkstra_bpr", "greedy_load")
+
+
+def _teacher_actions(env: MicroAlleyEnv, teacher: str) -> dict[str, int]:
+    if teacher == "dijkstra":
+        return env.baseline_dijkstra_actions()
+    if teacher == "dijkstra_bpr":
+        return env.baseline_dijkstra_bpr_actions()
+    if teacher == "greedy_load":
+        return env.baseline_greedy_load_actions()
+    raise ValueError(teacher)
+
+
 def _collect_teacher_batch(
     env: MicroAlleyEnv,
     t_train: list[float],
@@ -354,25 +440,35 @@ def _collect_teacher_batch(
     seed: int,
     teacher: str,
     rng: np.random.Generator,
+    actor: SharedActor | None = None,
+    device: torch.device | None = None,
+    beta: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Teacher-labelled states. DAgger: each episode is executed by the teacher
+    with prob `beta`, else by the greedy student — labels are always the teacher's,
+    so the clone also learns to recover from its own deviations."""
     obs_rows: list[np.ndarray] = []
     mask_rows: list[np.ndarray] = []
     act_rows: list[int] = []
     for ep in range(episodes):
         t = float(rng.choice(t_train))
+        student_drives = actor is not None and float(rng.random()) >= beta
         obs, _, info = env.reset(seed=seed + ep, options={"t": t})
         for _ in range(env.max_steps):
-            if teacher == "dijkstra":
-                teach = env.baseline_dijkstra_actions()
-            else:
-                teach = env.baseline_greedy_load_actions()
+            teach = _teacher_actions(env, teacher)
             for i, a in enumerate(env.agents):
                 if env._done[i]:
                     continue
                 obs_rows.append(obs[a])
                 mask_rows.append(info["masks"][a])
                 act_rows.append(int(teach[a]))
-            obs, _, _, _, _, info = env.step(teach)
+            if student_drives:
+                acts, _, _, _, _ = _batched_actions(
+                    actor, env, obs, info, device, greedy=True
+                )
+            else:
+                acts = teach
+            obs, _, _, _, _, info = env.step(acts)
             if info["all_done"]:
                 break
     if not act_rows:
@@ -413,10 +509,7 @@ def measure_closed_loop_teacher_agree(
         t = float(t_list[ep % len(t_list)])
         obs, _, info = env.reset(seed=seed_base + ep, options={"t": t})
         for _ in range(env.max_steps):
-            if teacher == "dijkstra":
-                teach = env.baseline_dijkstra_actions()
-            else:
-                teach = env.baseline_greedy_load_actions()
+            teach = _teacher_actions(env, teacher)
             acts, _, _, _, _ = _batched_actions(
                 actor, env, obs, info, device, greedy=True
             )
@@ -474,35 +567,56 @@ def behavioral_clone_baseline(
     target_acc: float = 0.995,
     epochs_per_update: int = 6,
     holdout_episodes: int = 8,
+    dagger_beta_decay: float = 0.7,
+    dagger_buffer_updates: int = 8,
 ) -> dict[str, float]:
-    """Clone teacher; gate on *holdout* next-hop accuracy (not train-batch CE)."""
+    """Clone teacher with DAgger; gate on closed-loop holdout accuracy.
+
+    Holdout episodes are driven by the greedy student and labelled by the
+    teacher, so holdout_acc is accuracy on the states the clone actually visits
+    (v3a local: teacher-state acc 0.9993 but closed-loop agree 0.966, arr 0.984).
+    """
     if updates <= 0:
         return {"bc_updates": 0.0, "bc_acc": 0.0, "bc_ce": 0.0, "bc_train_acc": 0.0}
-    if teacher not in ("dijkstra", "greedy_load"):
+    if teacher not in TEACHERS:
         raise ValueError(teacher)
     opt = torch.optim.Adam(actor.parameters(), lr=float(lr))
     print(
         f"[bc] teacher={teacher} max_updates={updates} eps/upd={episodes_per_update} "
         f"lr={lr} target_holdout_acc={target_acc} epochs={epochs_per_update} "
-        f"holdout_eps={holdout_episodes}",
+        f"holdout_eps={holdout_episodes} dagger_beta_decay={dagger_beta_decay} "
+        f"buffer={dagger_buffer_updates}",
         flush=True,
     )
     rng = np.random.default_rng(seed + 7)
     env.set_od_pool(train_ods)
     last_acc, last_ce, last_train_acc = 0.0, 9.0, 0.0
     used = 0
+    buf: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     for u in range(1, updates + 1):
         used = u
-        O, M, A = _collect_teacher_batch(
+        beta = float(dagger_beta_decay) ** (u - 1)
+        actor.eval()
+        batch = _collect_teacher_batch(
             env,
             t_train,
             episodes=episodes_per_update,
             seed=seed + 9_000_000 + u * 10_000,
             teacher=teacher,
             rng=rng,
+            actor=actor,
+            device=device,
+            beta=beta,
         )
-        if A.size < 16:
+        actor.train()
+        if batch[2].size >= 16:
+            buf.append(batch)
+            buf = buf[-max(1, int(dagger_buffer_updates)) :]
+        if not buf:
             continue
+        O = np.concatenate([b[0] for b in buf], axis=0)
+        M = np.concatenate([b[1] for b in buf], axis=0)
+        A = np.concatenate([b[2] for b in buf], axis=0)
         o_t = torch.tensor(O, dtype=torch.float32, device=device)
         m_t = torch.tensor(M, dtype=torch.float32, device=device)
         a_t = torch.tensor(A, dtype=torch.long, device=device)
@@ -527,7 +641,8 @@ def behavioral_clone_baseline(
             dist = masked_categorical(actor(o_t), m_t)
             pred = torch.argmax(dist.logits, dim=-1)
             last_train_acc = float((pred == a_t).float().mean().item())
-        # Holdout batch — never used for the SGD steps above.
+        # Holdout batch — never used for the SGD steps above; student drives.
+        actor.eval()
         Oh, Mh, Ah = _collect_teacher_batch(
             env,
             t_train,
@@ -535,7 +650,11 @@ def behavioral_clone_baseline(
             seed=seed + 7_000_000 + u * 10_000,
             teacher=teacher,
             rng=rng,
+            actor=actor,
+            device=device,
+            beta=0.0,
         )
+        actor.train()
         if Ah.size >= 8:
             with torch.no_grad():
                 oh = torch.tensor(Oh, dtype=torch.float32, device=device)
@@ -601,11 +720,13 @@ def fit_critic_on_teacher(
         )
         rewards_ep: list[np.ndarray] = []
         states_ep: list[np.ndarray] = []
+        active_ep: list[np.ndarray] = []
         for _ in range(env.max_steps):
-            if ippo:
-                states_ep.append(np.stack([obs[a] for a in env.agents], axis=0))
-            else:
-                states_ep.append(np.asarray(gstate, dtype=np.float32))
+            o_mat = np.stack([obs[a] for a in env.agents], axis=0)
+            states_ep.append(
+                critic_inputs(np.asarray(gstate, dtype=np.float32), o_mat, ippo)
+            )
+            active_ep.append(~np.asarray(env._done, dtype=np.bool_))
             with torch.no_grad():
                 actions, _, _, _, _ = _batched_actions(
                     actor, env, obs, info, device, greedy=True
@@ -624,17 +745,11 @@ def fit_critic_on_teacher(
         for ti in reversed(range(T)):
             running = rewards_ep[ti] + float(gamma) * running
             R[ti] = running
-        if ippo:
-            for ti in range(T):
-                # states_ep[ti]: [A, obs] — flatten like PPO collect
-                state_buf.append(states_ep[ti])
-                returns_buf.append(R[ti])
-        else:
-            for ti in range(T):
-                # Match PPO: repeat global state per agent, target = per-agent return.
-                g = states_ep[ti]
-                state_buf.append(np.repeat(g[None, :], R.shape[1], axis=0))
-                returns_buf.append(R[ti])
+        for ti in range(T):
+            # Match PPO: one row per agent still travelling, target = its own return.
+            act = active_ep[ti]
+            state_buf.append(states_ep[ti][act])
+            returns_buf.append(R[ti][act])
     if not returns_buf:
         return 0.0
     x = torch.tensor(
@@ -728,20 +843,24 @@ def run_training(
 
     env_cfg = cfg.get("env", {})
     n_agents = int(env_cfg.get("n_agents", 16))
-    env = MicroAlleyEnv(
-        density_path=density,
-        graph_path=graph,
-        seed=seed,
-        n_agents=n_agents,
-        max_degree=int(env_cfg.get("max_degree", 8)),
-        max_steps=int(env_cfg.get("max_steps", 200)),
-        compact_dim=int(env_cfg.get("compact_dim", 160)),
-        bpr_alpha=float(env_cfg.get("bpr_alpha", 0.15)),
-        bpr_beta=float(env_cfg.get("bpr_beta", 4.0)),
-        bpr_load_cap=float(env_cfg.get("bpr_load_cap", 12.0)),
-        corridor_prob=float(env_cfg.get("corridor_prob", 0.4)),
-        reward_weights=env_cfg.get("reward_weights"),
-        density_catalog=density_catalog or None,
+
+    def _env_kwargs(i: int) -> dict[str, Any]:
+        """i = -1 → main env; i >= 0 → rollout worker i (distinct rng seed only)."""
+        return env_kwargs_from_cfg(
+            env_cfg,
+            density=density,
+            graph=graph,
+            density_catalog=density_catalog,
+            seed=seed if i < 0 else seed + 17 * (i + 1),
+        )
+
+    env = MicroAlleyEnv(**_env_kwargs(-1))
+    print(
+        f"[env] reward_mode={env.reward_mode} travel_scale={env.travel_scale} "
+        f"nodes={len(env._nodes)} edges={len(env._edge_index)} "
+        f"max_out_degree={max((len(v) for v in env._out.values()), default=0)} "
+        f"max_degree={env.max_degree} truncated_nodes={env._n_truncated_nodes}",
+        flush=True,
     )
     env.set_od_pool(train_ods)
     env.warmup_peak_caches()
@@ -753,10 +872,11 @@ def run_training(
     hidden = int(cfg.get("model", {}).get("hidden", 256))
     actor = SharedActor(obs_dim, n_actions, hidden=hidden).to(device)
     critic: nn.Module
+    critic_in_dim = obs_dim if ippo else global_dim + obs_dim
     if ippo:
         critic = IndependentCritic(obs_dim, hidden=hidden).to(device)
     else:
-        critic = CentralCritic(global_dim, hidden=hidden).to(device)
+        critic = CentralCritic(critic_in_dim, hidden=hidden).to(device)
 
     optim_cfg = cfg.get("optim", {})
     ppo_cfg = cfg.get("ppo", {})
@@ -792,23 +912,6 @@ def run_training(
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
-
-    def _env_kwargs(i: int) -> dict[str, Any]:
-        return {
-            "density_path": density,
-            "graph_path": graph,
-            "seed": seed + 17 * (i + 1),
-            "n_agents": n_agents,
-            "max_degree": int(env_cfg.get("max_degree", 8)),
-            "max_steps": int(env_cfg.get("max_steps", 200)),
-            "compact_dim": int(env_cfg.get("compact_dim", 160)),
-            "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
-            "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
-            "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
-            "corridor_prob": float(env_cfg.get("corridor_prob", 0.4)),
-            "reward_weights": env_cfg.get("reward_weights"),
-            "density_catalog": density_catalog or None,
-        }
 
     # Defer heavy subproc spawn until AFTER BC gates — idle workers during BC
     # held ~GBs RAM and printed EOFError storms when BC aborted (v2h incident).
@@ -874,6 +977,8 @@ def run_training(
             target_acc=float(bc_cfg.get("target_acc", 0.995)),
             epochs_per_update=int(bc_cfg.get("epochs_per_update", 6)),
             holdout_episodes=int(bc_cfg.get("holdout_episodes", 8)),
+            dagger_beta_decay=float(bc_cfg.get("dagger_beta_decay", 0.7)),
+            dagger_buffer_updates=int(bc_cfg.get("dagger_buffer_updates", 8)),
         )
         fit_critic_on_teacher(
             env,
@@ -889,6 +994,7 @@ def run_training(
             ippo=ippo,
         )
         n_bc_fair = int(bc_cfg.get("fair_check_episodes", 20))
+        teacher = str(bc_cfg.get("teacher", "dijkstra"))
         bc_fair = evaluate_fair_suite(
             env,
             actor,
@@ -897,15 +1003,17 @@ def run_training(
             device,
             n_episodes=n_bc_fair,
             seed_base=EVAL_SEED_BASE,
-            baseline_modes=("dijkstra",),
+            baseline_modes=tuple(dict.fromkeys(("dijkstra", teacher))),
         )
         bc_val_g = bc_fair["policy_greedy"]
         bc_val = bc_fair["policy_stoch"]
         djk_f = float(bc_fair["dijkstra"]["fleet_mean"])
+        teach_f = float(bc_fair[teacher]["fleet_mean"])
         pol_f = float(bc_val_g["fleet_mean"])
         pol_arr = float(bc_val_g.get("arrival_rate", 0.0))
         djk_arr = float(bc_fair["dijkstra"].get("arrival_rate", 0.0))
-        ratio = float(pol_f / max(djk_f, 1.0))
+        # Clone fidelity is judged against the teacher it cloned.
+        ratio = float(pol_f / max(teach_f, 1.0))
         agree = measure_closed_loop_teacher_agree(
             env,
             actor,
@@ -914,7 +1022,7 @@ def run_training(
             device,
             n_episodes=n_bc_fair,
             seed_base=EVAL_SEED_BASE + 100_000,
-            teacher=str(bc_cfg.get("teacher", "dijkstra")),
+            teacher=teacher,
         )
         print(
             f"[bc] done holdout_acc={bc_stats['bc_acc']:.4f} "
@@ -922,14 +1030,15 @@ def run_training(
             f"updates={bc_stats['bc_updates']:.0f} | "
             f"paired greedy fleet={pol_f:.1f}s arr={pol_arr:.3f} | "
             f"djk fleet={djk_f:.1f}s arr={djk_arr:.3f} | "
-            f"ratio={ratio:.3f} closed_loop_agree={agree:.4f}",
+            f"teacher={teacher} fleet={teach_f:.1f}s | "
+            f"ratio_vs_teacher={ratio:.3f} closed_loop_agree={agree:.4f}",
             flush=True,
         )
         # Arrival gates: absolute floor + gap vs Dijkstra. With n=20 eps the
         # empirical arr has ~1–2% sampling noise (v2h: 0.978 aborted on 0.98).
         min_arr = float(bc_cfg.get("min_arrival_rate", 0.95))
         max_arr_gap = float(bc_cfg.get("max_arrival_gap_vs_dijkstra", 0.05))
-        max_ratio = float(bc_cfg.get("max_fleet_ratio_vs_dijkstra", 1.10))
+        max_ratio = float(bc_cfg.get("max_fleet_ratio_vs_teacher", 1.10))
         min_agree = float(bc_cfg.get("min_closed_loop_agree", 0.95))
         min_holdout = float(bc_cfg.get("target_acc", 0.995))
         if float(bc_stats["bc_acc"]) < min_holdout:
@@ -948,13 +1057,13 @@ def run_training(
             )
         if ratio > max_ratio:
             raise RuntimeError(
-                f"BC paired greedy fleet {pol_f:.1f} > {max_ratio}× Dijkstra "
-                f"{djk_f:.1f} (ratio={ratio:.3f}). Aborting PPO."
+                f"BC paired greedy fleet {pol_f:.1f} > {max_ratio}× teacher "
+                f"{teacher} {teach_f:.1f} (ratio={ratio:.3f}). Aborting PPO."
             )
         if agree < min_agree:
             raise RuntimeError(
                 f"BC closed-loop teacher agree={agree:.4f} < {min_agree}. "
-                "Aborting PPO — argmax drifts off Dijkstra trajectory."
+                f"Aborting PPO — argmax drifts off the {teacher} trajectory."
             )
         # Seed early-stop from the *same* paired greedy metrics used for the gate.
         arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
@@ -975,6 +1084,8 @@ def run_training(
                 "critic": critic.state_dict(),
                 "obs_dim": obs_dim,
                 "global_dim": global_dim,
+                "critic_in_dim": critic_in_dim,
+                "reward_mode": env.reward_mode,
                 "n_actions": n_actions,
                 "ippo": ippo,
                 "update": 0,
@@ -985,7 +1096,9 @@ def run_training(
                     "policy_greedy": bc_fair["policy_greedy"],
                     "policy_stoch": bc_fair["policy_stoch"],
                     "dijkstra": bc_fair["dijkstra"],
-                    "ratio": ratio,
+                    "teacher": teacher,
+                    "teacher_metrics": bc_fair[teacher],
+                    "ratio_vs_teacher": ratio,
                     "closed_loop_agree": agree,
                 },
             },
@@ -1098,6 +1211,10 @@ def run_training(
                 buf_r = np.zeros((max_t, chunk, n_agents), np.float32)
                 buf_v = np.zeros((max_t, chunk, n_agents), np.float32)
                 buf_d = np.zeros((max_t, chunk), np.bool_)
+                # per-agent: travelling before the step / finished after it
+                buf_act = np.zeros((max_t, chunk, n_agents), np.bool_)
+                buf_ad = np.zeros((max_t, chunk, n_agents), np.bool_)
+                agent_done_b = np.zeros((chunk, n_agents), dtype=np.bool_)
                 ep_len = np.zeros(chunk, dtype=np.int32)
                 alive = np.ones(chunk, dtype=np.bool_)
                 last_travel = np.zeros((chunk, n_agents), dtype=np.float64)
@@ -1116,22 +1233,22 @@ def run_training(
                         act_t = dist.sample()
                         logp_t = dist.log_prob(act_t)
                         if ippo:
-                            v_np = (
-                                critic(o_t)
-                                .view(n_alive, n_agents)
-                                .detach()
-                                .cpu()
-                                .numpy()
-                                .astype(np.float32)
-                            )
+                            c_t = o_t
                         else:
-                            g_t = torch.from_numpy(
-                                np.ascontiguousarray(g_b[alive_idx])
+                            c_np = critic_inputs(
+                                g_b[alive_idx], obs_b[alive_idx], False
+                            ).reshape(n_alive * n_agents, -1)
+                            c_t = torch.from_numpy(
+                                np.ascontiguousarray(c_np, dtype=np.float32)
                             ).to(device, non_blocking=True)
-                            v_env = critic(g_t).view(-1).detach().cpu().numpy()
-                            v_np = np.repeat(
-                                v_env.astype(np.float32)[:, None], n_agents, axis=1
-                            )
+                        v_np = (
+                            critic(c_t)
+                            .view(n_alive, n_agents)
+                            .detach()
+                            .cpu()
+                            .numpy()
+                            .astype(np.float32)
+                        )
                         act_np = (
                             act_t.view(n_alive, n_agents).cpu().numpy().astype(np.int64)
                         )
@@ -1147,15 +1264,23 @@ def run_training(
                     buf_m[t, alive_idx] = m_b[alive_idx]
                     buf_g[t, alive_idx] = g_b[alive_idx]
                     buf_v[t, alive_idx] = v_np
+                    buf_act[t, alive_idx] = ~agent_done_b[alive_idx]
 
                     if vec is not None:
-                        obs_b, g_b, m_b, rewards, dones, travels = vec.step_batch(
-                            acts_full
-                        )
+                        (
+                            obs_b,
+                            g_b,
+                            m_b,
+                            rewards,
+                            dones,
+                            travels,
+                            agent_done_new,
+                        ) = vec.step_batch(acts_full)
                     else:
                         rewards = np.zeros((chunk, n_agents), dtype=np.float32)
                         dones = np.zeros(chunk, dtype=np.bool_)
                         travels = last_travel.copy()
+                        agent_done_new = agent_done_b.copy()
                         for j in alive_idx:
                             e = local_envs[j]
                             actions = {
@@ -1175,11 +1300,16 @@ def run_training(
                             )
                             dones[j] = bool(info["all_done"])
                             travels[j] = np.asarray(e._travel, dtype=np.float64)
+                            agent_done_new[j] = np.asarray(
+                                info["agent_done"], dtype=np.bool_
+                            )
 
                     buf_r[t, alive_idx] = rewards[alive_idx]
                     if not np.isfinite(buf_r[t, alive_idx]).all():
                         raise RuntimeError("NaN reward")
                     buf_d[t, alive_idx] = dones[alive_idx]
+                    buf_ad[t, alive_idx] = agent_done_new[alive_idx]
+                    agent_done_b[alive_idx] = agent_done_new[alive_idx]
                     ep_len[alive_idx] = t + 1
                     newly_done = alive_idx[dones[alive_idx]]
                     if newly_done.size:
@@ -1190,37 +1320,32 @@ def run_training(
                     L = int(ep_len[j])
                     if L <= 0:
                         continue
-                    d_j = buf_d[:L, j].tolist()
-                    adv_parts: list[np.ndarray] = []
-                    ret_parts: list[np.ndarray] = []
+                    # Per-agent trajectory ends at that agent's own arrival /
+                    # truncation; post-done no-op steps are not training samples
+                    # (they have r=0 and a forced mask, only dilute the batch).
+                    sel = buf_act[:L, j]  # [L, A]
+                    adv_mat = np.zeros((L, n_agents), dtype=np.float32)
+                    ret_mat = np.zeros((L, n_agents), dtype=np.float32)
                     for ai in range(n_agents):
+                        La = int(sel[:, ai].sum())
+                        if La == 0:
+                            continue
                         adv_i, ret_i = compute_gae(
-                            buf_r[:L, j, ai].tolist(),
-                            buf_v[:L, j, ai].tolist(),
-                            d_j,
+                            buf_r[:La, j, ai].tolist(),
+                            buf_v[:La, j, ai].tolist(),
+                            buf_ad[:La, j, ai].tolist(),
                             gamma,
                             gae_lam,
                         )
-                        adv_parts.append(np.asarray(adv_i, dtype=np.float32))
-                        ret_parts.append(np.asarray(ret_i, dtype=np.float32))
-                    # interleave as [t0_a0, t0_a1, ..., t1_a0, ...] matching reshape
-                    adv_mat = np.stack(adv_parts, axis=1)  # [L, A]
-                    ret_mat = np.stack(ret_parts, axis=1)
-                    o_flat = buf_o[:L, j].reshape(L * n_agents, obs_dim)
-                    a_flat = buf_a[:L, j].reshape(L * n_agents)
-                    lp_flat = buf_lp[:L, j].reshape(L * n_agents)
-                    m_flat = buf_m[:L, j].reshape(L * n_agents, n_actions)
-                    if ippo:
-                        g_flat = o_flat
-                    else:
-                        g_flat = np.repeat(buf_g[:L, j], n_agents, axis=0)
-                    all_obs.append(o_flat)
-                    all_act.append(a_flat)
-                    all_logp.append(lp_flat)
-                    all_mask.append(m_flat)
-                    all_g.append(g_flat)
-                    all_adv.append(adv_mat.reshape(L * n_agents))
-                    all_ret.append(ret_mat.reshape(L * n_agents))
+                        adv_mat[:La, ai] = adv_i
+                        ret_mat[:La, ai] = ret_i
+                    all_obs.append(buf_o[:L, j][sel])
+                    all_act.append(buf_a[:L, j][sel])
+                    all_logp.append(buf_lp[:L, j][sel])
+                    all_mask.append(buf_m[:L, j][sel])
+                    all_g.append(critic_inputs(buf_g[:L, j], buf_o[:L, j], ippo)[sel])
+                    all_adv.append(adv_mat[sel])
+                    all_ret.append(ret_mat[sel])
                     ep_returns.append(float(np.sum(buf_r[:L, j])))
                     ep_fleet.append(float(np.mean(last_travel[j])))
                     ep_lens.append(float(L))
@@ -1264,7 +1389,7 @@ def run_training(
                     surr1 = ratio * b_adv
                     surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * b_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
-                    values = critic(b_g if not ippo else b_obs).view(-1)
+                    values = critic(b_g).view(-1)
                     value_loss = F.mse_loss(values, b_ret.view(-1))
                     # Freeze actor for first N updates so critic catches up on BC rollouts
                     # without wiping the Dijkstra clone (v2f: best stayed @0 after PPO noise).
@@ -1318,7 +1443,9 @@ def run_training(
             if update % eval_every == 0 or update == max_updates:
                 # Score on GREEDY — same decision mode as beats_dijkstra_fair / BC seed.
                 # Stoch logged for train-distribution monitoring only.
-                n_val = 20
+                # Same episodes (seed_base, n) as the BC seed score, else best@0
+                # and later scores are measured on different samples.
+                n_val = int(bc_cfg.get("fair_check_episodes", 20))
                 val = evaluate_policy(
                     env, actor, val_ods, t_eval, device, n_episodes=n_val, greedy=False
                 )
@@ -1374,6 +1501,8 @@ def run_training(
                                 "critic": critic.state_dict(),
                                 "obs_dim": obs_dim,
                                 "global_dim": global_dim,
+                                "critic_in_dim": critic_in_dim,
+                                "reward_mode": env.reward_mode,
                                 "n_actions": n_actions,
                                 "ippo": ippo,
                                 "update": update,
@@ -1425,7 +1554,14 @@ def run_training(
             n_episodes=n_test_ep,
             seed_base=EVAL_SEED_BASE,
         )
-        for name in ("policy_greedy", "policy_stoch", "dijkstra", "random", "greedy_load"):
+        for name in (
+            "policy_greedy",
+            "policy_stoch",
+            "dijkstra",
+            "dijkstra_bpr",
+            "random",
+            "greedy_load",
+        ):
             m = fair.get(name)
             if not m:
                 continue
@@ -1436,7 +1572,11 @@ def run_training(
             )
         print(
             f"  [fair] delta_greedy-djk={fair.get('delta_fleet_greedy_minus_dijkstra')} "
-            f"beats_dijkstra_fair={fair.get('beats_dijkstra_fair')}",
+            f"beats_dijkstra_fair={fair.get('beats_dijkstra_fair')} | "
+            f"delta_greedy-djk_bpr={fair.get('delta_fleet_greedy_minus_dijkstra_bpr')} "
+            f"beats_dijkstra_bpr_fair={fair.get('beats_dijkstra_bpr_fair')} | "
+            f"delta_greedy-greedy_load={fair.get('delta_fleet_greedy_minus_greedy_load')} "
+            f"beats_greedy_load_fair={fair.get('beats_greedy_load_fair')}",
             flush=True,
         )
     else:
@@ -1458,7 +1598,7 @@ def run_training(
     grd = fair.get("greedy_load", {})
     baselines = {
         k: fair[k]
-        for k in ("dijkstra", "random", "greedy_load")
+        for k in ("dijkstra", "dijkstra_bpr", "random", "greedy_load")
         if k in fair and isinstance(fair[k], dict) and "fleet_mean" in fair[k]
     }
     summary = {
@@ -1491,10 +1631,15 @@ def run_training(
                 "policy_greedy",
                 "policy_stoch",
                 "dijkstra",
+                "dijkstra_bpr",
                 "random",
                 "greedy_load",
                 "delta_fleet_greedy_minus_dijkstra",
+                "delta_fleet_greedy_minus_dijkstra_bpr",
+                "delta_fleet_greedy_minus_greedy_load",
                 "beats_dijkstra_fair",
+                "beats_dijkstra_bpr_fair",
+                "beats_greedy_load_fair",
                 "beats_dijkstra_stoch",
                 "seed_base",
                 "n_episodes",
@@ -1519,7 +1664,10 @@ def run_training(
         if grd
         else None,
         "beats_dijkstra_fair": fair.get("beats_dijkstra_fair"),
+        "beats_dijkstra_bpr_fair": fair.get("beats_dijkstra_bpr_fair"),
+        "beats_greedy_load_fair": fair.get("beats_greedy_load_fair"),
         "beats_dijkstra_stoch": fair.get("beats_dijkstra_stoch"),
+        "reward_mode": env.reward_mode,
         "beats_random_fair": bool(
             rnd
             and test_g.get("fleet_mean", 1e18) < rnd["fleet_mean"]
@@ -1556,6 +1704,11 @@ def main() -> None:
     parser.add_argument("--ippo", action="store_true")
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--n-agents", type=int, default=None)
+    parser.add_argument(
+        "--bc-only",
+        action="store_true",
+        help="BC + gates + paired test eval, no PPO (cheap preflight before a full run)",
+    )
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.device:
@@ -1564,6 +1717,13 @@ def main() -> None:
         cfg.setdefault("train", {})["max_updates"] = int(args.max_updates)
     if args.n_agents is not None:
         cfg.setdefault("env", {})["n_agents"] = int(args.n_agents)
+    if args.bc_only:
+        cfg.setdefault("train", {})["max_updates"] = 0
+        cfg.setdefault("ppo", {})["n_envs"] = 1
+        cfg.setdefault("ppo", {})["use_subproc"] = False
+        cfg.setdefault("experiment", {})["data_tag"] = (
+            str(cfg.get("experiment", {}).get("data_tag", "mappo_micro")) + "_bconly"
+        )
     if args.smoke:
         print("*** SMOKE MODE - not a paper run ***", flush=True)
         cfg.setdefault("train", {})["max_updates"] = 2
@@ -1588,7 +1748,8 @@ def main() -> None:
         # Short BC cannot hit production gates — smoke only checks plumbing.
         cfg.setdefault("bc", {})["target_acc"] = 0.0
         cfg.setdefault("bc", {})["min_arrival_rate"] = 0.0
-        cfg.setdefault("bc", {})["max_fleet_ratio_vs_dijkstra"] = 99.0
+        cfg.setdefault("bc", {})["max_fleet_ratio_vs_teacher"] = 99.0
+        cfg.setdefault("bc", {})["max_arrival_gap_vs_dijkstra"] = 99.0
         cfg.setdefault("bc", {})["min_closed_loop_agree"] = 0.0
         cfg.setdefault("bc", {})["fair_check_episodes"] = 2
         cfg.setdefault("bc", {})["critic_fit_episodes"] = 2

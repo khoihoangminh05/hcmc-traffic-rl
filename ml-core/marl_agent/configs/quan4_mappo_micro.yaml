@@ -1,20 +1,29 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train) v2h
+# Quận 4 — MAPPO MICRO next-hop (MAIN train) v3a
 # Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v2h
+# data_tag: mappo_micro_v3a
 #
-# Lessons from v2f (best_u=0, greedy 5869/arr0.85 vs Djk 4474/arr1.0):
-#   - hash() broke subproc obs (fixed v2g md5)
-#   - train-batch BC acc lied; need holdout + closed-loop agree
-#   - ratio gate 1.35 too loose; need ≤1.10 + arr≥0.98
-#   - PPO wiped clone before critic ready → freeze actor N updates
-#   - spawn 24 envs BEFORE BC → RAM + EOFError on BC abort; spawn after BC
+# v3 = MDP fix (not gate tuning). Probe (marl_agent.probe_mdp_alignment, val n=24):
+#   - free-flow progress shaping corr with -BPR travel = -0.40 (pushed the wrong way);
+#     new marginal reward corr = +0.84; return = -(fleet travel [+ externality])/scale
+#   - v1–v2h "dijkstra" next-hop ignored edge cost: 11.8% worse than real Dijkstra,
+#     and BC cloned it. Fixed (argmin free_t(u,v) + remain(v)).
+#   - static congestion-aware Dijkstra gains 0%: congestion is the fleet itself
+#     (same-OD platoons in lockstep, BPR quartic on cap 2.5 alleys)
+#   - same-OD co-located agents had identical obs → a shared deterministic policy
+#     could never split a platoon. Obs now carries rank-ordered contention per exit;
+#     argmin(regret) == sequential load-aware router on 100% of 14k decisions.
+#   - that router (greedy_load) = 784s vs Dijkstra 5830s, arr 1.0 both.
+#   → BC teacher = greedy_load (DAgger); the bar PPO must clear is greedy_load.
+#     Local --bc-only test n=8: clone 848s = greedy_load 848s, Dijkstra 5276s.
+#   - critic input = global ⊕ own obs (was global only: same V for every agent)
+#   - per-agent GAE truncated at that agent's arrival; post-done no-ops dropped
 #
 #   CUDA_VISIBLE_DEVICES=1 python -u -m marl_agent.mappo_micro_train \
 #     --config marl_agent/configs/quan4_mappo_micro.yaml --device cuda
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v2h
+  data_tag: mappo_micro_v3a
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -48,7 +57,16 @@ env:
   bpr_beta: 4.0
   bpr_load_cap: 12.0
   corridor_prob: 0.35
+  # marginal = own BPR travel + delay imposed on co-movers (system optimum)
+  # travel   = own BPR travel only (selfish ablation)
+  # legacy   = v2h shaped reward (reproduce old runs only)
+  reward_mode: marginal
+  travel_scale: 1000.0
   reward_weights:
+    # used by every mode: failure cost charged on truncation (also added to travel)
+    truncate_fail_mult: 4.0
+    truncate_fail_floor: 8000.0
+    # legacy-mode only (ignored by marginal / travel)
     w_T: 1.0
     w_C: 0.35
     w_R: 0.05
@@ -57,8 +75,6 @@ env:
     w_progress: 0.4
     w_revisit: 0.25
     w_team: 0.15
-    truncate_fail_mult: 4.0
-    truncate_fail_floor: 8000.0
 
 model:
   hidden: 256
@@ -71,20 +87,26 @@ optim:
 
 bc:
   enabled: true
-  teacher: dijkstra
+  teacher: greedy_load
   updates: 200
   episodes_per_update: 32
   holdout_episodes: 8
   lr: 1.0e-3
-  target_acc: 0.995
+  # holdout = student-driven, teacher-labelled (closed-loop) accuracy
+  target_acc: 0.998
+  # DAgger: update u executed by teacher w.p. decay^(u-1), else by the student.
+  # Plain BC (teacher states only): acc 0.9993 but closed-loop agree 0.966,
+  # arr 0.984, ratio 1.19. DAgger (local, 7 updates): agree 1.000, ratio 1.001.
+  dagger_beta_decay: 0.7
+  dagger_buffer_updates: 8
   epochs_per_update: 6
   critic_fit_episodes: 64
   fair_check_episodes: 24
   min_arrival_rate: 0.95
   max_arrival_gap_vs_dijkstra: 0.05
-  max_fleet_ratio_vs_dijkstra: 1.10
+  max_fleet_ratio_vs_teacher: 1.10
   min_closed_loop_agree: 0.95
-  # Critic-only PPO for first N updates (protect Dijkstra clone).
+  # Critic-only PPO for first N updates (protect the clone while V adapts).
   freeze_actor_updates: 75
 
 ppo:
@@ -96,7 +118,8 @@ ppo:
   clip_eps: 0.1
   value_coef: 0.5
   entropy_coef: 0.01
-  gamma: 0.99
+  # episodes are ~60–200 hops; 0.99 discounted the arrival cost to ~0.13–0.55
+  gamma: 0.999
   gae_lambda: 0.95
   normalize_advantage: true
 
@@ -109,7 +132,7 @@ train:
 early_stopping:
   enabled: true
   patience: 40
-  min_delta: 50.0
+  min_delta: 10.0
   arrival_penalty: 12000.0
   restore_best: true
 

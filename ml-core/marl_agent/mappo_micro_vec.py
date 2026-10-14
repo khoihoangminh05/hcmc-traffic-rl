@@ -75,6 +75,7 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 o, m = _pack_obs(obs, info, agents)
                 r = np.asarray([float(rewards[a]) for a in agents], dtype=np.float32)
                 done = bool(info["all_done"])
+                agent_done = np.asarray(info["agent_done"], dtype=np.bool_)
                 travels = (
                     np.asarray(env._travel, dtype=np.float64)
                     if done
@@ -83,7 +84,15 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 remote.send(
                     (
                         "ok",
-                        (o, np.asarray(gstate, dtype=np.float32), m, r, done, travels),
+                        (
+                            o,
+                            np.asarray(gstate, dtype=np.float32),
+                            m,
+                            r,
+                            done,
+                            travels,
+                            agent_done,
+                        ),
                     )
                 )
             elif cmd == "close":
@@ -180,7 +189,10 @@ class SubprocMicroEnvs:
 
     def step_batch(
         self, actions: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[
+        np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    ]:
+        """Returns obs, global, masks, rewards, episode_done, travels, agent_done[n, A]."""
         assert actions.shape[0] == self.n
         for r, acts in zip(self._remotes, actions):
             r.send(("step", acts))
@@ -191,7 +203,8 @@ class SubprocMicroEnvs:
         rewards = np.stack([o[3] for o in outs], axis=0).astype(np.float32)
         dones = np.asarray([o[4] for o in outs], dtype=np.bool_)
         travels = np.stack([o[5] for o in outs], axis=0)
-        return obs, g, m, rewards, dones, travels
+        agent_done = np.stack([o[6] for o in outs], axis=0).astype(np.bool_)
+        return obs, g, m, rewards, dones, travels, agent_done
 
     def close(self) -> None:
         for r in self._remotes:
