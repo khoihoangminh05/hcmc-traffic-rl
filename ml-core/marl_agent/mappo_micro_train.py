@@ -569,12 +569,20 @@ def behavioral_clone_baseline(
     holdout_episodes: int = 8,
     dagger_beta_decay: float = 0.7,
     dagger_buffer_updates: int = 8,
+    val_ods: list[tuple[str, str]] | None = None,
+    t_eval: list[float] | None = None,
+    max_fleet_ratio: float = 1.10,
+    min_closed_loop_agree: float = 0.95,
+    probe_episodes: int = 0,
+    stop_beta: float = 0.15,
 ) -> dict[str, float]:
-    """Clone teacher with DAgger; gate on closed-loop holdout accuracy.
+    """Clone teacher with DAgger.
 
-    Holdout episodes are driven by the greedy student and labelled by the
-    teacher, so holdout_acc is accuracy on the states the clone actually visits
-    (v3a local: teacher-state acc 0.9993 but closed-loop agree 0.966, arr 0.984).
+    Holdout accuracy is measured on the train OD pool. sol1 v3a hit 0.9981
+    there at update 3 (beta still 0.49) while the val closed loop was only
+    0.9668 agree and 1.18× the teacher's fleet — a few wrong hops, quartic
+    BPR. Early stop now waits until the student is actually driving
+    (beta <= stop_beta) and a paired val probe clears the same ratio gate.
     """
     if updates <= 0:
         return {"bc_updates": 0.0, "bc_acc": 0.0, "bc_ce": 0.0, "bc_train_acc": 0.0}
@@ -585,7 +593,8 @@ def behavioral_clone_baseline(
         f"[bc] teacher={teacher} max_updates={updates} eps/upd={episodes_per_update} "
         f"lr={lr} target_holdout_acc={target_acc} epochs={epochs_per_update} "
         f"holdout_eps={holdout_episodes} dagger_beta_decay={dagger_beta_decay} "
-        f"buffer={dagger_buffer_updates}",
+        f"buffer={dagger_buffer_updates} stop_beta={stop_beta} "
+        f"val_probe_eps={probe_episodes}",
         flush=True,
     )
     rng = np.random.default_rng(seed + 7)
@@ -672,15 +681,59 @@ def behavioral_clone_baseline(
         ):
             print(
                 f"[bc] {u}/{updates} holdout_acc={last_acc:.4f} "
-                f"train_acc={last_train_acc:.4f} ce={last_ce:.4f} n={n}",
+                f"train_acc={last_train_acc:.4f} ce={last_ce:.4f} "
+                f"beta={beta:.3f} n={n}",
                 flush=True,
             )
-        if last_acc >= target_acc:
+        # Train-pool holdout can clear long before the val closed loop does.
+        if last_acc < target_acc or beta > float(stop_beta):
+            continue
+        if val_ods is None or not t_eval or int(probe_episodes) <= 0:
             print(
                 f"[bc] reached target_holdout_acc={target_acc} at update {u}",
                 flush=True,
             )
             break
+        agree_now = measure_closed_loop_teacher_agree(
+            env,
+            actor,
+            val_ods,
+            t_eval,
+            device,
+            n_episodes=int(probe_episodes),
+            seed_base=EVAL_SEED_BASE + 100_000,
+            teacher=teacher,
+        )
+        suite = evaluate_fair_suite(
+            env,
+            actor,
+            val_ods,
+            t_eval,
+            device,
+            n_episodes=int(probe_episodes),
+            seed_base=EVAL_SEED_BASE,
+            baseline_modes=(teacher,),
+        )
+        env.set_od_pool(train_ods)
+        pol_now = float(suite["policy_greedy"]["fleet_mean"])
+        teach_now = float(suite[teacher]["fleet_mean"])
+        ratio_now = pol_now / max(teach_now, 1.0)
+        print(
+            f"[bc] val probe u={u} agree={agree_now:.4f} "
+            f"greedy={pol_now:.1f}s teacher={teach_now:.1f}s "
+            f"ratio={ratio_now:.3f}",
+            flush=True,
+        )
+        if agree_now >= float(min_closed_loop_agree) and ratio_now <= float(max_fleet_ratio):
+            print(
+                f"[bc] reached holdout {target_acc} and val ratio gate at update {u}",
+                flush=True,
+            )
+            break
+        print(
+            f"[bc] holdout passed but val closed loop has not; continuing DAgger",
+            flush=True,
+        )
     if last_acc < target_acc:
         print(
             f"[bc] WARNING holdout_acc={last_acc:.4f} below target={target_acc}",
@@ -979,6 +1032,12 @@ def run_training(
             holdout_episodes=int(bc_cfg.get("holdout_episodes", 8)),
             dagger_beta_decay=float(bc_cfg.get("dagger_beta_decay", 0.7)),
             dagger_buffer_updates=int(bc_cfg.get("dagger_buffer_updates", 8)),
+            val_ods=val_ods,
+            t_eval=t_eval,
+            max_fleet_ratio=float(bc_cfg.get("max_fleet_ratio_vs_teacher", 1.10)),
+            min_closed_loop_agree=float(bc_cfg.get("min_closed_loop_agree", 0.95)),
+            probe_episodes=int(bc_cfg.get("fair_check_episodes", 0)),
+            stop_beta=float(bc_cfg.get("dagger_stop_beta", 0.15)),
         )
         fit_critic_on_teacher(
             env,
