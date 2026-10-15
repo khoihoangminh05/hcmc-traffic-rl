@@ -1,8 +1,7 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3k
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3l
 #
 # 50 vehicles, distinct origins and destinations, released across 120s.
-# 100 vehicles made one greedy episode take many minutes, so the first BC
-# line never appeared. 50 still cross on several streets. Do not resume v3j.
+# Do not resume v3k. BC uses 8 episodes per update, not 32.
 # Reward for every controller is realized travel time plus the pile penalty.
 # A light is only a place in the observation. Phase and cycle are applied
 # when a vehicle arrives and is not its destination. greedy_load skips that
@@ -44,7 +43,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3k
+  data_tag: mappo_micro_v3l
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -128,8 +127,10 @@ bc:
   enabled: true
   teacher: greedy_load
   updates: 200
-  episodes_per_update: 32
-  holdout_episodes: 8
+  # One episode is already ~1500 decisions (50 cars, staggered). 32 repeats
+  # made a single BC update half an hour. 8 still fills the clone.
+  episodes_per_update: 8
+  holdout_episodes: 4
   lr: 1.0e-3
   # holdout = student-driven, teacher-labelled (closed-loop) accuracy
   target_acc: 0.998
@@ -144,7 +145,7 @@ bc:
   # clears the same ratio / agree gates.
   dagger_stop_beta: 0.15
   epochs_per_update: 6
-  critic_fit_episodes: 64
+  critic_fit_episodes: 16
   fair_check_episodes: 8
   min_arrival_rate: 0.95
   max_arrival_gap_vs_dijkstra: 0.05
@@ -154,7 +155,7 @@ bc:
   freeze_actor_updates: 75
 
 ppo:
-  rollout_episodes: 32
+  rollout_episodes: 16
   n_envs: 8
   use_subproc: true
   minibatch_size: 8192
