@@ -67,7 +67,10 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 seed, t = data
                 obs, gstate, info = env.reset(seed=int(seed), options={"t": float(t)})
                 o, m = _pack_obs(obs, info, agents)
-                remote.send(("ok", (o, np.asarray(gstate, dtype=np.float32), m)))
+                acting = np.asarray(info["agent_acting"], dtype=np.bool_)
+                remote.send(
+                    ("ok", (o, np.asarray(gstate, dtype=np.float32), m, acting))
+                )
             elif cmd == "step":
                 acts_arr = np.asarray(data, dtype=np.int64)
                 actions = {a: int(acts_arr[i]) for i, a in enumerate(agents)}
@@ -81,6 +84,9 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                     if done
                     else np.zeros(len(agents), dtype=np.float64)
                 )
+                acting = np.asarray(info["agent_acting"], dtype=np.bool_)
+                immediate = np.asarray(info["immediate"], dtype=np.float32)
+                correction = np.asarray(info["correction"], dtype=np.float32)
                 remote.send(
                     (
                         "ok",
@@ -92,6 +98,9 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                             done,
                             travels,
                             agent_done,
+                            acting,
+                            immediate,
+                            correction,
                         ),
                     )
                 )
@@ -158,7 +167,7 @@ class SubprocMicroEnvs:
                 raise
         # probe dims
         self._remotes[0].send(("reset", (0, 28800.0)))
-        o, g, m = _recv_ok(self._remotes[0], what="probe reset")
+        o, g, m, _acting = _recv_ok(self._remotes[0], what="probe reset")
         self.n_agents = int(o.shape[0])
         self.obs_dim = int(o.shape[1])
         self.n_actions = int(m.shape[1])
@@ -185,14 +194,24 @@ class SubprocMicroEnvs:
         obs = np.stack([o[0] for o in outs], axis=0)
         g = np.stack([o[1] for o in outs], axis=0)
         m = np.stack([o[2] for o in outs], axis=0)
-        return obs, g, m
+        acting = np.stack([o[3] for o in outs], axis=0)
+        return obs, g, m, acting
 
     def step_batch(
         self, actions: np.ndarray
     ) -> tuple[
-        np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
     ]:
-        """Returns obs, global, masks, rewards, episode_done, travels, agent_done[n, A]."""
+        """obs, global, masks, rewards, episode_done, travels, agent_done, acting_next, immediate, correction."""
         assert actions.shape[0] == self.n
         for r, acts in zip(self._remotes, actions):
             r.send(("step", acts))
@@ -204,7 +223,10 @@ class SubprocMicroEnvs:
         dones = np.asarray([o[4] for o in outs], dtype=np.bool_)
         travels = np.stack([o[5] for o in outs], axis=0)
         agent_done = np.stack([o[6] for o in outs], axis=0).astype(np.bool_)
-        return obs, g, m, rewards, dones, travels, agent_done
+        acting = np.stack([o[7] for o in outs], axis=0).astype(np.bool_)
+        immediate = np.stack([o[8] for o in outs], axis=0).astype(np.float32)
+        correction = np.stack([o[9] for o in outs], axis=0).astype(np.float32)
+        return obs, g, m, rewards, dones, travels, agent_done, acting, immediate, correction
 
     def close(self) -> None:
         for r in self._remotes:

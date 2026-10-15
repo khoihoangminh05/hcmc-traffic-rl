@@ -47,24 +47,45 @@ class MicroAlleyEnv:
         n_agents: int = 16,
         max_degree: int = 8,
         max_steps: int = 200,
-        compact_dim: int = 160,
+        compact_dim: int = 192,
         bpr_alpha: float = 0.15,
         bpr_beta: float = 4.0,
         bpr_load_cap: float = 12.0,
         corridor_prob: float = 0.4,
         reward_weights: dict[str, float] | None = None,
         density_catalog: dict[str, Path] | None = None,
-        reward_mode: str = "marginal",
+        reward_mode: str = "travel",
         travel_scale: float = 1000.0,
+        depart_span_s: float = 90.0,
+        jam_spacing_m: float = 6.0,
+        shock_rate: float = 0.0,
+        share_coef: float = 0.0,
+        include_alley_info: bool = True,
     ) -> None:
         if reward_mode not in ("marginal", "travel", "legacy"):
             raise ValueError(f"reward_mode={reward_mode!r}")
-        # marginal: -(own BPR tt + delay imposed on co-movers) — difference reward
-        #           for the fleet objective (system optimum, exact per-step credit).
-        # travel:   -(own BPR tt) — selfish, Wardrop-style.
+        # travel:   realized traversal time, plus the pile penalty in _corr.
+        #           This is the compared score for every controller.
+        # marginal: that same time, plus the imposed delay a second time.
         # legacy:   v1–v2h shaped reward (free-flow progress, cong, revisit, team).
         self.reward_mode = reward_mode
         self.travel_scale = max(1.0, float(travel_scale))
+        # Release offsets. 0 = everyone departs together (tests). Training uses
+        # a spread so vehicles do not enter the corridor on the same instant.
+        self.depart_span_s = max(0.0, float(depart_span_s))
+        # Metres of alley per vehicle stored in it. Distinct from BPR flow
+        # capacity: a full alley refuses entry and the vehicle waits at the node.
+        self.jam_spacing_m = max(1.0, float(jam_spacing_m))
+        # Probability an episode draws one controlled exogenous event. 0 keeps
+        # the nominal MDP (unit tests). Training sets 1. The event is seeded and
+        # locked across controllers; the basic heuristic does not read it.
+        self.shock_rate = min(1.0, max(0.0, float(shock_rate)))
+        # Extra seconds charged when a vehicle joins others already on a link.
+        # Same charge for every controller. It is part of the reward and of the
+        # compared objective (travel + this penalty). It is not a second copy
+        # of the BPR slowdown, which is already inside travel time.
+        self.share_coef = max(0.0, float(share_coef))
+        self.include_alley_info = bool(include_alley_info)
         self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = max(2, int(n_agents))
@@ -142,6 +163,17 @@ class MicroAlleyEnv:
         self._intent_edge: dict[tuple[str, str], int] = {}
         self._intent_of: list[tuple[str, str] | None] = []
         self._prior_load: list[dict[tuple[str, str], int]] = []
+        self._social_of: list[tuple[str, str] | None] = []
+        self._social_prior: list[dict[tuple[str, str], int]] = []
+        self._pred_ext: list[dict[tuple[str, str], float]] = []
+        self._shocks: list[dict[str, Any]] = []
+        # OSM signals snapped onto this graph. Empty when the sidecar is absent.
+        # The phase is public: every controller, including greedy_load, adds the
+        # red wait it would actually meet.
+        self._signals: set[str] = set()
+        self._signal_offset: dict[str, float] = {}
+        self._shock_edge: tuple[str, str] | None = None
+        self._load_signals()
 
     @staticmethod
     def _is_alley(data: dict[str, Any]) -> bool:
@@ -166,6 +198,40 @@ class MicroAlleyEnv:
         from data_fusion.alley_graph import build_demo_alley_graph
 
         return build_demo_alley_graph()
+
+    def _load_signals(self) -> None:
+        """Static OSM program. Same file the SUMO net was built from."""
+        candidates: list[Path] = []
+        if self.graph_path:
+            candidates.append(Path(self.graph_path).with_name("osm_signals_snapped.json"))
+        candidates.append(Path(__file__).resolve().parents[2] / "sumo-env" / "quan4_osm_signals.json")
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        known = set(self._nodes)
+        for row in data.get("signals") or []:
+            node = str(row.get("node") or "")
+            if node not in known:
+                continue
+            if self._g.in_degree(node) < 1 or self._g.out_degree(node) < 1:
+                continue
+            self._signals.add(node)
+            self._signal_offset[node] = float(row.get("offset_s") or 0.0)
+
+    # SUMO static program: red for the first red_s of each cycle, then green.
+    # phase = (t - offset) mod cycle, matching SUMO's program shift.
+    SIGNAL_CYCLE_S = 60.0
+    SIGNAL_RED_S = 30.0
+
+    def _red_wait(self, node: str, arrive: float) -> float:
+        if node not in self._signals:
+            return 0.0
+        offset = float(self._signal_offset.get(node, 0.0))
+        phase = (float(arrive) - offset) % self.SIGNAL_CYCLE_S
+        if phase >= self.SIGNAL_RED_S:
+            return 0.0
+        return self.SIGNAL_RED_S - phase
 
     def _load_density_file(
         self, path: Path
@@ -369,6 +435,241 @@ class MicroAlleyEnv:
         load_c = min(float(load), self.bpr_load_cap)
         return float(t0 * (1.0 + self.bpr_alpha * (load_c / cap) ** self.bpr_beta))
 
+    def _pace(self, edge: tuple[str, str], n_veh: int) -> float:
+        """Wall-seconds per free-flow-second at this occupancy. Piecewise constant."""
+        t0 = self._edge_free_time(edge[0], edge[1])
+        if t0 <= 1e-8:
+            return 1.0
+        load = (
+            float(self._bg_load.get(edge, 0.0))
+            + float(max(0, n_veh))
+            + self._exogenous_load(edge)
+        )
+        pace = max(1e-3, self._bpr_time(edge[0], edge[1], load) / t0)
+        return pace * self._obstacle_factor(edge)
+
+    def _storage(self, edge: tuple[str, str]) -> int:
+        """How many vehicles fit in the alley at once. Full → entry is refused."""
+        length = float(self._g.edges[edge[0], edge[1]]["length_m"])
+        base = max(1, int(length / self.jam_spacing_m))
+        if self._obstacle_factor(edge) > 1.0:
+            return max(1, base // 2)
+        return base
+
+    def _exogenous_load(self, edge: tuple[str, str]) -> float:
+        """Residents or a school release already in progress. Not a forecast."""
+        now = float(getattr(self, "_sim", 0.0))
+        total = 0.0
+        for sh in getattr(self, "_shocks", []):
+            if sh["edge"] != edge or sh["kind"] == "obstacle":
+                continue
+            if sh["t0"] <= now < sh["t1"]:
+                total += float(sh["extra"])
+        return total
+
+    def _obstacle_factor(self, edge: tuple[str, str]) -> float:
+        now = float(getattr(self, "_sim", 0.0))
+        factor = 1.0
+        for sh in getattr(self, "_shocks", []):
+            if sh["edge"] == edge and sh["kind"] == "obstacle" and sh["t0"] <= now < sh["t1"]:
+                factor = max(factor, 4.0)
+        return factor
+
+    def _shock_view(self, edge: tuple[str, str]) -> tuple[float, float]:
+        """Countdown and magnitude of a scheduled event on this edge.
+
+        The heuristic's forecast uses only the load that is already happening,
+        so a school release or a blockage that starts in 20s is invisible to it.
+        """
+        now = float(getattr(self, "_sim", 0.0))
+        eta = 0.0
+        mag = 0.0
+        seen = False
+        for sh in getattr(self, "_shocks", []):
+            if sh["edge"] != edge or now >= sh["t1"]:
+                continue
+            mass = 1.0 if sh["kind"] == "obstacle" else float(sh["extra"]) / 10.0
+            if now < sh["t0"]:
+                dt = float(sh["t0"] - now)
+                if not seen or dt < eta:
+                    eta = dt
+                mag = max(mag, mass)
+                seen = True
+            else:
+                eta = 0.0
+                mag = max(mag, mass)
+                seen = True
+        return min(eta / 100.0, 50.0), mag
+
+    def _merge_pressure(self, u: str, v: str) -> float:
+        """Vehicles on other approaches whose free-flow path still uses (u, v).
+
+        Someone standing at u does not count: the heuristic already sees them.
+        Streams that have not reached the junction yet do not.
+        """
+        edge = (u, v)
+        n = 0
+        for i in range(self.n_agents):
+            if self._done[i] or self._edge_of[i] == edge or self._pos[i] == u:
+                continue
+            if self._through_edge(self._pos[i], self._ods[i][1], u, v):
+                n += 1
+        return float(n) / max(self.n_agents, 1)
+
+    def _copy_shocks(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for sh in raw:
+            if "edge" in sh:
+                u, v = sh["edge"]
+            else:
+                u, v = sh["u"], sh["v"]
+            edge = (str(u), str(v))
+            if edge not in self._cap:
+                continue
+            out.append(
+                {
+                    "kind": str(sh.get("kind", "egress")),
+                    "edge": edge,
+                    "t0": float(sh["t0"]),
+                    "t1": float(sh["t1"]),
+                    "extra": float(sh.get("extra", 0.0)),
+                }
+            )
+        return out
+
+    def _sample_shocks(self) -> None:
+        """One seeded event on the shared alley: residents, school, or a blockage."""
+        self._shocks = []
+        if self.shock_rate <= 0.0 or float(self.rng.random()) > self.shock_rate:
+            return
+        edge = self._shock_edge if self._shock_edge in self._cap else None
+        if edge is None:
+            edge = self._overlap_edge if self._overlap_edge in self._cap else None
+        if edge is None:
+            for o, d in self._ods:
+                for cand in self._edge_index:
+                    if self._cap.get(cand, 8.0) <= 2.5 and self._through_edge(o, d, cand[0], cand[1]):
+                        edge = cand
+                        break
+                if edge is not None:
+                    break
+        if edge is None:
+            return
+        kind = ("egress", "school", "obstacle")[int(self.rng.integers(0, 3))]
+        t0 = float(self.rng.uniform(10.0, 80.0))
+        if kind == "egress":
+            extra, dur = 4.0, 30.0
+        elif kind == "school":
+            extra, dur = 8.0, 45.0
+        else:
+            extra, dur = 0.0, 60.0
+        self._shocks = [
+            {
+                "kind": kind,
+                "edge": (str(edge[0]), str(edge[1])),
+                "t0": t0,
+                "t1": t0 + dur,
+                "extra": extra,
+            }
+        ]
+
+    def _entry_wait(self, edge: tuple[str, str], n_ahead: int) -> float:
+        """Seconds until a storage slot opens. n_ahead excludes the vehicle being scored."""
+        storage = self._storage(edge)
+        if n_ahead < storage:
+            return 0.0
+        n_wait = n_ahead - storage + 1
+        t0 = max(1e-6, self._edge_free_time(edge[0], edge[1]))
+        slot = t0 * self._pace(edge, storage) / storage
+        return float(n_wait * slot)
+
+    def _downstream_fill(self, node: str) -> float:
+        """Max storage-fill of edges leaving `node`. The one-step heuristic ignores this."""
+        nxts = self._neighbors(node)[: self.max_degree]
+        if not nxts:
+            return 0.0
+        fills = [
+            len(self._on_edge.get((node, v), [])) / self._storage((node, v)) for v in nxts
+        ]
+        return float(min(1.5, max(fills)))
+
+    def _approaching(self, node: str) -> float:
+        """Vehicles already on an edge that ends at `node`, not yet there."""
+        n = sum(
+            1
+            for e in self._edge_of
+            if e is not None and e[1] == node
+        )
+        return float(n) / max(self.n_agents, 1)
+
+    def _forecast_entry(self, u: str, v: str, n_extra: int) -> tuple[float, float]:
+        """Own crossing time and the extra time imposed on vehicles already in.
+
+        `n_extra` vehicles (lower-index decisions at this same instant) plus the
+        vehicle being scored enter now at progress 0. Occupants keep their
+        remaining free-flow distance. Pace is recomputed every time someone
+        exits. A full alley is not entered: own cost is the wait plus a crossing
+        at jam pace, and externality is 0 because the vehicle stays at the node.
+
+        Private cost is `tt`. Social cost is `tt + ext`. With BPR exponent 4 the
+        externality is several times the private congestion term, so a vehicle
+        can still prefer the alley for itself while making the fleet slower.
+        """
+        edge = (u, v)
+        t0 = max(1e-6, self._edge_free_time(u, v))
+        now = float(self._sim)
+        ids = list(self._on_edge.get(edge, []))
+        n = len(ids)
+        if n + int(n_extra) >= self._storage(edge):
+            tt = self._entry_wait(edge, n + int(n_extra)) + t0 * self._pace(
+                edge, self._storage(edge)
+            )
+            return float(tt), 0.0
+        last = float(self._edge_clock.get(edge, now))
+        dprog = 0.0
+        if n and now > last + 1e-9:
+            dprog = (now - last) / self._pace(edge, n)
+        exist = [
+            max(0.0, t0 - (float(self._prog[j]) + dprog))
+            for j in ids
+            if t0 - (float(self._prog[j]) + dprog) > 1e-5
+        ]
+
+        def walls(n_new: int) -> list[float]:
+            rem = list(exist) + [t0] * n_new
+            out_w = [0.0] * len(rem)
+            alive = [k for k, r in enumerate(rem) if r > 1e-5]
+            wall = 0.0
+            guard = 0
+            while alive and guard < 64:
+                guard += 1
+                f = self._pace(edge, len(alive))
+                step = min(rem[k] for k in alive)
+                wall += step * f
+                done: list[int] = []
+                for k in alive:
+                    rem[k] -= step
+                    if rem[k] <= 1e-5:
+                        out_w[k] = wall
+                        done.append(k)
+                for k in done:
+                    alive.remove(k)
+            return out_w
+
+        prior = max(0, int(n_extra))
+        without = walls(prior)
+        with_me = walls(prior + 1)
+        ext = 0.0
+        for k in range(len(without)):
+            ext += max(0.0, with_me[k] - without[k])
+        tt = with_me[-1] if with_me else 0.0
+        return float(tt), float(ext)
+
+    def _forecast_tt(self, u: str, v: str, n_extra: int) -> float:
+        """Wall time for one more vehicle to cross (u, v). See `_forecast_entry`."""
+        tt, _ext = self._forecast_entry(u, v, n_extra)
+        return tt
+
     def _remain_free(self, curr: str, dest: str) -> float:
         if curr == dest:
             return 0.0
@@ -410,42 +711,55 @@ class MicroAlleyEnv:
         )
         return (curr, best)
 
-    def _refresh_intents(self) -> None:
-        """Rank-ordered contention (agent index = rank, like a vehicle id).
-
-        Agent i sees, per exit, how many lower-index agents at its node commit to
-        it under the sequential load-aware rule. Without this, co-located agents
-        with one OD have identical obs, so a shared deterministic policy must
-        send the whole platoon down one edge (BPR blows up quartically there).
-        """
+    def _score_waiting(self, social: bool) -> tuple[
+        list[tuple[str, str] | None],
+        list[dict[tuple[str, str], int]],
+        list[dict[tuple[str, str], float]],
+        list[dict[tuple[str, str], float]],
+        dict[tuple[str, str], int],
+    ]:
+        """Index-order next hop. Social adds the delay imposed on vehicles already in."""
         committed: dict[tuple[str, str], int] = {}
         prior: list[dict[tuple[str, str], int]] = [{} for _ in range(self.n_agents)]
         intent_of: list[tuple[str, str] | None] = [None] * self.n_agents
+        pred_tt: list[dict[tuple[str, str], float]] = [{} for _ in range(self.n_agents)]
+        pred_ext: list[dict[tuple[str, str], float]] = [{} for _ in range(self.n_agents)]
+        ready = set(self._awaiting)
         for i in range(self.n_agents):
-            if self._done[i]:
+            if i not in ready or self._done[i]:
                 continue
             curr, dest = self._pos[i], self._ods[i][1]
             cand = self._neighbors(curr)[: self.max_degree]
             if not cand:
                 continue
             prior[i] = {(curr, n): committed.get((curr, n), 0) for n in cand}
-            best = min(
-                cand,
-                key=lambda n: self._bpr_time(
-                    curr,
-                    n,
-                    float(self._bg_load.get((curr, n), 0.0))
-                    + 1.0
-                    + prior[i][(curr, n)],
-                )
-                + self._remain_bpr(n, dest),
-            )
+            scored: list[tuple[float, str]] = []
+            for n in cand:
+                tt, ext = self._forecast_entry(curr, n, prior[i][(curr, n)])
+                pred_tt[i][(curr, n)] = tt
+                pred_ext[i][(curr, n)] = ext
+                has_light, q = self._hop_rank(n, dest, tt, ext, social)
+                scored.append((has_light, q, n))
+            _lit, _q, best = min(scored, key=lambda row: (row[0], row[1], row[2]))
             e = (curr, best)
             intent_of[i] = e
             committed[e] = committed.get(e, 0) + 1
-        self._intent_of = intent_of
+        return intent_of, prior, pred_tt, pred_ext, committed
+
+    def _refresh_intents(self) -> None:
+        """Selfish next hop for agents who are at a node right now.
+
+        Own forecast plus static remaining time. A known light is avoided when
+        another exit exists. Phase and cycle are not inputs. argmin of the
+        regret feature reproduces this rule. It does not reserve capacity for
+        a stream still on another approach, and it does not look at a shock
+        that has not started. Only the ready set acts.
+        """
+        intent, prior, pred_tt, _ext, committed = self._score_waiting(False)
+        self._intent_of = intent
         self._prior_load = prior
         self._intent_edge = committed
+        self._pred_tt = pred_tt
 
     def _density_summaries(self) -> np.ndarray:
         dens = np.array(
@@ -492,7 +806,8 @@ class MicroAlleyEnv:
 
     def action_mask(self, agent_idx: int) -> np.ndarray:
         mask = np.zeros(self.max_degree, dtype=np.float32)
-        if self._done[agent_idx]:
+        ready = set(getattr(self, "_awaiting", []))
+        if self._done[agent_idx] or agent_idx not in ready:
             mask[0] = 1.0
             return mask
         neigh = self._neighbors(self._pos[agent_idx])
@@ -503,10 +818,28 @@ class MicroAlleyEnv:
             mask[i] = 1.0
         return mask
 
-    # obs = [t(2), peak(3), emb O/D/curr(24), scalars(6), dens(4), unc(3)] + neighbors
-    OBS_SCALAR_DIM = 42
-    NEIGH_FEATS = 14
+    # obs = [t(2), peak(3), emb O/D/curr(24), scalars(7), dens(4), unc(3)] + neighbors
+    # neighbor 14–15 = scheduled shock the heuristic does not read.
+    # neighbor 16 = vehicles on other approaches that will still use this edge.
+    # neighbor 17 = 1 if the next node has a light, else 0. Not the phase or cycle.
+    OBS_SCALAR_DIM = 43
+    NEIGH_FEATS = 18
     REGRET_IDX = 13
+    SHOCK_ETA_IDX = 14
+    SHOCK_MAG_IDX = 15
+    MERGE_IDX = 16
+    HAS_SIGNAL_IDX = 17
+
+    def _hop_rank(
+        self, nxt: str, dest: str, tt: float, ext: float, social: bool
+    ) -> tuple[float, float]:
+        """(avoid, seconds). Avoid a light the vehicle would pass through.
+
+        Stopping at that node is not a wait. Phase and cycle are not inputs.
+        """
+        avoid = 1.0 if nxt in self._signals and nxt != dest else 0.0
+        seconds = tt + (ext if social else 0.0) + self._remain_bpr(nxt, dest)
+        return avoid, seconds
 
     def neighbor_block(self, obs_vec: np.ndarray) -> np.ndarray:
         """[max_degree, NEIGH_FEATS] view of the neighbor features of one local obs."""
@@ -539,6 +872,7 @@ class MicroAlleyEnv:
                     self._travel[i] / 1000.0,
                     n_here / max(self.n_agents, 1),
                     min(revisits, 5.0) / 5.0,
+                    self._approaching(curr),
                 ],
                 dtype=np.float32,
             ),
@@ -549,39 +883,52 @@ class MicroAlleyEnv:
         nf = self.NEIGH_FEATS
         rows = np.zeros((self.max_degree, nf), dtype=np.float32)
         prior = self._prior_load[i] if i < len(self._prior_load) else {}
+        pred = self._pred_tt[i] if i < len(getattr(self, "_pred_tt", [])) else {}
         q_vals: list[float] = []
         for j, nxt in enumerate(neigh):
             e = (curr, nxt)
             data = self._g.edges[curr, nxt]
             ft = self._edge_free_time(curr, nxt)
             bg = float(self._bg_load.get(e, 0.0))
-            # Load this step = bg + every agent that takes e now; only agents at
-            # `curr` can. Lower-rank commitments are known, higher ranks follow.
+            # others = same-instant lower ranks already committed to e.
+            # live = vehicles physically still inside the alley.
             others = float(prior.get(e, 0))
-            tt_pred = self._bpr_time(curr, nxt, bg + 1.0 + others)
-            rem_bpr = self._remain_bpr(nxt, d)
-            q = tt_pred + rem_bpr
-            q_vals.append(q)
+            live = float(len(self._on_edge.get(e, [])))
+            tt_pred = float(pred[e]) if e in pred else self._forecast_tt(curr, nxt, int(others))
+            avoid, q = self._hop_rank(nxt, d, tt_pred, 0.0, False)
+            q_vals.append((avoid, q))
+            eta, mag = self._shock_view(e)
+            alley = self._is_alley(data)
+            show_alley = alley and self.include_alley_info
+            cap_feat = self._cap[e] if show_alley or not alley else 8.0
             rows[j, :13] = [
                 1.0,
-                1.0 if self._is_alley(data) else 0.0,
+                1.0 if show_alley else 0.0,
                 ft / 100.0,
-                self._edge_unc(curr, nxt),
-                bg / 5.0,
-                float(self._live_edge.get(e, 0.0)) / max(self.n_agents, 1),
-                float(self._node_occ.get(nxt, 0.0)) / max(self.n_agents, 1),
-                1.0 / max(self._cap[e], 0.5),
+                self._edge_unc(curr, nxt) if show_alley or not alley else 0.05,
+                (bg / 5.0) if show_alley or not alley else 0.0,
+                live / max(self.n_agents, 1),
+                self._downstream_fill(nxt),
+                1.0 / max(cap_feat, 0.5),
                 self._remain_free(nxt, d) / 1000.0,
-                others / max(self.n_agents, 1),
+                (live + others) / max(self.n_agents, 1),
                 tt_pred / 100.0,
-                rem_bpr / 1000.0,
+                self._remain_bpr(nxt, d) / 1000.0,
                 q / 1000.0,
             ]
+            rows[j, self.SHOCK_ETA_IDX] = eta
+            rows[j, self.SHOCK_MAG_IDX] = mag
+            rows[j, self.MERGE_IDX] = self._merge_pressure(curr, nxt)
+            rows[j, self.HAS_SIGNAL_IDX] = 1.0 if nxt in self._signals else 0.0
         if q_vals:
-            q_min = min(q_vals)
-            for j, q in enumerate(q_vals):
-                # regret vs best hop under predicted load (0 = congested-optimal)
-                rows[j, self.REGRET_IDX] = min((q - q_min) / 100.0, 50.0)
+            best_light, best_q = min(q_vals)
+            for j, (lit, q) in enumerate(q_vals):
+                # 0 on the hop the heuristic takes. A light is refused while
+                # any exit without a light exists. The gap is not the red time.
+                if lit > best_light:
+                    rows[j, self.REGRET_IDX] = 50.0
+                else:
+                    rows[j, self.REGRET_IDX] = min((q - best_q) / 100.0, 50.0)
         feat_parts.append(rows.reshape(-1))
         feat = np.concatenate(feat_parts)
         if feat.size > self.compact_dim:
@@ -630,28 +977,188 @@ class MicroAlleyEnv:
     def global_state_dim(self) -> int:
         return int(self._global_state().shape[0])
 
+    def _through_edge(self, o: str, d: str, u: str, v: str) -> bool:
+        if o == d or o == v or d == u:
+            return False
+        ft = self._edge_free_time(u, v)
+        ru = self._remain_free(o, u)
+        rv = self._remain_free(v, d)
+        rd = self._remain_free(o, d)
+        if min(ru, rv, rd) >= 1e4 or rd < 40.0:
+            return False
+        return abs((ru + ft + rv) - rd) <= 1.0
+
+    def _through_path(self, o: str, d: str, edges: list[tuple[str, str]]) -> bool:
+        """True when every edge of the corridor lies on the free-flow shortest path."""
+        if not edges or o == d:
+            return False
+        rd = self._remain_free(o, d)
+        if rd >= 1e4 or rd < 40.0:
+            return False
+        acc = self._remain_free(o, edges[0][0])
+        if acc >= 1e4:
+            return False
+        for u, v in edges:
+            acc += self._edge_free_time(u, v)
+            if abs(acc + self._remain_free(v, d) - rd) > 1.0:
+                return False
+        return True
+
+    def _free_path(self, o: str, d: str) -> list[tuple[str, str]]:
+        """Edges of one free-flow shortest path. Empty when o cannot reach d."""
+        if o == d:
+            return []
+        edges: list[tuple[str, str]] = []
+        cur = o
+        for _ in range(64):
+            if cur == d:
+                return edges
+            rd = self._remain_free(cur, d)
+            if rd >= 1e4:
+                return []
+            nxt = None
+            for cand in self._g.successors(cur):
+                if abs(self._edge_free_time(cur, cand) + self._remain_free(cand, d) - rd) <= 1.0:
+                    nxt = cand
+                    break
+            if nxt is None:
+                return []
+            edges.append((cur, nxt))
+            cur = nxt
+        return []
+
+    def _fleet_overlap(
+        self, ods: list[tuple[str, str]]
+    ) -> tuple[dict[tuple[str, str], int], int, int]:
+        """Edge counts, number of edges several vehicles share, and the busiest count."""
+        counts: dict[tuple[str, str], int] = {}
+        for o, d in ods:
+            seen: set[tuple[str, str]] = set()
+            for edge in self._free_path(o, d):
+                if edge in seen:
+                    continue
+                seen.add(edge)
+                counts[edge] = counts.get(edge, 0) + 1
+        if not counts:
+            return counts, 0, 0
+        min_cross = 2 if len(ods) < 12 else 3
+        crossed = sum(1 for c in counts.values() if c >= min_cross)
+        busiest = max(counts.values())
+        return counts, crossed, busiest
+
+    def _balance_score(self, ods: list[tuple[str, str]]) -> float:
+        """Reward paths that meet on several streets, and a pile-up on one alley."""
+        n = max(len(ods), 1)
+        counts, crossed, busiest = self._fleet_overlap(ods)
+        if not counts:
+            return -1e6
+        meet = sum(c - 1 for c in counts.values() if c >= 2)
+        share_cap = max(3, n // 4)
+        pile = max(0, busiest - share_cap)
+        score = float(meet + 4 * crossed - pile * n)
+        if meet < max(1, n // 10):
+            score -= float(n)
+        return score
+
+    def _draw_unique_ods(self, n: int) -> list[tuple[str, str]]:
+        nodes = self._nodes
+        used_o: set[str] = set()
+        used_d: set[str] = set()
+        ods: list[tuple[str, str]] = []
+        for _ in range(max(200, n * 80)):
+            if len(ods) >= n:
+                break
+            o, d = (str(x) for x in self.rng.choice(nodes, size=2, replace=False))
+            if o in used_o or d in used_d:
+                continue
+            dist = self._remain_free(o, d)
+            if dist < 40.0 or dist > 900.0 or dist >= 1e4:
+                continue
+            ods.append((o, d))
+            used_o.add(o)
+            used_d.add(d)
+        if len(ods) < n:
+            for o, d in self._fallback_unique_ods(n):
+                if o in used_o or d in used_d:
+                    continue
+                ods.append((o, d))
+                used_o.add(o)
+                used_d.add(d)
+                if len(ods) >= n:
+                    break
+        while len(ods) < n and ods:
+            ods.append(ods[-1])
+        return ods[:n]
+
+    def _fallback_unique_ods(self, n: int) -> list[tuple[str, str]]:
+        nodes = self._nodes
+        used_o: set[str] = set()
+        used_d: set[str] = set()
+        ods: list[tuple[str, str]] = []
+        for _ in range(n * 40):
+            if len(ods) >= n:
+                break
+            o, d = (str(x) for x in self.rng.choice(nodes, size=2, replace=False))
+            if o in used_o or d in used_d:
+                continue
+            dist = self._remain_free(o, d)
+            if dist >= 1e4 or dist < 40.0:
+                continue
+            ods.append((o, d))
+            used_o.add(o)
+            used_d.add(d)
+        while len(ods) < n and ods:
+            ods.append(ods[-1])
+        while len(ods) < n:
+            a, b = (str(x) for x in self.rng.choice(nodes, size=2, replace=False))
+            ods.append((a, b))
+        return ods[:n]
+
     def _sample_ods(self) -> list[tuple[str, str]]:
-        pool = self._od_pool
-        if not pool:
-            out = []
-            for _ in range(self.n_agents):
-                a, b = self.rng.choice(self._nodes, size=2, replace=False)
-                out.append((str(a), str(b)))
-            return out
-        if self.rng.random() < self.corridor_prob and len(pool) >= 2:
-            anchor = pool[int(self.rng.integers(0, len(pool)))]
-            scored = sorted(
-                pool,
-                key=lambda od: abs(_stable_u32(od[0]) - _stable_u32(anchor[0])) % 997
-                + abs(_stable_u32(od[1]) - _stable_u32(anchor[1])) % 997,
-            )
-            picks = scored[: self.n_agents]
-            while len(picks) < self.n_agents:
-                picks.append(pool[int(self.rng.integers(0, len(pool)))])
-            self.rng.shuffle(picks)
-            return picks[: self.n_agents]
-        idx = self.rng.choice(len(pool), size=self.n_agents, replace=True)
-        return [pool[int(i)] for i in idx]
+        """Distinct origins and destinations whose paths meet, without one funnel.
+
+        Draw several fleets and keep the one that shares several streets.
+        A single alley carrying the whole fleet scores worse than the same
+        number of meetings spread across a few streets. Nothing is required
+        to pass a signal; a light only delays a vehicle that happens to arrive.
+        """
+        n = self.n_agents
+        best: list[tuple[str, str]] | None = None
+        best_score = -1e18
+        best_counts: dict[tuple[str, str], int] = {}
+        draws = 8 if n >= 40 else 16
+        for _ in range(draws):
+            ods = self._draw_unique_ods(n)
+            score = self._balance_score(ods)
+            if score > best_score:
+                best_score = score
+                best = ods
+                best_counts, _crossed, _busiest = self._fleet_overlap(ods)
+        ods = list(best or self._fallback_unique_ods(n))
+        self.rng.shuffle(ods)
+        min_share = 2 if n < 12 else 4
+        ranked = sorted(best_counts.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))
+        alleys = [e for e, c in ranked if c >= min_share and self._cap.get(e, 8.0) <= 2.5]
+        shared = [e for e, c in ranked if c >= min_share]
+        chosen = alleys[0] if alleys else (shared[0] if shared else None)
+        self._overlap_edge = chosen
+        self._overlap_corridor = [chosen] if chosen is not None else None
+        self._shock_edge = chosen
+        return ods[:n]
+
+    def _assign_departures(self) -> None:
+        n = self.n_agents
+        span = self.depart_span_s
+        if span <= 1e-6 or n == 1:
+            self._depart = [0.0] * n
+            return
+        # Distinct release times spread over `span`. Permute so agent index is
+        # not departure order and nobody waits at the curb for the others.
+        slots = np.linspace(0.0, span, n)
+        order = self.rng.permutation(n)
+        self._depart = [0.0] * n
+        for k, i in enumerate(order):
+            self._depart[int(i)] = float(slots[k])
 
     def reset(
         self, seed: int | None = None, options: dict[str, Any] | None = None
@@ -662,6 +1169,9 @@ class MicroAlleyEnv:
         self._t = float(options.get("t", 28800.0))
         self.ensure_density_for_t(self._t)
         self._step_i = 0
+        self._overlap_edge = None
+        self._overlap_corridor = None
+        self._shock_edge = None
         if "ods" in options:
             self._ods = [(str(a), str(b)) for a, b in options["ods"]][: self.n_agents]
             while len(self._ods) < self.n_agents:
@@ -671,9 +1181,31 @@ class MicroAlleyEnv:
         self._pos = [o for o, _ in self._ods]
         self._done = [o == d for o, d in self._ods]
         self._travel = [0.0] * self.n_agents
+        self._city = [0.0] * self.n_agents
         self._path_hist = [[self._pos[i]] for i in range(self.n_agents)]
         self._true_arrived = [bool(self._done[i]) for i in range(self.n_agents)]
         self._live_edge = {}
+        self._on_edge = {e: [] for e in self._edge_index}
+        self._edge_clock = {}
+        self._edge_of = [None] * self.n_agents
+        self._prog = [0.0] * self.n_agents
+        self._enter_t = [0.0] * self.n_agents
+        self._exit_t = [0.0] * self.n_agents
+        self._booked = [0.0] * self.n_agents
+        self._released = [False] * self.n_agents
+        self._queue_edge = [None] * self.n_agents
+        self._queue_since = [0.0] * self.n_agents
+        self._wake_at = [None] * self.n_agents
+        self._awaiting = []
+        self._sim = 0.0
+        self._corr = [0.0] * self.n_agents
+        self._pred_tt = [{} for _ in range(self.n_agents)]
+        if "shocks" in options:
+            self._shocks = self._copy_shocks(options["shocks"])
+        else:
+            self._sample_shocks()
+        self._assign_departures()
+        self._advance_to_ready()
         self._rebuild_node_occ()
         self._refresh_intents()
         self._prev_remain = [
@@ -681,20 +1213,268 @@ class MicroAlleyEnv:
         ]
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
         gstate = self._global_state_from_obs(obs)
-        info = {
+        return obs, gstate, self._info_now()
+
+    def _info_now(self) -> dict[str, Any]:
+        ready = set(self._awaiting)
+        return {
             "t": self._t,
+            "sim_time": float(self._sim),
             "peak": self._active_peak or self.peak_for_t(self._t),
             "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},
+            "agent_acting": [i in ready and not self._done[i] for i in range(self.n_agents)],
+            "overlap_edge": self._overlap_edge,
         }
-        return obs, gstate, info
 
     def _rebuild_node_occ(self) -> None:
+        """Only vehicles waiting at a node. In-transit vehicles occupy the edge."""
         occ: dict[str, float] = {}
-        for i, p in enumerate(self._pos):
+        ready = set(self._awaiting)
+        for i in ready:
             if self._done[i]:
                 continue
+            p = self._pos[i]
+            occ[p] = occ.get(p, 0.0) + 1.0
+        for i, edge in enumerate(self._queue_edge):
+            if edge is None or self._done[i]:
+                continue
+            p = self._pos[i]
             occ[p] = occ.get(p, 0.0) + 1.0
         self._node_occ = occ
+        self._live_edge = {
+            e: float(len(ids)) for e, ids in self._on_edge.items() if ids
+        }
+
+    def _emit(self, i: int, delta_s: float) -> None:
+        """Charge (or refund) a change in a hop's wall time to agent i.
+
+        Booked time moves with the scheduled exit, so the final residue at
+        exit is ~0 when no unexpected vehicle enters.
+        """
+        if abs(delta_s) < 1e-4:
+            return
+        self._corr[i] -= float(delta_s) / self.travel_scale
+        self._booked[i] += float(delta_s)
+
+    def _sync_edge(self, edge: tuple[str, str], now: float) -> None:
+        ids = self._on_edge.get(edge, [])
+        last = float(self._edge_clock.get(edge, now))
+        if ids and now > last + 1e-9:
+            dprog = (now - last) / self._pace(edge, len(ids))
+            for j in ids:
+                self._prog[j] += dprog
+        self._edge_clock[edge] = now
+
+    def _forecast_exits(self, edge: tuple[str, str], now: float) -> None:
+        ids = list(self._on_edge.get(edge, []))
+        if not ids:
+            return
+        t0 = max(1e-6, self._edge_free_time(edge[0], edge[1]))
+        rem = {j: max(0.0, t0 - self._prog[j]) for j in ids}
+        alive = [j for j in ids if rem[j] > 1e-5]
+        for j in ids:
+            if rem[j] <= 1e-5:
+                self._exit_t[j] = now
+        wall = float(now)
+        guard = 0
+        while alive and guard < 64:
+            guard += 1
+            f = self._pace(edge, len(alive))
+            step = min(rem[j] for j in alive)
+            wall += step * f
+            done: list[int] = []
+            for j in alive:
+                rem[j] -= step
+                if rem[j] <= 1e-5:
+                    self._exit_t[j] = wall
+                    done.append(j)
+            for j in done:
+                alive.remove(j)
+
+    def _commit_entry(self, i: int, u: str, v: str, now: float) -> tuple[float, float]:
+        """Put i on (u, v) at `now`. Return (own forecast tt, delay imposed on vehicles already inside)."""
+        edge = (u, v)
+        self._sync_edge(edge, now)
+        before = {j: self._exit_t[j] for j in self._on_edge[edge]}
+        self._on_edge[edge].append(i)
+        self._edge_of[i] = edge
+        self._prog[i] = 0.0
+        self._enter_t[i] = now
+        self._booked[i] = 0.0
+        self._forecast_exits(edge, now)
+        tt = float(self._exit_t[i] - now)
+        self._booked[i] = tt
+        ext = 0.0
+        for j, old in before.items():
+            delta = float(self._exit_t[j] - old)
+            ext += max(0.0, delta)
+            self._emit(j, delta)
+        n_share = len(self._on_edge[edge])
+        if self.share_coef > 0.0 and n_share >= 2 and self.reward_mode != "legacy":
+            # Per extra vehicle already on the link, scaled by how narrow it is.
+            # A long bypass shared by two cars is cheaper for the city than
+            # five motorbikes in one alley. Own BPR time is unchanged.
+            narrow = 8.0 / max(self._cap[edge], 0.5)
+            pen = self.share_coef * (n_share - 1) * narrow
+            self._city[i] += pen
+            self._corr[i] -= pen / self.travel_scale
+        return tt, ext
+
+    def _settle_events(self, now: float) -> list[int]:
+        """Apply exits and departures at `now`. Do not jump past the next decision."""
+        self._reforecast_shocked(now)
+        leaving = [
+            i
+            for i in range(self.n_agents)
+            if self._edge_of[i] is not None and self._exit_t[i] <= now + 1e-4
+        ]
+        ready: list[int] = []
+        touched: set[tuple[str, str]] = set()
+        for i in leaving:
+            edge = self._edge_of[i]
+            assert edge is not None
+            self._sync_edge(edge, now)
+            actual = float(now - self._enter_t[i])
+            self._emit(i, actual - self._booked[i])
+            self._travel[i] += actual
+            self._on_edge[edge].remove(i)
+            self._edge_of[i] = None
+            v = edge[1]
+            self._pos[i] = v
+            self._path_hist[i].append(v)
+            touched.add(edge)
+            if v == self._ods[i][1]:
+                self._done[i] = True
+                self._true_arrived[i] = True
+            else:
+                hold = self._red_wait(v, now)
+                if hold > 1e-3:
+                    self._wake_at[i] = now + hold
+                    self._queue_since[i] = now
+                    self._queue_edge[i] = None
+                else:
+                    ready.append(i)
+        for edge in touched:
+            before = {j: self._exit_t[j] for j in self._on_edge[edge]}
+            self._forecast_exits(edge, now)
+            for j, old in before.items():
+                self._emit(j, float(self._exit_t[j] - old))
+        for i in range(self.n_agents):
+            if self._released[i] or self._done[i]:
+                continue
+            if self._depart[i] <= now + 1e-4:
+                self._released[i] = True
+                origin = self._ods[i][0]
+                self._pos[i] = origin
+                if origin == self._ods[i][1]:
+                    self._done[i] = True
+                    self._true_arrived[i] = True
+                else:
+                    hold = self._red_wait(origin, now)
+                    if hold > 1e-3:
+                        self._wake_at[i] = now + hold
+                        self._queue_since[i] = now
+                        self._queue_edge[i] = None
+                    else:
+                        ready.append(i)
+        for i in range(self.n_agents):
+            wake = self._wake_at[i]
+            if wake is None or wake > now + 1e-4 or self._done[i]:
+                continue
+            waited = max(0.0, float(now - self._queue_since[i]))
+            self._travel[i] += waited
+            self._corr[i] -= waited / self.travel_scale
+            self._queue_edge[i] = None
+            self._wake_at[i] = None
+            ready.append(i)
+        return ready
+
+    def _next_event_time(self) -> float | None:
+        cands: list[float] = []
+        for i in range(self.n_agents):
+            if self._edge_of[i] is not None:
+                cands.append(float(self._exit_t[i]))
+            elif not self._released[i] and not self._done[i]:
+                cands.append(float(self._depart[i]))
+            elif self._wake_at[i] is not None:
+                cands.append(float(self._wake_at[i]))
+        now = float(self._sim)
+        for sh in self._shocks:
+            if sh["t0"] > now + 1e-6:
+                cands.append(float(sh["t0"]))
+            if sh["t1"] > now + 1e-6:
+                cands.append(float(sh["t1"]))
+        return min(cands) if cands else None
+
+    def _reforecast_shocked(self, now: float) -> None:
+        """A scheduled event just started or ended. Revise exits already in the alley."""
+        edges = [
+            sh["edge"]
+            for sh in self._shocks
+            if abs(now - float(sh["t0"])) <= 1e-3 or abs(now - float(sh["t1"])) <= 1e-3
+        ]
+        for edge in edges:
+            ids = list(self._on_edge.get(edge) or [])
+            if not ids:
+                continue
+            self._sync_edge(edge, now)
+            before = {j: self._exit_t[j] for j in ids}
+            self._forecast_exits(edge, now)
+            for j, old in before.items():
+                self._emit(j, float(self._exit_t[j] - old))
+
+    def _advance_to_ready(self) -> None:
+        """Move the clock to the next instant someone is at a node and must choose.
+
+        The jump is the minimum pending exit or departure, never the max. A fast
+        vehicle is decided while a slow one is still inside an alley.
+        """
+        self._awaiting = []
+        limit = max(8, self.n_agents * self.max_steps + 2)
+        for _ in range(limit):
+            if all(self._done):
+                return
+            t = self._next_event_time()
+            if t is None:
+                return
+            if t < self._sim - 1e-6:
+                t = self._sim
+            self._sim = float(t)
+            ready = self._settle_events(self._sim)
+            if ready:
+                self._awaiting = ready
+                return
+
+    def _force_truncate(self) -> None:
+        w = self.reward_weights
+        scale = self.travel_scale if self.reward_mode != "legacy" else 40.0
+        fail_mult = float(w.get("truncate_fail_mult", 4.0))
+        fail_floor = float(w.get("truncate_fail_floor", 8000.0))
+        now = float(self._sim)
+        for i in range(self.n_agents):
+            if self._done[i]:
+                continue
+            if self._edge_of[i] is not None:
+                edge = self._edge_of[i]
+                self._sync_edge(edge, now)
+                actual = max(0.0, now - self._enter_t[i])
+                self._emit(i, actual - self._booked[i])
+                self._travel[i] += actual
+                self._on_edge[edge].remove(i)
+                self._edge_of[i] = None
+                self._pos[i] = edge[1]
+            if self._wake_at[i] is not None:
+                waited = max(0.0, now - self._queue_since[i])
+                self._corr[i] -= waited / scale
+                self._travel[i] += waited
+                self._queue_edge[i] = None
+                self._wake_at[i] = None
+            rem = self._remain_free(self._pos[i], self._ods[i][1])
+            pen = max(fail_floor, fail_mult * rem)
+            self._corr[i] -= pen / scale
+            self._travel[i] += pen
+            self._done[i] = True
+        self._awaiting = []
 
     def step(
         self, actions: dict[str, int]
@@ -706,150 +1486,109 @@ class MicroAlleyEnv:
         np.ndarray,
         dict[str, Any],
     ]:
-        # resolve intended edges
-        intended: list[tuple[str, str] | None] = [None] * self.n_agents
-        edge_counts: dict[tuple[str, str], int] = {}
-        for i, a in enumerate(self.agents):
+        # One decision epoch. Only vehicles at a node right now move. The clock
+        # then advances to the next arrival or departure — other vehicles keep
+        # traversing and are not asked to wait.
+        self._corr = [0.0] * self.n_agents
+        imm = [0.0] * self.n_agents
+        w = self.reward_weights
+        legacy = self.reward_mode == "legacy"
+        scale = self.travel_scale
+        now = float(self._sim)
+        for i in sorted(self._awaiting):
             if self._done[i]:
                 continue
+            a = self.agents[i]
             curr = self._pos[i]
-            neigh = self._neighbors(curr)
+            neigh = self._neighbors(curr)[: self.max_degree]
             if not neigh:
                 continue
             raw = int(actions.get(a, 0)) % self.max_degree
             mask = self.action_mask(i)
-            if mask[raw] < 0.5:
+            if raw >= len(neigh) or mask[raw] < 0.5:
                 raw = int(np.argmax(mask))
-            if raw < len(neigh):
-                e = (curr, neigh[raw])
-                intended[i] = e
-                edge_counts[e] = edge_counts.get(e, 0) + 1
-
-        w = self.reward_weights
-        legacy = self.reward_mode == "legacy"
-        scale = self.travel_scale
-        rewards: dict[str, float] = {}
-        cong_vals: list[float] = []
-        progress_vals: list[float] = []
-        for i, a in enumerate(self.agents):
-            if self._done[i]:
-                rewards[a] = 0.0
-                progress_vals.append(0.0)
+            if raw >= len(neigh):
                 continue
-            e = intended[i]
-            if e is None:
-                # dead end: no travel happens; truncation charges the failure
-                rewards[a] = -0.5 if legacy else 0.0
-                progress_vals.append(0.0)
+            v = neigh[raw]
+            edge = (curr, v)
+            if len(self._on_edge[edge]) >= self._storage(edge):
+                exits = [self._exit_t[j] for j in self._on_edge[edge]]
+                self._queue_edge[i] = edge
+                self._queue_since[i] = now
+                self._wake_at[i] = min(exits) if exits else now + 0.5
                 continue
-            u, v = e
-            n_e = float(edge_counts.get(e, 0))
-            load_e = float(self._bg_load.get(e, 0.0)) + n_e
-            tt = self._bpr_time(u, v, load_e)
-            cap = max(0.5, self._cap[e])
-            cong = (min(load_e, self.bpr_load_cap) / cap) ** self.bpr_beta
-            risk = self._edge_unc(u, v) * float(self._g.edges[u, v]["length_m"]) / 100.0
-            rem_before = (
-                self._prev_remain[i]
-                if i < len(self._prev_remain)
-                else self._remain_free(u, self._ods[i][1])
-            )
-            self._travel[i] += tt
-            self._pos[i] = v
-            revisit = 1.0 if v in self._path_hist[i] else 0.0
-            self._path_hist[i].append(v)
-            arrived = v == self._ods[i][1]
-            if arrived:
-                self._done[i] = True
-                self._true_arrived[i] = True
-                rem_after = 0.0
-            else:
-                rem_after = self._remain_free(v, self._ods[i][1])
-            progress = (rem_before - rem_after) / 50.0
-            progress_vals.append(float(progress))
-            cong_vals.append(float(cong))
+            tt, ext = self._commit_entry(i, curr, v, now)
             if legacy:
-                cost = (
-                    w["w_T"] * (tt / 50.0)
-                    + w["w_C"] * cong
-                    + w["w_R"] * risk
-                    + w["w_step"]
-                    + w.get("w_revisit", 0.25) * revisit
+                cap = max(0.5, self._cap[(curr, v)])
+                load = float(self._bg_load.get((curr, v), 0.0)) + float(
+                    len(self._on_edge[(curr, v)])
                 )
-                bonus = w["arrive_bonus"] if arrived else 0.0
-                shaped = w.get("w_progress", 0.4) * progress
-                rewards[a] = float(-cost + bonus + shaped)
-                continue
-            # Sum of rewards over an episode = -(own travel [+ externality]) / scale,
-            # so maximizing return is minimizing the reported fleet travel time.
-            cost = tt
-            if self.reward_mode == "marginal" and n_e > 1.0:
-                # Delay this agent adds to each of the other n_e-1 agents on e.
-                ext = self._bpr_time(u, v, load_e) - self._bpr_time(u, v, load_e - 1.0)
-                cost += (n_e - 1.0) * ext
-            rewards[a] = float(-cost / scale)
+                cong = (min(load, self.bpr_load_cap) / cap) ** self.bpr_beta
+                imm[i] = float(
+                    -(
+                        w["w_T"] * (tt / 50.0)
+                        + w["w_C"] * cong
+                        + w["w_step"]
+                    )
+                )
+            else:
+                # travel: own traversal only. The pile penalty is already in
+                # _corr, for every controller. marginal adds the delay imposed
+                # on other vehicles a second time and is not the compared score.
+                cost = tt + (ext if self.reward_mode == "marginal" else 0.0)
+                imm[i] = float(-cost / scale)
+        self._awaiting = []
+        self._advance_to_ready()
 
-        team_cong = float(np.mean(cong_vals)) if cong_vals else 0.0
-        w_team = float(w.get("w_team", 0.0)) if legacy else 0.0
-        if w_team > 0 and cong_vals:
-            for a in self.agents:
-                if a in rewards:
-                    rewards[a] -= w_team * team_cong
+        self._step_i += 1
+        truncated = self._step_i >= self.max_steps
+        if truncated:
+            self._force_truncate()
 
-        self._live_edge = {
-            e: float(c) for e, c in edge_counts.items() if e is not None
-        }
         self._rebuild_node_occ()
+        self._refresh_intents()
         self._prev_remain = [
             0.0
             if self._done[i]
             else self._remain_free(self._pos[i], self._ods[i][1])
             for i in range(self.n_agents)
         ]
-
-        self._step_i += 1
-        truncated = self._step_i >= self.max_steps
-        if truncated:
-            # Free-flow remain under-penalizes failure vs congested Dijkstra success.
-            # Use inflated fail cost so non-arrival cannot "win" on fleet_mean.
-            fail_mult = float(w.get("truncate_fail_mult", 4.0))
-            fail_floor = float(w.get("truncate_fail_floor", 8000.0))
-            for i in range(self.n_agents):
-                if not self._done[i]:
-                    rem = self._remain_free(self._pos[i], self._ods[i][1])
-                    pen = max(fail_floor, fail_mult * rem)
-                    pen_scale = 40.0 if legacy else scale
-                    rewards[self.agents[i]] = rewards.get(self.agents[i], 0.0) - pen / pen_scale
-                    self._travel[i] += pen
-                    self._done[i] = True
-
-        self._refresh_intents()
         obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
         terms = {a: bool(self._done[i]) for i, a in enumerate(self.agents)}
         truncs = {a: bool(truncated and terms[a]) for a in self.agents}
         gstate = self._global_state_from_obs(obs)
+        rewards = {
+            a: float(imm[i] + self._corr[i]) for i, a in enumerate(self.agents)
+        }
         travels = list(self._travel)
         t_arr = np.asarray(travels, dtype=np.float64)
         t_bar = float(np.mean(t_arr))
         cvar_thr = float(np.quantile(t_arr, 0.9))
-        cvar = float(np.mean(t_arr[t_arr >= cvar_thr])) if np.any(t_arr >= cvar_thr) else t_bar
+        cvar = (
+            float(np.mean(t_arr[t_arr >= cvar_thr])) if np.any(t_arr >= cvar_thr) else t_bar
+        )
         n_true = int(sum(self._true_arrived))
-        info = {
-            "travels": travels,
-            "fleet_mean": t_bar,
-            "fleet_cvar90": cvar,
-            "congestion": team_cong,
-            # n_arrived includes truncate-forced done; n_true_arrived is destination hits
-            "n_arrived": int(sum(self._done)),
-            "n_true_arrived": n_true,
-            "arrival_rate": float(n_true) / max(self.n_agents, 1),
-            "truncated": bool(truncated),
-            "step": self._step_i,
-            "all_done": all(self._done),
-            "agent_done": [bool(x) for x in self._done],
-            "masks": {a: self.action_mask(i) for i, a in enumerate(self.agents)},
-            "mean_progress": float(np.mean(progress_vals)) if progress_vals else 0.0,
-        }
+        occ_loads = list(self._live_edge.values())
+        team_cong = float(np.mean(occ_loads)) if occ_loads else 0.0
+        info = self._info_now()
+        info.update(
+            {
+                "travels": travels,
+                "fleet_mean": t_bar,
+                "fleet_cvar90": cvar,
+                "congestion": team_cong,
+                "n_arrived": int(sum(self._done)),
+                "n_true_arrived": n_true,
+                "arrival_rate": float(n_true) / max(self.n_agents, 1),
+                "truncated": bool(truncated),
+                "step": self._step_i,
+                "all_done": all(self._done),
+                "agent_done": [bool(x) for x in self._done],
+                "immediate": list(imm),
+                "correction": list(self._corr),
+                "mean_progress": 0.0,
+            }
+        )
         return obs, rewards, terms, truncs, gstate, info
 
     # ----- baselines (micro) -----
@@ -894,13 +1633,26 @@ class MicroAlleyEnv:
             acts[a] = int(self.rng.choice(valid)) if len(valid) else 0
         return acts
 
-    def baseline_greedy_load_actions(self) -> dict[str, int]:
-        """Sequential load-aware router: BPR(bg + already-assigned + 1) + congested cost-to-go.
+    def baseline_social_actions(self) -> dict[str, int]:
+        """Diagnostic only: greedy_load plus delay imposed on vehicles already inside.
 
-        Agents are assigned in index order; each sees the loads committed by
-        lower-index agents at its node this step — exactly the `others` the obs
-        exposes, so argmin of the regret feature reproduces this rule. The old
-        0.85·remain_free weighting made it loop (arr≈0.18).
+        Not the training teacher. On the nominal alley the gap versus greedy_load
+        is a few percent, because the mouth still has another exit.
+        """
+        intent, _prior, _tt, _ext, _committed = self._score_waiting(True)
+        acts: dict[str, int] = {}
+        for i, a in enumerate(self.agents):
+            e = intent[i]
+            acts[a] = 0 if e is None else self._neighbors(e[0]).index(e[1])
+        return acts
+
+    def baseline_greedy_load_actions(self) -> dict[str, int]:
+        """Sequential load-aware router: own forecast + congested cost-to-go.
+
+        A next node with a light is skipped when another exit exists. The phase
+        and the cycle are not known here. Agents are assigned in index order;
+        each sees the loads committed by lower-index agents at its node this
+        step, so argmin of the regret feature reproduces this rule.
         """
         acts: dict[str, int] = {}
         for i, a in enumerate(self.agents):

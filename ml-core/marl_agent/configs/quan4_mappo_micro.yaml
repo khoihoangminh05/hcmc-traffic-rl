@@ -1,10 +1,20 @@
-# Quận 4 — MAPPO MICRO next-hop (MAIN train) v3a
-# Research: .docs/RESEARCH_ONE_PAPER.md · Sol1: .docs/SOL1_MAPPO.md
-# data_tag: mappo_micro_v3a
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3j
 #
+# 100 vehicles, distinct origins and destinations, released across 120s.
+# Paths meet on several streets. Do not resume a v3a–v3i checkpoint.
+# Reward for every controller is realized travel time plus the pile penalty.
+# A light is only a place in the observation. Phase and cycle are applied
+# when a vehicle arrives and is not its destination. greedy_load skips that
+# node when another exit exists. An alley holds length/jam_spacing vehicles;
+# a full alley refuses entry and the wait is travel time.
+#
+# v3a/v3b runs are not paper evidence. v3a locked every vehicle to one hop per
+# step and forgot vehicles still inside an alley. v3b fixed the clock but kept
+# N=16 on a single edge.
 # v3 = MDP fix (not gate tuning). Probe (marl_agent.probe_mdp_alignment, val n=24):
 #   - free-flow progress shaping corr with -BPR travel = -0.40 (pushed the wrong way);
-#     new marginal reward corr = +0.84; return = -(fleet travel [+ externality])/scale
+#     an older marginal return double-counted delay. This config's return is
+#     realized travel plus the pile penalty, for every controller.
 #   - v1–v2h "dijkstra" next-hop ignored edge cost: 11.8% worse than real Dijkstra,
 #     and BC cloned it. Fixed (argmin free_t(u,v) + remain(v)).
 #   - static congestion-aware Dijkstra gains 0%: congestion is the fleet itself
@@ -13,7 +23,17 @@
 #     could never split a platoon. Obs now carries rank-ordered contention per exit;
 #     argmin(regret) == sequential load-aware router on 100% of 14k decisions.
 #   - that router (greedy_load) = 784s vs Dijkstra 5830s, arr 1.0 both.
-#   → BC teacher = greedy_load (DAgger); the bar PPO must clear is greedy_load.
+#   → BC teacher stays greedy_load. A one-step social tweak is only ~3–8%
+#     faster on the nominal alley, so cloning it is not a new result.
+#     What the heuristic does not do: reserve the junction for a stream still
+#     on another approach, or leave an alley before a scheduled release
+#     (residents, school, blockage) that has not started. Those are in the
+#     observation. The transition applies them. Every controller shares the draw.
+#     A light is only a place: the observation is 1 if the next node has one.
+#     Phase and cycle stay in the transition. greedy_load avoids that node
+#     when another exit exists. MAPPO has to learn the timing from the delay.
+#     ODs are distinct and balanced: paths meet on several streets. The fleet
+#     is not forced down one alley and is not required to pass a signal.
 #     Local --bc-only test n=8: clone 848s = greedy_load 848s, Dijkstra 5276s.
 #   - critic input = global ⊕ own obs (was global only: same V for every agent)
 #   - per-agent GAE truncated at that agent's arrival; post-done no-ops dropped
@@ -23,7 +43,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3a
+  data_tag: mappo_micro_v3j
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -49,18 +69,37 @@ data:
     max_pairs: 500
 
 env:
-  n_agents: 16
+  n_agents: 100
   max_degree: 8
-  max_steps: 200
-  compact_dim: 160
+  # One step = one decision. 50 vehicles needed ~3900 decisions; 100 will
+  # cross more often. 8192 is the cap before the failure penalty dominates.
+  max_steps: 8192
+  # Headway ≈ 1.2s, shorter than an alley traversal.
+  depart_span_s: 120.0
+  # Physical storage. BPR capacity stays 2.5 / 6 / 10; this is how many
+  # vehicles fit in the link. Full link → wait at the upstream node.
+  jam_spacing_m: 6.0
+  # One controlled event per episode, drawn with the episode seed and locked
+  # for every controller. egress / school / obstacle. The heuristic does not
+  # read the schedule.
+  shock_rate: 1.0
+  # City seconds per extra vehicle on the link, times 8/capacity.
+  # An alley (cap 2.5) costs more to share than a residential street.
+  # Added to the reward of whoever enters, heuristic or MAPPO.
+  # The fair score is travel + this penalty, for every controller.
+  share_coef: 8.0
+  # Set false for the ablation: same transition, alley class/cap/density hidden.
+  include_alley_info: true
+  compact_dim: 192
   bpr_alpha: 0.15
   bpr_beta: 4.0
   bpr_load_cap: 12.0
   corridor_prob: 0.35
-  # marginal = own BPR travel + delay imposed on co-movers (system optimum)
-  # travel   = own BPR travel only (selfish ablation)
+  # travel   = realized traversal time + the shared pile penalty.
+  #            This is the reward for every controller, and the compared score.
+  # marginal = travel plus the imposed delay a second time (diagnostic only).
   # legacy   = v2h shaped reward (reproduce old runs only)
-  reward_mode: marginal
+  reward_mode: travel
   travel_scale: 1000.0
   reward_weights:
     # used by every mode: failure cost charged on truncation (also added to travel)
@@ -106,7 +145,7 @@ bc:
   dagger_stop_beta: 0.15
   epochs_per_update: 6
   critic_fit_episodes: 64
-  fair_check_episodes: 24
+  fair_check_episodes: 8
   min_arrival_rate: 0.95
   max_arrival_gap_vs_dijkstra: 0.05
   max_fleet_ratio_vs_teacher: 1.10
@@ -115,8 +154,10 @@ bc:
   freeze_actor_updates: 75
 
 ppo:
-  rollout_episodes: 96
-  n_envs: 24
+  rollout_episodes: 32
+  # 100 agents: half the parallel envs so the rollout buffer stays about the
+  # same size as the 50-agent run.
+  n_envs: 4
   use_subproc: true
   minibatch_size: 8192
   ppo_epochs: 3
@@ -130,7 +171,7 @@ ppo:
 
 train:
   max_updates: 3000
-  eval_every: 25
+  eval_every: 50
   log_every: 1
   save_every: 50
 
@@ -143,4 +184,4 @@ early_stopping:
 
 baseline:
   run_on_eval: true
-  n_episodes: 30
+  n_episodes: 16

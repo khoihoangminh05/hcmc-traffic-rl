@@ -109,6 +109,145 @@ def write_net_xml(
     out_net.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _project_m(lon: float, lat: float, lon0: float, lat0: float) -> tuple[float, float]:
+    import math
+
+    x = (lon - lon0) * 111_320.0 * math.cos(math.radians(lat0))
+    y = (lat - lat0) * 110_540.0
+    return x, y
+
+
+def write_geo_signal_net(
+    graph_path: Path,
+    signals_path: Path,
+    out_net: Path,
+    cycle_s: float = 60.0,
+    red_s: float = 30.0,
+) -> dict[str, Any]:
+    """Quận 4 net in local metres, with a static program on snapped OSM signals.
+
+    Signals are not actuated. The same cycle, red time, and offset are what
+    the next-hop env uses, so Dijkstra, greedy_load, and MAPPO wait on the
+    same red.
+    """
+    payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    g = _nx_from_payload(payload)
+    sig = json.loads(signals_path.read_text(encoding="utf-8")) if signals_path.exists() else {}
+    offsets: dict[str, float] = {}
+    for row in sig.get("signals") or []:
+        node = str(row.get("node") or "")
+        if node:
+            offsets[node] = float(row.get("offset_s") or 0.0)
+    cycle_s = float(sig.get("cycle_s") or cycle_s)
+    red_s = float(sig.get("red_s") or red_s)
+    yellow_s = 3.0
+    green_s = max(1.0, cycle_s - red_s - yellow_s)
+    geo = payload.get("nodes_geo") or {}
+    lons = [float(v["lon"]) for v in geo.values()]
+    lats = [float(v["lat"]) for v in geo.values()]
+    lon0 = min(lons) if lons else 106.70
+    lat0 = min(lats) if lats else 10.75
+    node_xy: dict[str, tuple[float, float]] = {}
+    missing = 0
+    for i, n in enumerate(sorted(g.nodes())):
+        rec = geo.get(n) or geo.get(str(n))
+        if rec is None:
+            missing += 1
+            node_xy[n] = (float((i % 40) * 25), float((i // 40) * 25))
+        else:
+            node_xy[n] = _project_m(float(rec["lon"]), float(rec["lat"]), lon0, lat0)
+    xs = [p[0] for p in node_xy.values()]
+    ys = [p[1] for p in node_xy.values()]
+    boundary = f"{min(xs):.2f},{min(ys):.2f},{max(xs):.2f},{max(ys):.2f}"
+
+    edge_uv: list[tuple[str, str, str]] = []
+    incoming: dict[str, list[str]] = {}
+    outgoing: dict[str, list[str]] = {}
+    for u, v, data in g.edges(data=True):
+        aid = str(data["alley_id"])
+        edge_uv.append((aid, str(u), str(v)))
+        outgoing.setdefault(str(u), []).append(aid)
+        incoming.setdefault(str(v), []).append(aid)
+
+    controlled: dict[str, list[tuple[str, str]]] = {}
+    for node in node_xy:
+        if node not in offsets:
+            continue
+        links = []
+        for frm in incoming.get(node, []):
+            for to in outgoing.get(node, []):
+                if frm == to:
+                    continue
+                links.append((frm, to))
+        if links:
+            controlled[node] = links
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<net version="1.16" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">',
+        f'  <location netOffset="0.0,0.0" convBoundary="{boundary}" '
+        f'origBoundary="{boundary}" projParameter="!"/>',
+    ]
+    for node, links in sorted(controlled.items()):
+        n_links = len(links)
+        offset = offsets[node] % cycle_s
+        lines.append(
+            f'  <tlLogic id="{node}" type="static" programID="0" offset="{offset:.0f}">'
+            f'<phase duration="{red_s:.0f}" state="{"r" * n_links}"/>'
+            f'<phase duration="{green_s:.0f}" state="{"G" * n_links}"/>'
+            f'<phase duration="{yellow_s:.0f}" state="{"y" * n_links}"/>'
+            f"</tlLogic>"
+        )
+    for n, (x, y) in node_xy.items():
+        kind = "traffic_light" if n in controlled else "priority"
+        tl = f' tl="{n}"' if n in controlled else ""
+        lines.append(
+            f'  <junction id="{n}" type="{kind}" x="{x:.2f}" y="{y:.2f}"{tl} '
+            f'incLanes="" intLanes="" '
+            f'shape="{x-2:.2f},{y-2:.2f} {x+2:.2f},{y-2:.2f} '
+            f'{x+2:.2f},{y+2:.2f} {x-2:.2f},{y+2:.2f}"/>'
+        )
+    for aid, u, v in edge_uv:
+        length = float(g.edges[u, v]["length_m"])
+        speed = 8.0 if _is_alley_edge(g.edges[u, v]) else 13.0
+        x1, y1 = node_xy[u]
+        x2, y2 = node_xy[v]
+        lines.append(
+            f'  <edge id="{aid}" from="{u}" to="{v}" priority="1">'
+            f'<lane id="{aid}_0" index="0" speed="{speed:.2f}" length="{length:.2f}" '
+            f'shape="{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"/>'
+            f"</edge>"
+        )
+    for node in node_xy:
+        links = controlled.get(node)
+        if links is None:
+            for frm in incoming.get(node, []):
+                for to in outgoing.get(node, []):
+                    if frm == to:
+                        continue
+                    lines.append(
+                        f'  <connection from="{frm}" to="{to}" fromLane="0" toLane="0" '
+                        f'dir="s" state="M"/>'
+                    )
+            continue
+        for idx, (frm, to) in enumerate(links):
+            lines.append(
+                f'  <connection from="{frm}" to="{to}" fromLane="0" toLane="0" '
+                f'tl="{node}" linkIndex="{idx}" dir="s" state="o"/>'
+            )
+    lines.append("</net>")
+    out_net.parent.mkdir(parents=True, exist_ok=True)
+    out_net.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "nodes": g.number_of_nodes(),
+        "edges": g.number_of_edges(),
+        "signals": len(controlled),
+        "missing_xy": missing,
+        "net": str(out_net),
+    }
+
+
 def write_routes_from_density(density_json: Path, out_routes: Path) -> None:
     """Demo routes (hcmc_alley_demo) — keep hardcoded main_* spine."""
     rows = _load_density_rows(density_json)

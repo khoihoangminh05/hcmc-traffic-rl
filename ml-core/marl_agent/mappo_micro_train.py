@@ -71,15 +71,20 @@ def env_kwargs_from_cfg(
         "n_agents": int(env_cfg.get("n_agents", 16)),
         "max_degree": int(env_cfg.get("max_degree", 8)),
         "max_steps": int(env_cfg.get("max_steps", 200)),
-        "compact_dim": int(env_cfg.get("compact_dim", 160)),
+        "compact_dim": int(env_cfg.get("compact_dim", 192)),
         "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
         "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
         "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
         "corridor_prob": float(env_cfg.get("corridor_prob", 0.4)),
         "reward_weights": env_cfg.get("reward_weights"),
         "density_catalog": density_catalog or None,
-        "reward_mode": str(env_cfg.get("reward_mode", "marginal")),
+        "reward_mode": str(env_cfg.get("reward_mode", "travel")),
         "travel_scale": float(env_cfg.get("travel_scale", 1000.0)),
+        "depart_span_s": float(env_cfg.get("depart_span_s", 90.0)),
+        "jam_spacing_m": float(env_cfg.get("jam_spacing_m", 6.0)),
+        "shock_rate": float(env_cfg.get("shock_rate", 0.0)),
+        "share_coef": float(env_cfg.get("share_coef", 0.0)),
+        "include_alley_info": bool(env_cfg.get("include_alley_info", True)),
     }
 
 
@@ -112,6 +117,7 @@ EVAL_SEED_BASE = 50_000
 
 def _fleet_metrics_from_env(env: MicroAlleyEnv, last: dict[str, Any]) -> dict[str, float]:
     travels = np.asarray(env._travel, dtype=np.float64)
+    city = np.asarray(getattr(env, "_city", np.zeros_like(travels)), dtype=np.float64)
     thr = float(np.quantile(travels, 0.9))
     cvar = (
         float(np.mean(travels[travels >= thr]))
@@ -121,6 +127,8 @@ def _fleet_metrics_from_env(env: MicroAlleyEnv, last: dict[str, Any]) -> dict[st
     return {
         "fleet_mean": float(np.mean(travels)),
         "fleet_cvar90": cvar,
+        "city_mean": float(np.mean(city)),
+        "objective_mean": float(np.mean(travels + city)),
         "congestion": float(last.get("congestion", 0.0)),
         "arrival_rate": float(last.get("arrival_rate", 0.0)),
     }
@@ -131,11 +139,13 @@ def _mean_metric_dicts(rows: list[dict[str, float]]) -> dict[str, float]:
         return {
             "fleet_mean": 0.0,
             "fleet_cvar90": 0.0,
+            "city_mean": 0.0,
+            "objective_mean": 0.0,
             "congestion": 0.0,
             "arrival_rate": 0.0,
             "n": 0.0,
         }
-    keys = ("fleet_mean", "fleet_cvar90", "congestion", "arrival_rate")
+    keys = ("fleet_mean", "fleet_cvar90", "city_mean", "objective_mean", "congestion", "arrival_rate")
     out = {k: float(np.mean([r[k] for r in rows])) for k in keys}
     out["n"] = float(len(rows))
     return out
@@ -149,12 +159,15 @@ def run_episode_baseline(
     seed: int,
     *,
     ods: list[tuple[str, str]] | None = None,
+    shocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, float]:
     """One baseline episode. Prefer evaluate_fair_suite for paired comparisons."""
     env.set_od_pool(ods_pool)
     opts: dict[str, Any] = {"t": t}
     if ods is not None:
         opts["ods"] = ods
+    if shocks is not None:
+        opts["shocks"] = shocks
     env.reset(seed=seed, options=opts)
     last: dict[str, Any] = {"congestion": 0.0, "arrival_rate": 0.0}
     for _ in range(env.max_steps):
@@ -166,6 +179,8 @@ def run_episode_baseline(
             acts = env.baseline_random_actions()
         elif mode == "greedy_load":
             acts = env.baseline_greedy_load_actions()
+        elif mode == "social":
+            acts = env.baseline_social_actions()
         else:
             raise ValueError(mode)
         _, _, _, _, _, info = env.step(acts)
@@ -213,11 +228,14 @@ def _run_policy_episode(
     seed: int,
     t: float,
     ods: list[tuple[str, str]] | None,
+    shocks: list[dict[str, Any]] | None = None,
     greedy: bool,
 ) -> dict[str, float]:
     opts: dict[str, Any] = {"t": t}
     if ods is not None:
         opts["ods"] = ods
+    if shocks is not None:
+        opts["shocks"] = shocks
     obs, _, info = env.reset(seed=seed, options=opts)
     last: dict[str, Any] = {"congestion": 0.0, "arrival_rate": 0.0}
     for _ in range(env.max_steps):
@@ -294,23 +312,24 @@ def evaluate_fair_suite(
     for ep in range(n_episodes):
         t = float(t_list[ep % len(t_list)])
         seed = int(seed_base + ep)
-        # Probe reset → freeze exact OD assignment for this episode.
+        # Probe reset → freeze the OD draw and the controlled shock.
         env.reset(seed=seed, options={"t": t})
         ods_ep = [(str(o), str(d)) for o, d in env._ods]
+        shocks_ep = [dict(s) for s in env._shocks]
         buckets["policy_stoch"].append(
             _run_policy_episode(
-                env, actor, device, seed=seed, t=t, ods=ods_ep, greedy=False
+                env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=False
             )
         )
         buckets["policy_greedy"].append(
             _run_policy_episode(
-                env, actor, device, seed=seed, t=t, ods=ods_ep, greedy=True
+                env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=True
             )
         )
         for mode in baseline_modes:
             buckets[mode].append(
                 run_episode_baseline(
-                    env, mode, ods_pool, t, seed, ods=ods_ep
+                    env, mode, ods_pool, t, seed, ods=ods_ep, shocks=shocks_ep
                 )
             )
     actor.train()
@@ -321,21 +340,21 @@ def evaluate_fair_suite(
     # Primary fair flag: deterministic policy vs Dijkstra on the same episodes.
     beats_dijkstra_fair = bool(
         djk
-        and pol_g["fleet_mean"] < djk["fleet_mean"]
+        and _objective(pol_g) < _objective(djk)
         and float(pol_g.get("arrival_rate", 0.0))
         >= float(djk.get("arrival_rate", 0.0)) - 0.05
     )
     # Stoch reported too, but not used as primary fairness claim.
     beats_dijkstra_stoch = bool(
         djk
-        and pol_s["fleet_mean"] < djk["fleet_mean"]
+        and _objective(pol_s) < _objective(djk)
         and float(pol_s.get("arrival_rate", 0.0))
         >= float(djk.get("arrival_rate", 0.0)) - 0.05
     )
     grd = agg.get("greedy_load", {})
     beats_greedy_load_fair = (
         bool(
-            pol_g["fleet_mean"] < grd["fleet_mean"]
+            _objective(pol_g) < _objective(grd)
             and float(pol_g.get("arrival_rate", 0.0))
             >= float(grd.get("arrival_rate", 0.0)) - 0.05
         )
@@ -345,7 +364,7 @@ def evaluate_fair_suite(
     djk_bpr = agg.get("dijkstra_bpr", {})
     beats_dijkstra_bpr_fair = (
         bool(
-            pol_g["fleet_mean"] < djk_bpr["fleet_mean"]
+            _objective(pol_g) < _objective(djk_bpr)
             and float(pol_g.get("arrival_rate", 0.0))
             >= float(djk_bpr.get("arrival_rate", 0.0)) - 0.05
         )
@@ -365,6 +384,11 @@ def evaluate_fair_suite(
         )
         if grd
         else None,
+        "delta_objective_greedy_minus_greedy_load": float(
+            _objective(pol_g) - _objective(grd)
+        )
+        if grd
+        else None,
         "delta_fleet_greedy_minus_dijkstra_bpr": float(
             pol_g["fleet_mean"] - float(djk_bpr["fleet_mean"])
         )
@@ -377,6 +401,11 @@ def evaluate_fair_suite(
         if djk
         else None,
     }
+
+
+def _objective(row: dict[str, float]) -> float:
+    """Travel plus the city share penalty. Equals travel when share_coef is 0."""
+    return float(row.get("objective_mean", row["fleet_mean"]))
 
 
 def early_stop_score(fleet_mean: float, arrival_rate: float, *, arr_penalty: float = 12_000.0) -> float:
@@ -419,7 +448,7 @@ def compute_gae(
     return adv, rets
 
 
-TEACHERS = ("dijkstra", "dijkstra_bpr", "greedy_load")
+TEACHERS = ("dijkstra", "dijkstra_bpr", "greedy_load", "social")
 
 
 def _teacher_actions(env: MicroAlleyEnv, teacher: str) -> dict[str, int]:
@@ -429,6 +458,8 @@ def _teacher_actions(env: MicroAlleyEnv, teacher: str) -> dict[str, int]:
         return env.baseline_dijkstra_bpr_actions()
     if teacher == "greedy_load":
         return env.baseline_greedy_load_actions()
+    if teacher == "social":
+        return env.baseline_social_actions()
     raise ValueError(teacher)
 
 
@@ -456,8 +487,11 @@ def _collect_teacher_batch(
         obs, _, info = env.reset(seed=seed + ep, options={"t": t})
         for _ in range(env.max_steps):
             teach = _teacher_actions(env, teacher)
+            acting = info.get("agent_acting")
             for i, a in enumerate(env.agents):
                 if env._done[i]:
+                    continue
+                if acting is not None and not acting[i]:
                     continue
                 obs_rows.append(obs[a])
                 mask_rows.append(info["masks"][a])
@@ -513,8 +547,11 @@ def measure_closed_loop_teacher_agree(
             acts, _, _, _, _ = _batched_actions(
                 actor, env, obs, info, device, greedy=True
             )
+            acting = info.get("agent_acting")
             for i, a in enumerate(env.agents):
                 if env._done[i]:
+                    continue
+                if acting is not None and not acting[i]:
                     continue
                 agree += int(int(acts[a]) == int(teach[a]))
                 total += 1
@@ -712,16 +749,17 @@ def behavioral_clone_baseline(
             device,
             n_episodes=int(probe_episodes),
             seed_base=EVAL_SEED_BASE,
-            baseline_modes=(teacher,),
+            baseline_modes=tuple(dict.fromkeys((teacher, "greedy_load"))),
         )
         env.set_od_pool(train_ods)
         pol_now = float(suite["policy_greedy"]["fleet_mean"])
         teach_now = float(suite[teacher]["fleet_mean"])
         ratio_now = pol_now / max(teach_now, 1.0)
+        grd_now = suite.get("greedy_load", {}).get("fleet_mean")
         print(
             f"[bc] val probe u={u} agree={agree_now:.4f} "
             f"greedy={pol_now:.1f}s teacher={teach_now:.1f}s "
-            f"ratio={ratio_now:.3f}",
+            f"ratio={ratio_now:.3f} greedy_load={grd_now}",
             flush=True,
         )
         if agree_now >= float(min_closed_loop_agree) and ratio_now <= float(max_fleet_ratio):
@@ -1240,9 +1278,9 @@ def run_training(
                 ts = [float(rng.choice(t_train)) for _ in range(chunk)]
 
                 if vec is not None:
-                    obs_b, g_b, m_b = vec.reset_batch(seeds, ts)  # [E,A,D]
+                    obs_b, g_b, m_b, acting_b = vec.reset_batch(seeds, ts)
                 else:
-                    o_list, g_list, m_list = [], [], []
+                    o_list, g_list, m_list, act_list = [], [], [], []
                     for j in range(chunk):
                         e = local_envs[j]
                         obs, gstate, info = e.reset(
@@ -1257,9 +1295,13 @@ def run_training(
                                 [info["masks"][a] for a in e.agents], axis=0
                             )
                         )
+                        act_list.append(
+                            np.asarray(info["agent_acting"], dtype=np.bool_)
+                        )
                     obs_b = np.stack(o_list, axis=0).astype(np.float32)
                     g_b = np.stack(g_list, axis=0).astype(np.float32)
                     m_b = np.stack(m_list, axis=0).astype(np.float32)
+                    acting_b = np.stack(act_list, axis=0)
 
                 # [T, E, A, ...] — per-agent rewards (experiment; MAPPO paper often uses shared r)
                 buf_o = np.zeros((max_t, chunk, n_agents, obs_dim), np.float32)
@@ -1277,6 +1319,10 @@ def run_training(
                 ep_len = np.zeros(chunk, dtype=np.int32)
                 alive = np.ones(chunk, dtype=np.bool_)
                 last_travel = np.zeros((chunk, n_agents), dtype=np.float64)
+                # Decision row that owns each agent's current hop. Later
+                # slowdowns (someone entered the alley behind them) are added
+                # back onto that row so the action that chose the alley pays.
+                last_dec = np.full((chunk, n_agents), -1, dtype=np.int32)
 
                 for t in range(max_t):
                     if not alive.any():
@@ -1323,30 +1369,36 @@ def run_training(
                     buf_m[t, alive_idx] = m_b[alive_idx]
                     buf_g[t, alive_idx] = g_b[alive_idx]
                     buf_v[t, alive_idx] = v_np
-                    buf_act[t, alive_idx] = ~agent_done_b[alive_idx]
+                    # Action at t belongs only to vehicles at a node right now.
+                    buf_act[t, alive_idx] = acting_b[alive_idx] & ~agent_done_b[alive_idx]
 
                     if vec is not None:
                         (
                             obs_b,
                             g_b,
                             m_b,
-                            rewards,
+                            _rewards,
                             dones,
                             travels,
                             agent_done_new,
+                            acting_next,
+                            immediate,
+                            correction,
                         ) = vec.step_batch(acts_full)
                     else:
-                        rewards = np.zeros((chunk, n_agents), dtype=np.float32)
                         dones = np.zeros(chunk, dtype=np.bool_)
                         travels = last_travel.copy()
                         agent_done_new = agent_done_b.copy()
+                        acting_next = np.zeros((chunk, n_agents), dtype=np.bool_)
+                        immediate = np.zeros((chunk, n_agents), dtype=np.float32)
+                        correction = np.zeros((chunk, n_agents), dtype=np.float32)
                         for j in alive_idx:
                             e = local_envs[j]
                             actions = {
                                 e.agents[i]: int(acts_full[j, i])
                                 for i in range(n_agents)
                             }
-                            obs, rew, _, _, gstate, info = e.step(actions)
+                            obs, _rew, _, _, gstate, info = e.step(actions)
                             obs_b[j] = np.stack(
                                 [obs[a] for a in e.agents], axis=0
                             )
@@ -1354,20 +1406,38 @@ def run_training(
                             m_b[j] = np.stack(
                                 [info["masks"][a] for a in e.agents], axis=0
                             )
-                            rewards[j] = np.asarray(
-                                [float(rew[a]) for a in e.agents], dtype=np.float32
-                            )
                             dones[j] = bool(info["all_done"])
                             travels[j] = np.asarray(e._travel, dtype=np.float64)
                             agent_done_new[j] = np.asarray(
                                 info["agent_done"], dtype=np.bool_
                             )
+                            acting_next[j] = np.asarray(
+                                info["agent_acting"], dtype=np.bool_
+                            )
+                            immediate[j] = np.asarray(
+                                info["immediate"], dtype=np.float32
+                            )
+                            correction[j] = np.asarray(
+                                info["correction"], dtype=np.float32
+                            )
 
-                    buf_r[t, alive_idx] = rewards[alive_idx]
-                    if not np.isfinite(buf_r[t, alive_idx]).all():
+                    if not (
+                        np.isfinite(immediate[alive_idx]).all()
+                        and np.isfinite(correction[alive_idx]).all()
+                    ):
                         raise RuntimeError("NaN reward")
+                    for j in alive_idx:
+                        for ai in range(n_agents):
+                            if buf_act[t, j, ai]:
+                                buf_r[t, j, ai] = immediate[j, ai]
+                                last_dec[j, ai] = t
+                            ld = int(last_dec[j, ai])
+                            if correction[j, ai] != 0.0 and ld >= 0:
+                                buf_r[ld, j, ai] += correction[j, ai]
+                            if agent_done_new[j, ai] and ld >= 0:
+                                buf_ad[ld, j, ai] = True
+                    acting_b = acting_next
                     buf_d[t, alive_idx] = dones[alive_idx]
-                    buf_ad[t, alive_idx] = agent_done_new[alive_idx]
                     agent_done_b[alive_idx] = agent_done_new[alive_idx]
                     ep_len[alive_idx] = t + 1
                     newly_done = alive_idx[dones[alive_idx]]
@@ -1382,22 +1452,22 @@ def run_training(
                     # Per-agent trajectory ends at that agent's own arrival /
                     # truncation; post-done no-op steps are not training samples
                     # (they have r=0 and a forced mask, only dilute the batch).
-                    sel = buf_act[:L, j]  # [L, A]
+                    sel = buf_act[:L, j]  # [L, A] decision steps only
                     adv_mat = np.zeros((L, n_agents), dtype=np.float32)
                     ret_mat = np.zeros((L, n_agents), dtype=np.float32)
                     for ai in range(n_agents):
-                        La = int(sel[:, ai].sum())
-                        if La == 0:
+                        idx = np.flatnonzero(sel[:, ai])
+                        if idx.size == 0:
                             continue
                         adv_i, ret_i = compute_gae(
-                            buf_r[:La, j, ai].tolist(),
-                            buf_v[:La, j, ai].tolist(),
-                            buf_ad[:La, j, ai].tolist(),
+                            buf_r[idx, j, ai].tolist(),
+                            buf_v[idx, j, ai].tolist(),
+                            buf_ad[idx, j, ai].tolist(),
                             gamma,
                             gae_lam,
                         )
-                        adv_mat[:La, ai] = adv_i
-                        ret_mat[:La, ai] = ret_i
+                        adv_mat[idx, ai] = adv_i
+                        ret_mat[idx, ai] = ret_i
                     all_obs.append(buf_o[:L, j][sel])
                     all_act.append(buf_a[:L, j][sel])
                     all_logp.append(buf_lp[:L, j][sel])
@@ -1513,7 +1583,7 @@ def run_training(
                 )
                 arr_pen = float(es_cfg.get("arrival_penalty", 12_000.0))
                 score = early_stop_score(
-                    val_g["fleet_mean"],
+                    _objective(val_g),
                     val_g.get("arrival_rate", 0.0),
                     arr_penalty=arr_pen,
                 )
@@ -1620,6 +1690,7 @@ def run_training(
             "dijkstra_bpr",
             "random",
             "greedy_load",
+            "social",
         ):
             m = fair.get(name)
             if not m:
@@ -1635,6 +1706,7 @@ def run_training(
             f"delta_greedy-djk_bpr={fair.get('delta_fleet_greedy_minus_dijkstra_bpr')} "
             f"beats_dijkstra_bpr_fair={fair.get('beats_dijkstra_bpr_fair')} | "
             f"delta_greedy-greedy_load={fair.get('delta_fleet_greedy_minus_greedy_load')} "
+            f"delta_obj-greedy_load={fair.get('delta_objective_greedy_minus_greedy_load')} "
             f"beats_greedy_load_fair={fair.get('beats_greedy_load_fair')}",
             flush=True,
         )
@@ -1657,7 +1729,7 @@ def run_training(
     grd = fair.get("greedy_load", {})
     baselines = {
         k: fair[k]
-        for k in ("dijkstra", "dijkstra_bpr", "random", "greedy_load")
+        for k in ("dijkstra", "dijkstra_bpr", "random", "greedy_load", "social")
         if k in fair and isinstance(fair[k], dict) and "fleet_mean" in fair[k]
     }
     summary = {
@@ -1693,9 +1765,11 @@ def run_training(
                 "dijkstra_bpr",
                 "random",
                 "greedy_load",
+                "social",
                 "delta_fleet_greedy_minus_dijkstra",
                 "delta_fleet_greedy_minus_dijkstra_bpr",
                 "delta_fleet_greedy_minus_greedy_load",
+                "delta_objective_greedy_minus_greedy_load",
                 "beats_dijkstra_fair",
                 "beats_dijkstra_bpr_fair",
                 "beats_greedy_load_fair",
@@ -1793,7 +1867,7 @@ def main() -> None:
         cfg.setdefault("ppo", {})["minibatch_size"] = 256
         cfg.setdefault("ppo", {})["ppo_epochs"] = 2
         cfg.setdefault("env", {})["n_agents"] = 4
-        cfg.setdefault("env", {})["max_steps"] = 20
+        cfg.setdefault("env", {})["max_steps"] = 80
         cfg.setdefault("data", {}).setdefault("split", {})["min_path_edges"] = 3
         cfg.setdefault("data", {}).setdefault("split", {})["min_length_m"] = 100
         cfg.setdefault("early_stopping", {})["patience"] = 5
@@ -1813,7 +1887,7 @@ def main() -> None:
         cfg.setdefault("bc", {})["fair_check_episodes"] = 2
         cfg.setdefault("bc", {})["critic_fit_episodes"] = 2
         cfg.setdefault("bc", {})["freeze_actor_updates"] = 0
-        cfg.setdefault("env", {})["compact_dim"] = 160
+        cfg.setdefault("env", {})["compact_dim"] = 192
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"
         )
