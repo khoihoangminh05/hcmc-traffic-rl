@@ -1308,7 +1308,11 @@ def run_training(
                 "update",
                 "mean_return",
                 "fleet_mean",
+                "arrival_rate",
                 "loss",
+                "policy_loss",
+                "value_loss",
+                "approx_kl",
                 "entropy",
                 "ep_len",
                 "collect_sec",
@@ -1322,6 +1326,7 @@ def run_training(
             last_update = update
             ep_returns: list[float] = []
             ep_fleet: list[float] = []
+            ep_arr: list[float] = []
             ep_lens: list[float] = []
 
             # --- rollouts: subproc CPU envs + batched GPU act ---
@@ -1401,8 +1406,9 @@ def run_training(
                         break
                     if t > 0 and t % 200 == 0:
                         print(
-                            f"[train] {update}/{max_updates} step {t} "
-                            f"alive={int(alive.sum())}/{chunk} "
+                            f"[train] {update}/{max_updates} step {t} | "
+                            f"arrived={float(agent_done_b.mean()):.2f} | "
+                            f"envs={int(alive.sum())}/{chunk} | "
                             f"{time.time() - t_collect0:.0f}s",
                             flush=True,
                         )
@@ -1556,11 +1562,13 @@ def run_training(
                     all_ret.append(ret_mat[sel])
                     ep_returns.append(float(np.sum(buf_r[:L, j])))
                     ep_fleet.append(float(np.mean(last_travel[j])))
+                    ep_arr.append(float(np.mean(agent_done_b[j])))
                     ep_lens.append(float(L))
                 ep_i += chunk
                 print(
-                    f"[train] {update}/{max_updates} episodes {ep_i}/{rollout_n} "
+                    f"[train] {update}/{max_updates} episodes {ep_i}/{rollout_n} | "
                     f"fleet={float(np.mean(ep_fleet)):.0f}s "
+                    f"arrival={float(np.mean(ep_arr)):.2f} | "
                     f"{time.time() - t_collect0:.0f}s",
                     flush=True,
                 )
@@ -1576,10 +1584,19 @@ def run_training(
             if normalize_adv and advantages.numel() > 1:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             n_samples = int(batch_obs.shape[0])
+            print(
+                f"[ppo] {update}/{max_updates} learning {n_samples} decisions",
+                flush=True,
+            )
 
             t_ppo0 = time.time()
             last_loss = 0.0
             last_ent = 0.0
+            sum_pi = 0.0
+            sum_v = 0.0
+            sum_ent = 0.0
+            sum_kl = 0.0
+            sum_n = 0
             idx_all = np.arange(n_samples)
             for _ in range(ppo_epochs):
                 rng.shuffle(idx_all)
@@ -1626,16 +1643,32 @@ def run_training(
                     if not freeze_actor:
                         opt_actor.step()
                     opt_critic.step()
+                    bs = int(b_obs.shape[0])
                     last_loss = float(loss.item())
                     last_ent = float(entropy.item())
+                    sum_pi += float(policy_loss.item()) * bs
+                    sum_v += float(value_loss.item()) * bs
+                    sum_ent += last_ent * bs
+                    sum_kl += float((b_logp - logp).detach().mean().item()) * bs
+                    sum_n += bs
             ppo_sec = time.time() - t_ppo0
+            denom = max(sum_n, 1)
+            policy_mean = sum_pi / denom
+            value_mean = sum_v / denom
+            ent_mean = sum_ent / denom
+            kl_mean = sum_kl / denom
+            arr_mean = float(np.mean(ep_arr)) if ep_arr else 0.0
 
             row = {
                 "update": update,
                 "mean_return": float(np.mean(ep_returns)),
                 "fleet_mean": float(np.mean(ep_fleet)),
+                "arrival_rate": arr_mean,
                 "loss": last_loss,
-                "entropy": last_ent,
+                "policy_loss": policy_mean,
+                "value_loss": value_mean,
+                "approx_kl": kl_mean,
+                "entropy": ent_mean,
                 "ep_len": float(np.mean(ep_lens)),
                 "collect_sec": collect_sec,
                 "ppo_sec": ppo_sec,
@@ -1647,10 +1680,11 @@ def run_training(
             jf.flush()
             if update % log_every == 0:
                 print(
-                    f"[train] {update}/{max_updates} | ret={row['mean_return']:.3f} "
-                    f"fleet={row['fleet_mean']:.1f}s len={row['ep_len']:.1f} | "
-                    f"loss={row['loss']:.3f} ent={row['entropy']:.4f} | "
-                    f"collect={collect_sec:.1f}s ppo={ppo_sec:.1f}s n={n_samples}",
+                    f"[ppo] {update}/{max_updates} | "
+                    f"fleet={row['fleet_mean']:.0f}s arrival={arr_mean:.2f} | "
+                    f"policy_loss={policy_mean:.4f} value_loss={value_mean:.4f} | "
+                    f"entropy={ent_mean:.3f} kl={kl_mean:.4f} | "
+                    f"samples={n_samples} collect={collect_sec:.0f}s learn={ppo_sec:.0f}s",
                     flush=True,
                 )
 
