@@ -268,16 +268,23 @@ def evaluate_policy(
     env.set_od_pool(ods_pool)
     for ep in range(n_episodes):
         t = float(t_list[ep % len(t_list)])
-        rows.append(
-            _run_policy_episode(
-                env,
-                actor,
-                device,
-                seed=seed_base + ep,
-                t=t,
-                ods=None,
-                greedy=greedy,
-            )
+        t_ep = time.time()
+        row = _run_policy_episode(
+            env,
+            actor,
+            device,
+            seed=seed_base + ep,
+            t=t,
+            ods=None,
+            greedy=greedy,
+        )
+        rows.append(row)
+        print(
+            f"[eval] policy ep {ep + 1}/{n_episodes} "
+            f"fleet={float(row.get('fleet_mean', 0.0)):.0f}s "
+            f"arr={float(row.get('arrival_rate', 0.0)):.2f} "
+            f"{time.time() - t_ep:.0f}s",
+            flush=True,
         )
     actor.train()
     out = _mean_metric_dicts(rows)
@@ -316,20 +323,42 @@ def evaluate_fair_suite(
         env.reset(seed=seed, options={"t": t})
         ods_ep = [(str(o), str(d)) for o, d in env._ods]
         shocks_ep = [dict(s) for s in env._shocks]
+
+        def _take(name: str, fn) -> dict[str, float]:
+            t0 = time.time()
+            row = fn()
+            print(
+                f"[eval] paired {ep + 1}/{n_episodes} {name} "
+                f"fleet={float(row.get('fleet_mean', 0.0)):.0f}s "
+                f"arr={float(row.get('arrival_rate', 0.0)):.2f} "
+                f"{time.time() - t0:.0f}s",
+                flush=True,
+            )
+            return row
+
         buckets["policy_stoch"].append(
-            _run_policy_episode(
-                env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=False
+            _take(
+                "policy_stoch",
+                lambda: _run_policy_episode(
+                    env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=False
+                ),
             )
         )
         buckets["policy_greedy"].append(
-            _run_policy_episode(
-                env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=True
+            _take(
+                "policy_greedy",
+                lambda: _run_policy_episode(
+                    env, actor, device, seed=seed, t=t, ods=ods_ep, shocks=shocks_ep, greedy=True
+                ),
             )
         )
         for mode in baseline_modes:
             buckets[mode].append(
-                run_episode_baseline(
-                    env, mode, ods_pool, t, seed, ods=ods_ep, shocks=shocks_ep
+                _take(
+                    mode,
+                    lambda mode=mode: run_episode_baseline(
+                        env, mode, ods_pool, t, seed, ods=ods_ep, shocks=shocks_ep
+                    ),
                 )
             )
     actor.train()
@@ -474,6 +503,7 @@ def _collect_teacher_batch(
     actor: SharedActor | None = None,
     device: torch.device | None = None,
     beta: float = 1.0,
+    log_prefix: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Teacher-labelled states. DAgger: each episode is executed by the teacher
     with prob `beta`, else by the greedy student — labels are always the teacher's,
@@ -484,8 +514,17 @@ def _collect_teacher_batch(
     for ep in range(episodes):
         t = float(rng.choice(t_train))
         student_drives = actor is not None and float(rng.random()) >= beta
+        t_ep = time.time()
         obs, _, info = env.reset(seed=seed + ep, options={"t": t})
+        steps = 0
         for _ in range(env.max_steps):
+            steps += 1
+            if log_prefix and steps % 200 == 0:
+                print(
+                    f"[{log_prefix}] ep {ep + 1}/{episodes} step {steps} "
+                    f"{time.time() - t_ep:.0f}s",
+                    flush=True,
+                )
             teach = _teacher_actions(env, teacher)
             acting = info.get("agent_acting")
             for i, a in enumerate(env.agents):
@@ -505,6 +544,14 @@ def _collect_teacher_batch(
             obs, _, _, _, _, info = env.step(acts)
             if info["all_done"]:
                 break
+        if log_prefix:
+            print(
+                f"[{log_prefix}] ep {ep + 1}/{episodes} done steps={steps} "
+                f"arr={float(info.get('arrival_rate', 0.0)):.2f} "
+                f"fleet={float(info.get('fleet_mean', 0.0)):.0f}s "
+                f"{time.time() - t_ep:.0f}s",
+                flush=True,
+            )
     if not act_rows:
         return (
             np.zeros((0, 1), np.float32),
@@ -643,6 +690,10 @@ def behavioral_clone_baseline(
         used = u
         beta = float(dagger_beta_decay) ** (u - 1)
         actor.eval()
+        print(
+            f"[bc] update {u}/{updates} collect {episodes_per_update} eps beta={beta:.3f}",
+            flush=True,
+        )
         batch = _collect_teacher_batch(
             env,
             t_train,
@@ -653,6 +704,7 @@ def behavioral_clone_baseline(
             actor=actor,
             device=device,
             beta=beta,
+            log_prefix=f"bc {u}/{updates}",
         )
         actor.train()
         if batch[2].size >= 16:
@@ -689,16 +741,19 @@ def behavioral_clone_baseline(
             last_train_acc = float((pred == a_t).float().mean().item())
         # Holdout batch — never used for the SGD steps above; student drives.
         actor.eval()
+        n_hold = max(2, int(holdout_episodes))
+        print(f"[bc] update {u}/{updates} holdout {n_hold} eps", flush=True)
         Oh, Mh, Ah = _collect_teacher_batch(
             env,
             t_train,
-            episodes=max(2, int(holdout_episodes)),
+            episodes=n_hold,
             seed=seed + 7_000_000 + u * 10_000,
             teacher=teacher,
             rng=rng,
             actor=actor,
             device=device,
             beta=0.0,
+            log_prefix=f"bc {u}/{updates} holdout",
         )
         actor.train()
         if Ah.size >= 8:
@@ -805,6 +860,7 @@ def fit_critic_on_teacher(
     returns_buf: list[np.ndarray] = []
     state_buf: list[np.ndarray] = []
     for ep in range(episodes):
+        t_ep = time.time()
         t = float(rng.choice(t_train))
         obs, gstate, info = env.reset(
             seed=seed + 8_000_000 + ep, options={"t": t}
@@ -812,7 +868,15 @@ def fit_critic_on_teacher(
         rewards_ep: list[np.ndarray] = []
         states_ep: list[np.ndarray] = []
         active_ep: list[np.ndarray] = []
+        steps = 0
         for _ in range(env.max_steps):
+            steps += 1
+            if steps % 200 == 0:
+                print(
+                    f"[bc] critic_fit ep {ep + 1}/{episodes} step {steps} "
+                    f"{time.time() - t_ep:.0f}s",
+                    flush=True,
+                )
             o_mat = np.stack([obs[a] for a in env.agents], axis=0)
             states_ep.append(
                 critic_inputs(np.asarray(gstate, dtype=np.float32), o_mat, ippo)
@@ -841,6 +905,10 @@ def fit_critic_on_teacher(
             act = active_ep[ti]
             state_buf.append(states_ep[ti][act])
             returns_buf.append(R[ti][act])
+        print(
+            f"[bc] critic_fit ep {ep + 1}/{episodes} steps={T} {time.time() - t_ep:.0f}s",
+            flush=True,
+        )
     if not returns_buf:
         return 0.0
     x = torch.tensor(
@@ -1259,6 +1327,10 @@ def run_training(
             # --- rollouts: subproc CPU envs + batched GPU act ---
             # Keep trajectories in preallocated numpy; ONE GPU upload after collect.
             t_collect0 = time.time()
+            print(
+                f"[train] {update}/{max_updates} collecting {rollout_n} episodes",
+                flush=True,
+            )
             ep_i = 0
             # flat sample lists (numpy) — concat once
             all_obs: list[np.ndarray] = []
@@ -1327,6 +1399,13 @@ def run_training(
                 for t in range(max_t):
                     if not alive.any():
                         break
+                    if t > 0 and t % 200 == 0:
+                        print(
+                            f"[train] {update}/{max_updates} step {t} "
+                            f"alive={int(alive.sum())}/{chunk} "
+                            f"{time.time() - t_collect0:.0f}s",
+                            flush=True,
+                        )
                     alive_idx = np.flatnonzero(alive)
                     n_alive = int(alive_idx.size)
                     o_flat = np.ascontiguousarray(obs_b[alive_idx].reshape(-1, obs_dim))
@@ -1479,6 +1558,12 @@ def run_training(
                     ep_fleet.append(float(np.mean(last_travel[j])))
                     ep_lens.append(float(L))
                 ep_i += chunk
+                print(
+                    f"[train] {update}/{max_updates} episodes {ep_i}/{rollout_n} "
+                    f"fleet={float(np.mean(ep_fleet)):.0f}s "
+                    f"{time.time() - t_collect0:.0f}s",
+                    flush=True,
+                )
             collect_sec = time.time() - t_collect0
 
             batch_obs = torch.from_numpy(np.concatenate(all_obs, axis=0)).to(device)

@@ -1,7 +1,8 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3j
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3k
 #
-# 100 vehicles, distinct origins and destinations, released across 120s.
-# Paths meet on several streets. Do not resume a v3a–v3i checkpoint.
+# 50 vehicles, distinct origins and destinations, released across 120s.
+# 100 vehicles made one greedy episode take many minutes, so the first BC
+# line never appeared. 50 still cross on several streets. Do not resume v3j.
 # Reward for every controller is realized travel time plus the pile penalty.
 # A light is only a place in the observation. Phase and cycle are applied
 # when a vehicle arrives and is not its destination. greedy_load skips that
@@ -43,7 +44,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3j
+  data_tag: mappo_micro_v3k
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -69,12 +70,11 @@ data:
     max_pairs: 500
 
 env:
-  n_agents: 100
+  n_agents: 50
   max_degree: 8
-  # One step = one decision. 50 vehicles needed ~3900 decisions; 100 will
-  # cross more often. 8192 is the cap before the failure penalty dominates.
+  # One step = one decision. 8192 is the cap before the failure penalty dominates.
   max_steps: 8192
-  # Headway ≈ 1.2s, shorter than an alley traversal.
+  # Headway ≈ 2.4s, shorter than an alley traversal.
   depart_span_s: 120.0
   # Physical storage. BPR capacity stays 2.5 / 6 / 10; this is how many
   # vehicles fit in the link. Full link → wait at the upstream node.
@@ -155,9 +155,7 @@ bc:
 
 ppo:
   rollout_episodes: 32
-  # 100 agents: half the parallel envs so the rollout buffer stays about the
-  # same size as the 50-agent run.
-  n_envs: 4
+  n_envs: 8
   use_subproc: true
   minibatch_size: 8192
   ppo_epochs: 3
