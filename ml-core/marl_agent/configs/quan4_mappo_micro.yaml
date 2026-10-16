@@ -1,7 +1,8 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3m
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3n
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, Dijkstra and random
-# are scored at the end, not cloned first. Do not resume v3l.
+# are scored at the end, not cloned first. Do not resume v3m.
+# Step only rebuilds obs for vehicles about to act; merge pressure is cached.
 # Reward for every controller is realized travel time plus the pile penalty.
 # A light is only a place in the observation. Phase and cycle are applied
 # when a vehicle arrives and is not its destination. greedy_load skips that
@@ -43,7 +44,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3m
+  data_tag: mappo_micro_v3n
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -147,7 +148,8 @@ bc:
   dagger_stop_beta: 0.15
   epochs_per_update: 6
   critic_fit_episodes: 16
-  fair_check_episodes: 8
+  # Val during training. Final paired suite still uses baseline.n_episodes.
+  fair_check_episodes: 4
   min_arrival_rate: 0.95
   max_arrival_gap_vs_dijkstra: 0.05
   max_fleet_ratio_vs_teacher: 1.10
@@ -157,7 +159,8 @@ bc:
 
 ppo:
   rollout_episodes: 16
-  n_envs: 8
+  # sol1 has many CPU cores; collect is env-bound, not GPU-bound.
+  n_envs: 16
   use_subproc: true
   minibatch_size: 8192
   ppo_epochs: 3

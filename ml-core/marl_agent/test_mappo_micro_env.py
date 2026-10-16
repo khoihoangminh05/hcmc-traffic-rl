@@ -832,6 +832,24 @@ def test_sumo_red_light_holds_a_vehicle() -> None:
             traci.close()
 
 
+def test_acting_obs_matches_a_full_recompute() -> None:
+    """Ready agents always get a fresh vector; mid-edge agents may reuse cache."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp, nodes = _chain_graph(Path(td), n=10)
+        env = MicroAlleyEnv(
+            dp, gp, n_agents=4, max_degree=3, max_steps=40, seed=0, depart_span_s=0.0
+        )
+        env.reset(options={"t": 28800.0, "ods": [(nodes[0], nodes[-1])] * 4})
+        for _ in range(12):
+            obs, _, _, _, _, info = env.step(env.baseline_greedy_load_actions())
+            fresh = env._build_obs()
+            for i, a in enumerate(env.agents):
+                if info["agent_acting"][i]:
+                    np.testing.assert_allclose(obs[a], fresh[a], rtol=0.0, atol=0.0)
+            if info["all_done"]:
+                break
+
+
 def test_subproc_returns_agent_done() -> None:
     from marl_agent.mappo_micro_vec import SubprocMicroEnvs
 
@@ -898,6 +916,8 @@ def main() -> None:
     print("PASS test_quan4_signal_net_holds_a_vehicle")
     test_sumo_red_light_holds_a_vehicle()
     print("PASS test_sumo_red_light_holds_a_vehicle")
+    test_acting_obs_matches_a_full_recompute()
+    print("PASS test_acting_obs_matches_a_full_recompute")
     test_subproc_returns_agent_done()
     print("PASS test_subproc_returns_agent_done")
     print("MAPPO_MICRO_ENV_TESTS_OK")

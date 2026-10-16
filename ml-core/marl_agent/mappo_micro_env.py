@@ -168,12 +168,15 @@ class MicroAlleyEnv:
         self._pred_ext: list[dict[tuple[str, str], float]] = []
         self._shocks: list[dict[str, Any]] = []
         # OSM signals snapped onto this graph. Empty when the sidecar is absent.
-        # The phase is public: every controller, including greedy_load, adds the
-        # red wait it would actually meet.
+        # Observation only marks presence. Phase and cycle stay in the transition.
         self._signals: set[str] = set()
         self._signal_offset: dict[str, float] = {}
         self._shock_edge: tuple[str, str] | None = None
         self._load_signals()
+        # Reused between steps for vehicles that are not about to act.
+        self._obs_cache: list[np.ndarray | None] = [None] * self.n_agents
+        self._merge_cache: dict[tuple[str, str], float] = {}
+        self._approach_cache: dict[str, float] = {}
 
     @staticmethod
     def _is_alley(data: dict[str, Any]) -> bool:
@@ -508,13 +511,18 @@ class MicroAlleyEnv:
         Streams that have not reached the junction yet do not.
         """
         edge = (u, v)
+        hit = self._merge_cache.get(edge)
+        if hit is not None:
+            return hit
         n = 0
         for i in range(self.n_agents):
             if self._done[i] or self._edge_of[i] == edge or self._pos[i] == u:
                 continue
             if self._through_edge(self._pos[i], self._ods[i][1], u, v):
                 n += 1
-        return float(n) / max(self.n_agents, 1)
+        out = float(n) / max(self.n_agents, 1)
+        self._merge_cache[edge] = out
+        return out
 
     def _copy_shocks(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -595,12 +603,31 @@ class MicroAlleyEnv:
 
     def _approaching(self, node: str) -> float:
         """Vehicles already on an edge that ends at `node`, not yet there."""
-        n = sum(
-            1
-            for e in self._edge_of
-            if e is not None and e[1] == node
-        )
-        return float(n) / max(self.n_agents, 1)
+        hit = self._approach_cache.get(node)
+        if hit is not None:
+            return hit
+        n = sum(1 for e in self._edge_of if e is not None and e[1] == node)
+        out = float(n) / max(self.n_agents, 1)
+        self._approach_cache[node] = out
+        return out
+
+    def _build_obs(self, refresh: set[int] | None = None) -> dict[str, np.ndarray]:
+        """Local observations. Recompute only agents in `refresh` (None = all).
+
+        Vehicles still inside an edge do not act this step, so their previous
+        obs is kept for the critic mean. Ready agents always get a fresh vector.
+        Reward and transition are unchanged.
+        """
+        self._merge_cache.clear()
+        self._approach_cache.clear()
+        if refresh is None:
+            refresh = set(range(self.n_agents))
+        obs: dict[str, np.ndarray] = {}
+        for i, a in enumerate(self.agents):
+            if i in refresh or self._obs_cache[i] is None:
+                self._obs_cache[i] = self._local_obs(i)
+            obs[a] = self._obs_cache[i]
+        return obs
 
     def _forecast_entry(self, u: str, v: str, n_extra: int) -> tuple[float, float]:
         """Own crossing time and the extra time imposed on vehicles already in.
@@ -968,8 +995,7 @@ class MicroAlleyEnv:
         ).astype(np.float32)
 
     def _global_state(self) -> np.ndarray:
-        obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
-        return self._global_state_from_obs(obs)
+        return self._global_state_from_obs(self._build_obs())
 
     def local_obs_dim(self) -> int:
         return self.compact_dim
@@ -1211,7 +1237,8 @@ class MicroAlleyEnv:
         self._prev_remain = [
             self._remain_free(self._pos[i], self._ods[i][1]) for i in range(self.n_agents)
         ]
-        obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
+        self._obs_cache = [None] * self.n_agents
+        obs = self._build_obs()
         gstate = self._global_state_from_obs(obs)
         return obs, gstate, self._info_now()
 
@@ -1553,7 +1580,8 @@ class MicroAlleyEnv:
             else self._remain_free(self._pos[i], self._ods[i][1])
             for i in range(self.n_agents)
         ]
-        obs = {a: self._local_obs(i) for i, a in enumerate(self.agents)}
+        # Only vehicles at a node need a fresh decision vector this step.
+        obs = self._build_obs(refresh=set(self._awaiting))
         terms = {a: bool(self._done[i]) for i, a in enumerate(self.agents)}
         truncs = {a: bool(truncated and terms[a]) for a in self.agents}
         gstate = self._global_state_from_obs(obs)
