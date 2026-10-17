@@ -1754,14 +1754,10 @@ def run_training(
                 )
 
             if update % eval_every == 0 or update == max_updates:
-                # Score on GREEDY — same decision mode as beats_dijkstra_fair / BC seed.
-                # Stoch logged for train-distribution monitoring only.
-                # Same episodes (seed_base, n) as the BC seed score, else best@0
-                # and later scores are measured on different samples.
+                # Score on GREEDY — same decision mode as beats_*_fair. The
+                # stochastic policy is already measured every update in [ppo].
+                # Same episodes (seed_base, n) every eval.
                 n_val = int(bc_cfg.get("fair_check_episodes", 20))
-                val = evaluate_policy(
-                    env, actor, val_ods, t_eval, device, n_episodes=n_val, greedy=False
-                )
                 val_g = evaluate_policy(
                     env, actor, val_ods, t_eval, device, n_episodes=n_val, greedy=True
                 )
@@ -1772,9 +1768,9 @@ def run_training(
                     arr_penalty=arr_pen,
                 )
                 print(
-                    f"[eval]  greedy fleet={val_g['fleet_mean']:.1f}s arr={val_g.get('arrival_rate', 0.0):.2f} "
-                    f"cong={val_g['congestion']:.3f} | stoch fleet={val['fleet_mean']:.1f}s "
-                    f"arr={val.get('arrival_rate', 0.0):.2f} | score={score:.1f} "
+                    f"[eval]  greedy objective={_objective(val_g):.1f}s "
+                    f"travel={val_g['fleet_mean']:.1f}s arr={val_g.get('arrival_rate', 0.0):.2f} | "
+                    f"score={score:.1f} "
                     f"best={early.best_metric if early.best_update >= 0 else score:.1f}",
                     flush=True,
                 )
@@ -1785,9 +1781,6 @@ def run_training(
                             "update": update,
                             **val_g,
                             "score": score,
-                            "stoch_fleet_mean": val["fleet_mean"],
-                            "stoch_arrival_rate": val.get("arrival_rate", 0.0),
-                            "stoch_congestion": val["congestion"],
                             "greedy_fleet_mean": val_g["fleet_mean"],
                             "greedy_arrival_rate": val_g.get("arrival_rate", 0.0),
                             "greedy_congestion": val_g["congestion"],

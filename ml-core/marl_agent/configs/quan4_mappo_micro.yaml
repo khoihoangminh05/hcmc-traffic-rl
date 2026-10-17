@@ -200,7 +200,9 @@ ppo:
   normalize_advantage: true
 
 train:
-  max_updates: 3000
+  # ~130s/update on sol1. 2000 bounds a run at ~3 days; early stop usually
+  # ends it 500 updates after the best eval.
+  max_updates: 2000
   eval_every: 50
   log_every: 1
   save_every: 50
