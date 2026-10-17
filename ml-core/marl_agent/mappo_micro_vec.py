@@ -87,6 +87,7 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                 acting = np.asarray(info["agent_acting"], dtype=np.bool_)
                 immediate = np.asarray(info["immediate"], dtype=np.float32)
                 correction = np.asarray(info["correction"], dtype=np.float32)
+                arrived = np.asarray(env._true_arrived, dtype=np.bool_)
                 remote.send(
                     (
                         "ok",
@@ -101,6 +102,7 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
                             acting,
                             immediate,
                             correction,
+                            arrived,
                         ),
                     )
                 )
@@ -210,8 +212,10 @@ class SubprocMicroEnvs:
         np.ndarray,
         np.ndarray,
         np.ndarray,
+        np.ndarray,
     ]:
-        """obs, global, masks, rewards, episode_done, travels, agent_done, acting_next, immediate, correction."""
+        """obs, global, masks, rewards, episode_done, travels, agent_done, acting_next,
+        immediate, correction, arrived (reached the destination, not truncated)."""
         assert actions.shape[0] == self.n
         for r, acts in zip(self._remotes, actions):
             r.send(("step", acts))
@@ -226,7 +230,10 @@ class SubprocMicroEnvs:
         acting = np.stack([o[7] for o in outs], axis=0).astype(np.bool_)
         immediate = np.stack([o[8] for o in outs], axis=0).astype(np.float32)
         correction = np.stack([o[9] for o in outs], axis=0).astype(np.float32)
-        return obs, g, m, rewards, dones, travels, agent_done, acting, immediate, correction
+        arrived = np.stack([o[10] for o in outs], axis=0).astype(np.bool_)
+        return (
+            obs, g, m, rewards, dones, travels, agent_done, acting, immediate, correction, arrived
+        )
 
     def close(self) -> None:
         for r in self._remotes:

@@ -1,7 +1,10 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3n
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3o
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, Dijkstra and random
-# are scored at the end, not cloned first. Do not resume v3m.
+# are scored at the end, not cloned first. Do not resume v3n.
+# v3n collapsed: truncation cost max(8000, 4·remain) was flat for every trip
+# here, so the policy bounced on short links (fleet ≈ 8183s, nobody arrived).
+# Truncation is now base + 4·remain, so each second still to go costs.
 # Step only rebuilds obs for vehicles about to act; merge pressure is cached.
 # Reward for every controller is realized travel time plus the pile penalty.
 # A light is only a place in the observation. Phase and cycle are applied
@@ -44,7 +47,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3n
+  data_tag: mappo_micro_v3o
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -102,9 +105,12 @@ env:
   reward_mode: travel
   travel_scale: 1000.0
   reward_weights:
-    # used by every mode: failure cost charged on truncation (also added to travel)
+    # Every mode. A car still out at the step cap pays
+    # base + mult · min(remain_free, cap), added to travel and to the reward.
+    # Baselines arrive, so this only ever charges a policy that strands cars.
+    truncate_fail_base: 2000.0
     truncate_fail_mult: 4.0
-    truncate_fail_floor: 8000.0
+    truncate_remain_cap_s: 3600.0
     # legacy-mode only (ignored by marginal / travel)
     w_T: 1.0
     w_C: 0.35
@@ -119,7 +125,8 @@ model:
   hidden: 256
 
 optim:
-  lr_actor: 3.0e-5
+  # 3e-5 protected a BC clone. From scratch it moved kl ≈ 1e-4 per update.
+  lr_actor: 3.0e-4
   lr_critic: 5.0e-4
   weight_decay: 1.0e-5
   grad_clip_norm: 1.0
@@ -163,8 +170,9 @@ ppo:
   n_envs: 16
   use_subproc: true
   minibatch_size: 8192
-  ppo_epochs: 3
-  clip_eps: 0.1
+  # Learning took ~0s against ~130s of collect, so reuse each batch more.
+  ppo_epochs: 8
+  clip_eps: 0.2
   value_coef: 0.5
   entropy_coef: 0.01
   # episodes are ~60–200 hops; 0.99 discounted the arrival cost to ~0.13–0.55

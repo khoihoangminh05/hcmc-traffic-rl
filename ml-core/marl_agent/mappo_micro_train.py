@@ -1396,6 +1396,8 @@ def run_training(
                 ep_len = np.zeros(chunk, dtype=np.int32)
                 alive = np.ones(chunk, dtype=np.bool_)
                 last_travel = np.zeros((chunk, n_agents), dtype=np.float64)
+                # Reached the destination. agent_done also counts truncated cars.
+                arrived_b = np.zeros((chunk, n_agents), dtype=np.bool_)
                 # Decision row that owns each agent's current hop. Later
                 # slowdowns (someone entered the alley behind them) are added
                 # back onto that row so the action that chose the alley pays.
@@ -1407,7 +1409,7 @@ def run_training(
                     if t > 0 and t % 200 == 0:
                         print(
                             f"[train] {update}/{max_updates} step {t} | "
-                            f"arrived={float(agent_done_b.mean()):.2f} | "
+                            f"arrived={float(arrived_b.mean()):.2f} | "
                             f"envs={int(alive.sum())}/{chunk} | "
                             f"{time.time() - t_collect0:.0f}s",
                             flush=True,
@@ -1469,11 +1471,13 @@ def run_training(
                             acting_next,
                             immediate,
                             correction,
+                            arrived_new,
                         ) = vec.step_batch(acts_full)
                     else:
                         dones = np.zeros(chunk, dtype=np.bool_)
                         travels = last_travel.copy()
                         agent_done_new = agent_done_b.copy()
+                        arrived_new = arrived_b.copy()
                         acting_next = np.zeros((chunk, n_agents), dtype=np.bool_)
                         immediate = np.zeros((chunk, n_agents), dtype=np.float32)
                         correction = np.zeros((chunk, n_agents), dtype=np.float32)
@@ -1496,6 +1500,7 @@ def run_training(
                             agent_done_new[j] = np.asarray(
                                 info["agent_done"], dtype=np.bool_
                             )
+                            arrived_new[j] = np.asarray(e._true_arrived, dtype=np.bool_)
                             acting_next[j] = np.asarray(
                                 info["agent_acting"], dtype=np.bool_
                             )
@@ -1524,6 +1529,7 @@ def run_training(
                     acting_b = acting_next
                     buf_d[t, alive_idx] = dones[alive_idx]
                     agent_done_b[alive_idx] = agent_done_new[alive_idx]
+                    arrived_b[alive_idx] = arrived_new[alive_idx]
                     ep_len[alive_idx] = t + 1
                     newly_done = alive_idx[dones[alive_idx]]
                     if newly_done.size:
@@ -1562,7 +1568,7 @@ def run_training(
                     all_ret.append(ret_mat[sel])
                     ep_returns.append(float(np.sum(buf_r[:L, j])))
                     ep_fleet.append(float(np.mean(last_travel[j])))
-                    ep_arr.append(float(np.mean(agent_done_b[j])))
+                    ep_arr.append(float(np.mean(arrived_b[j])))
                     ep_lens.append(float(L))
                 ep_i += chunk
                 print(

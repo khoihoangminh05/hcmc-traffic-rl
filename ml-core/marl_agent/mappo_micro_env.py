@@ -1476,7 +1476,8 @@ class MicroAlleyEnv:
         w = self.reward_weights
         scale = self.travel_scale if self.reward_mode != "legacy" else 40.0
         fail_mult = float(w.get("truncate_fail_mult", 4.0))
-        fail_floor = float(w.get("truncate_fail_floor", 8000.0))
+        fail_base = float(w.get("truncate_fail_base", 2000.0))
+        rem_cap = float(w.get("truncate_remain_cap_s", 3600.0))
         now = float(self._sim)
         for i in range(self.n_agents):
             if self._done[i]:
@@ -1496,8 +1497,11 @@ class MicroAlleyEnv:
                 self._travel[i] += waited
                 self._queue_edge[i] = None
                 self._wake_at[i] = None
-            rem = self._remain_free(self._pos[i], self._ods[i][1])
-            pen = max(fail_floor, fail_mult * rem)
+            # Additive, not max(floor, ...): a flat floor made every unfinished
+            # trip cost the same, so a policy could bounce on short links and
+            # never approach the destination. Each second still to go costs more.
+            rem = min(rem_cap, self._remain_free(self._pos[i], self._ods[i][1]))
+            pen = fail_base + fail_mult * rem
             self._corr[i] -= pen / scale
             self._travel[i] += pen
             self._done[i] = True

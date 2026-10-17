@@ -832,6 +832,23 @@ def test_sumo_red_light_holds_a_vehicle() -> None:
             traci.close()
 
 
+def test_truncation_costs_more_the_farther_a_car_is_left() -> None:
+    """A flat floor let a policy bounce on short links. Distance left must cost."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp, nodes = _chain_graph(Path(td), n=10)
+        env = MicroAlleyEnv(
+            dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0, depart_span_s=0.0
+        )
+        env.reset(options={"t": 28800.0, "ods": [(nodes[0], nodes[-1])] * 2})
+        env._pos[1] = nodes[-2]
+        env._corr = [0.0, 0.0]
+        env._force_truncate()
+        far, near = env._travel
+        assert near >= 2000.0
+        assert far > near + 50.0, (far, near)
+        assert not any(env._true_arrived)
+
+
 def test_acting_obs_matches_a_full_recompute() -> None:
     """Ready agents always get a fresh vector; mid-edge agents may reuse cache."""
     with tempfile.TemporaryDirectory() as td:
@@ -863,8 +880,9 @@ def test_subproc_returns_agent_done() -> None:
             vec.set_od_pool([(nodes[0], nodes[-1]), (nodes[1], nodes[-1])])
             vec.reset_batch([3], [28800.0])
             out = vec.step_batch(np.zeros((1, 2), dtype=np.int64))
-            assert len(out) == 10 and out[6].shape == (1, 2)
+            assert len(out) == 11 and out[6].shape == (1, 2)
             assert out[7].shape == (1, 2)
+            assert out[10].shape == (1, 2)
         finally:
             vec.close()
 
@@ -916,6 +934,8 @@ def main() -> None:
     print("PASS test_quan4_signal_net_holds_a_vehicle")
     test_sumo_red_light_holds_a_vehicle()
     print("PASS test_sumo_red_light_holds_a_vehicle")
+    test_truncation_costs_more_the_farther_a_car_is_left()
+    print("PASS test_truncation_costs_more_the_farther_a_car_is_left")
     test_acting_obs_matches_a_full_recompute()
     print("PASS test_acting_obs_matches_a_full_recompute")
     test_subproc_returns_agent_done()
