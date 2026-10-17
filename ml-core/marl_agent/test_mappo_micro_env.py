@@ -933,6 +933,63 @@ def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
         np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
 
 
+def test_accident_is_not_visible_before_it_starts() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [("O", "D", 80.0, "alley"), ("O", "B", 160.0, "residential"), ("B", "D", 160.0, "residential")],
+        )
+        env = MicroAlleyEnv(dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0, depart_span_s=0.0)
+        crash = [{"u": "O", "v": "D", "kind": "obstacle", "t0": 30.0, "t1": 90.0, "extra": 0.0}]
+        obs, _, _ = env.reset(options={"t": 28800.0, "ods": [("O", "D")] * 2, "shocks": crash})
+        j = env._neighbors("O").index("D")
+        blk = env.neighbor_block(obs["agent_0"])
+        assert float(blk[j, env.SHOCK_ETA_IDX]) == 0.0
+        assert float(blk[j, env.SHOCK_MAG_IDX]) == 0.0
+        env._sim = 40.0
+        assert env._shock_view(("O", "D")) == (0.0, 1.0)
+
+
+def test_informed_greedy_uses_the_timetable_mappo_sees() -> None:
+    """Same school release as the invisibility test: greedy_load enters,
+    greedy_informed reads the timetable and takes the bypass. Without any
+    scheduled event the two rules are identical."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "D", 80.0, "alley"),
+                ("O", "B", 160.0, "residential"),
+                ("B", "D", 160.0, "residential"),
+            ],
+        )
+        school = [{"u": "O", "v": "D", "kind": "school", "t0": 1.0, "t1": 90.0, "extra": 8.0}]
+        env = MicroAlleyEnv(dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0, depart_span_s=0.0)
+
+        def fleet(mode: str, shocks: list[dict]) -> tuple[float, str]:
+            env.reset(options={"t": 28800.0, "ods": [("O", "D")] * 2, "shocks": shocks})
+            first = None
+            for _ in range(40):
+                acts = (
+                    env.baseline_greedy_informed_actions()
+                    if mode == "informed"
+                    else env.baseline_greedy_load_actions()
+                )
+                if first is None:
+                    first = env._neighbors("O")[acts["agent_0"]]
+                _, _, _, _, _, info = env.step(acts)
+                if info["all_done"]:
+                    break
+            assert info["arrival_rate"] == 1.0
+            return float(np.mean(env._travel)), str(first)
+
+        g_t, g_hop = fleet("greedy", school)
+        i_t, i_hop = fleet("informed", school)
+        assert g_hop == "D" and i_hop == "B"
+        assert i_t + 5.0 < g_t, (i_t, g_t)
+        assert fleet("greedy", []) == fleet("informed", [])
+
+
 def test_dead_end_is_not_offered_and_never_freezes_the_episode() -> None:
     """X has no exit. It is masked for O->D; a car that starts there fails at once."""
     with tempfile.TemporaryDirectory() as td:
@@ -1090,6 +1147,10 @@ def main() -> None:
     print("PASS test_no_uturn_blocks_going_straight_back")
     test_trip_cap_ends_a_looping_car_but_not_a_baseline()
     print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_accident_is_not_visible_before_it_starts()
+    print("PASS test_accident_is_not_visible_before_it_starts")
+    test_informed_greedy_uses_the_timetable_mappo_sees()
+    print("PASS test_informed_greedy_uses_the_timetable_mappo_sees")
     test_dead_end_is_not_offered_and_never_freezes_the_episode()
     print("PASS test_dead_end_is_not_offered_and_never_freezes_the_episode")
     test_progress_shaping_leaves_the_score_alone()

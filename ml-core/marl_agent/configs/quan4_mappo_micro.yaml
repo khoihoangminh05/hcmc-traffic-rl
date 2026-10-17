@@ -1,7 +1,10 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3p
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3q
 #
-# 50 vehicles. MAPPO starts from scratch. greedy_load, Dijkstra and random
-# are scored at the end, not cloned first. Do not resume v3o.
+# 50 vehicles. MAPPO starts from scratch. greedy_load, greedy_informed,
+# Dijkstra and random are scored at the end, not cloned first. Do not resume v3p.
+# Fairness: an accident is not visible before it starts. School and resident
+# timetables are visible to MAPPO, and greedy_informed uses the same timetable,
+# so a win over it is not extra information.
 # v3n collapsed: truncation cost max(8000, 4·remain) was flat for every trip
 # here, so the policy bounced on short links (fleet ≈ 8183s, nobody arrived).
 # Truncation is now base + 4·remain, so each second still to go costs.
@@ -49,7 +52,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3p
+  data_tag: mappo_micro_v3q
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -213,4 +216,5 @@ early_stopping:
 
 baseline:
   run_on_eval: true
-  n_episodes: 16
+  # Final paired test. 30 gives a usable 95% CI on the per-episode delta.
+  n_episodes: 30

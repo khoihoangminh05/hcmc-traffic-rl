@@ -457,15 +457,19 @@ class MicroAlleyEnv:
         load_c = min(float(load), self.bpr_load_cap)
         return float(t0 * (1.0 + self.bpr_alpha * (load_c / cap) ** self.bpr_beta))
 
-    def _pace(self, edge: tuple[str, str], n_veh: int) -> float:
-        """Wall-seconds per free-flow-second at this occupancy. Piecewise constant."""
+    def _pace(self, edge: tuple[str, str], n_veh: int, at: float | None = None) -> float:
+        """Wall-seconds per free-flow-second at this occupancy. Piecewise constant.
+
+        `at` evaluates scheduled load at a future time (informed forecast only).
+        The obstacle factor is always the current one: it cannot be foreseen.
+        """
         t0 = self._edge_free_time(edge[0], edge[1])
         if t0 <= 1e-8:
             return 1.0
         load = (
             float(self._bg_load.get(edge, 0.0))
             + float(max(0, n_veh))
-            + self._exogenous_load(edge)
+            + self._exogenous_load(edge, at)
         )
         pace = max(1e-3, self._bpr_time(edge[0], edge[1], load) / t0)
         return pace * self._obstacle_factor(edge)
@@ -478,9 +482,9 @@ class MicroAlleyEnv:
             return max(1, base // 2)
         return base
 
-    def _exogenous_load(self, edge: tuple[str, str]) -> float:
-        """Residents or a school release already in progress. Not a forecast."""
-        now = float(getattr(self, "_sim", 0.0))
+    def _exogenous_load(self, edge: tuple[str, str], at: float | None = None) -> float:
+        """Residents or a school release in progress at `at` (default: now)."""
+        now = float(getattr(self, "_sim", 0.0)) if at is None else float(at)
         total = 0.0
         for sh in getattr(self, "_shocks", []):
             if sh["edge"] != edge or sh["kind"] == "obstacle":
@@ -497,11 +501,16 @@ class MicroAlleyEnv:
                 factor = max(factor, 4.0)
         return factor
 
-    def _shock_view(self, edge: tuple[str, str]) -> tuple[float, float]:
-        """Countdown and magnitude of a scheduled event on this edge.
+    # A school dismissal or residents leaving at peak hour follows a timetable.
+    # An accident or a sudden blockage does not: nobody sees it before it starts.
+    SCHEDULED_KINDS = ("egress", "school")
 
-        The heuristic's forecast uses only the load that is already happening,
-        so a school release or a blockage that starts in 20s is invisible to it.
+    def _shock_view(self, edge: tuple[str, str]) -> tuple[float, float]:
+        """Countdown and magnitude of an event on this edge.
+
+        Scheduled kinds show their countdown. An obstacle shows only once active.
+        greedy_load's forecast uses only load already happening; greedy_informed
+        also uses the timetable, so both see what MAPPO sees.
         """
         now = float(getattr(self, "_sim", 0.0))
         eta = 0.0
@@ -509,6 +518,8 @@ class MicroAlleyEnv:
         seen = False
         for sh in getattr(self, "_shocks", []):
             if sh["edge"] != edge or now >= sh["t1"]:
+                continue
+            if now < sh["t0"] and sh["kind"] not in self.SCHEDULED_KINDS:
                 continue
             mass = 1.0 if sh["kind"] == "obstacle" else float(sh["extra"]) / 10.0
             if now < sh["t0"]:
@@ -648,7 +659,20 @@ class MicroAlleyEnv:
             obs[a] = self._obs_cache[i]
         return obs
 
-    def _forecast_entry(self, u: str, v: str, n_extra: int) -> tuple[float, float]:
+    def _schedule_breaks(self, edge: tuple[str, str], now: float) -> list[float]:
+        """Future start/end times of timetabled events on this edge."""
+        out: list[float] = []
+        for sh in getattr(self, "_shocks", []):
+            if sh["edge"] != edge or sh["kind"] not in self.SCHEDULED_KINDS:
+                continue
+            for b in (float(sh["t0"]), float(sh["t1"])):
+                if b > now + 1e-9:
+                    out.append(b)
+        return sorted(out)
+
+    def _forecast_entry(
+        self, u: str, v: str, n_extra: int, informed: bool = False
+    ) -> tuple[float, float]:
         """Own crossing time and the extra time imposed on vehicles already in.
 
         `n_extra` vehicles (lower-index decisions at this same instant) plus the
@@ -681,16 +705,25 @@ class MicroAlleyEnv:
             if t0 - (float(self._prog[j]) + dprog) > 1e-5
         ]
 
+        breaks = self._schedule_breaks(edge, now) if informed else []
+
         def walls(n_new: int) -> list[float]:
             rem = list(exist) + [t0] * n_new
             out_w = [0.0] * len(rem)
             alive = [k for k, r in enumerate(rem) if r > 1e-5]
             wall = 0.0
             guard = 0
-            while alive and guard < 64:
+            while alive and guard < 128:
                 guard += 1
-                f = self._pace(edge, len(alive))
+                if informed:
+                    f = self._pace(edge, len(alive), at=now + wall)
+                else:
+                    f = self._pace(edge, len(alive))
                 step = min(rem[k] for k in alive)
+                if informed:
+                    nxt_b = next((b for b in breaks if b > now + wall + 1e-9), None)
+                    if nxt_b is not None and now + wall + step * f > nxt_b + 1e-9:
+                        step = (nxt_b - (now + wall)) / f
                 wall += step * f
                 done: list[int] = []
                 for k in alive:
@@ -757,7 +790,7 @@ class MicroAlleyEnv:
         )
         return (curr, best)
 
-    def _score_waiting(self, social: bool) -> tuple[
+    def _score_waiting(self, social: bool, informed: bool = False) -> tuple[
         list[tuple[str, str] | None],
         list[dict[tuple[str, str], int]],
         list[dict[tuple[str, str], float]],
@@ -781,7 +814,7 @@ class MicroAlleyEnv:
             prior[i] = {(curr, n): committed.get((curr, n), 0) for n in cand}
             scored: list[tuple[float, str]] = []
             for n in cand:
-                tt, ext = self._forecast_entry(curr, n, prior[i][(curr, n)])
+                tt, ext = self._forecast_entry(curr, n, prior[i][(curr, n)], informed)
                 pred_tt[i][(curr, n)] = tt
                 pred_ext[i][(curr, n)] = ext
                 has_light, q = self._hop_rank(n, dest, tt, ext, social)
@@ -1759,6 +1792,19 @@ class MicroAlleyEnv:
             acts[a] = 0 if e is None else self._neighbors(e[0]).index(e[1])
         return acts
 
+    def baseline_greedy_informed_actions(self) -> dict[str, int]:
+        """greedy_load with the timetable MAPPO sees: scheduled school or resident
+        load enters the forecast before it starts. Accidents stay unforeseen.
+
+        Fairness control. If MAPPO beats this, the gain is not extra information.
+        """
+        intent, _prior, _tt, _ext, _committed = self._score_waiting(False, informed=True)
+        acts: dict[str, int] = {}
+        for i, a in enumerate(self.agents):
+            e = intent[i]
+            acts[a] = 0 if e is None else self._neighbors(e[0]).index(e[1])
+        return acts
+
     def baseline_greedy_load_actions(self) -> dict[str, int]:
         """Sequential load-aware router: own forecast + congested cost-to-go.
 
@@ -1791,6 +1837,8 @@ class MicroAlleyEnv:
                 acts = self.baseline_random_actions()
             elif mode == "greedy_load":
                 acts = self.baseline_greedy_load_actions()
+            elif mode == "greedy_informed":
+                acts = self.baseline_greedy_informed_actions()
             else:
                 raise ValueError(mode)
             _, _, _, _, _, step_info = self.step(acts)

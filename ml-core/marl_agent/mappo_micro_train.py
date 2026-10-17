@@ -156,6 +156,35 @@ def _mean_metric_dicts(rows: list[dict[str, float]]) -> dict[str, float]:
     return out
 
 
+def _paired_stats(
+    policy_rows: list[dict[str, float]], base_rows: list[dict[str, float]]
+) -> dict[str, float]:
+    """Per-episode objective delta (policy − baseline) on identical episodes.
+
+    Negative mean = policy better. ci95 uses the normal approximation of the
+    paired mean; win_rate counts episodes where the policy is strictly better.
+    """
+    n = min(len(policy_rows), len(base_rows))
+    if n == 0:
+        return {"n": 0.0}
+    d = np.asarray(
+        [_objective(policy_rows[k]) - _objective(base_rows[k]) for k in range(n)],
+        dtype=np.float64,
+    )
+    base = np.asarray([_objective(base_rows[k]) for k in range(n)], dtype=np.float64)
+    sd = float(d.std(ddof=1)) if n > 1 else 0.0
+    half = 1.96 * sd / math.sqrt(n) if n > 1 else float("nan")
+    return {
+        "n": float(n),
+        "delta_mean": float(d.mean()),
+        "delta_sd": sd,
+        "ci95_low": float(d.mean() - half),
+        "ci95_high": float(d.mean() + half),
+        "delta_pct": float(100.0 * d.mean() / max(float(base.mean()), 1e-9)),
+        "win_rate": float(np.mean(d < 0.0)),
+    }
+
+
 def run_episode_baseline(
     env: MicroAlleyEnv,
     mode: str,
@@ -184,6 +213,8 @@ def run_episode_baseline(
             acts = env.baseline_random_actions()
         elif mode == "greedy_load":
             acts = env.baseline_greedy_load_actions()
+        elif mode == "greedy_informed":
+            acts = env.baseline_greedy_informed_actions()
         elif mode == "social":
             acts = env.baseline_social_actions()
         else:
@@ -307,7 +338,13 @@ def evaluate_fair_suite(
     n_episodes: int = 30,
     *,
     seed_base: int = EVAL_SEED_BASE,
-    baseline_modes: tuple[str, ...] = ("dijkstra", "dijkstra_bpr", "random", "greedy_load"),
+    baseline_modes: tuple[str, ...] = (
+        "dijkstra",
+        "dijkstra_bpr",
+        "random",
+        "greedy_load",
+        "greedy_informed",
+    ),
 ) -> dict[str, Any]:
     """Paired comparison: identical env / OD / t / seed / step+reward for every controller.
 
@@ -368,6 +405,11 @@ def evaluate_fair_suite(
             )
     actor.train()
     agg = {name: _mean_metric_dicts(rows) for name, rows in buckets.items()}
+    paired = {
+        mode: _paired_stats(buckets["policy_greedy"], buckets[mode])
+        for mode in baseline_modes
+        if buckets[mode]
+    }
     djk = agg.get("dijkstra", {})
     pol_g = agg["policy_greedy"]
     pol_s = agg["policy_stoch"]
@@ -405,11 +447,23 @@ def evaluate_fair_suite(
         if djk_bpr
         else None
     )
+    gi = agg.get("greedy_informed", {})
+    beats_greedy_informed_fair = (
+        bool(
+            _objective(pol_g) < _objective(gi)
+            and float(pol_g.get("arrival_rate", 0.0))
+            >= float(gi.get("arrival_rate", 0.0)) - 0.05
+        )
+        if gi
+        else None
+    )
     return {
         **agg,
         "eval_protocol": "paired_identical_od_t_seed_step",
         "seed_base": int(seed_base),
         "n_episodes": int(n_episodes),
+        "paired_vs_policy_greedy": paired,
+        "beats_greedy_informed_fair": beats_greedy_informed_fair,
         "beats_dijkstra_fair": beats_dijkstra_fair,
         "beats_dijkstra_bpr_fair": beats_dijkstra_bpr_fair,
         "beats_greedy_load_fair": beats_greedy_load_fair,
@@ -1820,14 +1874,26 @@ def run_training(
             "dijkstra_bpr",
             "random",
             "greedy_load",
+            "greedy_informed",
             "social",
         ):
             m = fair.get(name)
             if not m:
                 continue
             print(
-                f"  [fair] {name:14s} fleet={m['fleet_mean']:.1f}s "
+                f"  [fair] {name:15s} objective={_objective(m):.1f}s "
+                f"travel={m['fleet_mean']:.1f}s city={m.get('city_mean', 0.0):.1f}s "
                 f"cvar={m['fleet_cvar90']:.1f}s arr={m['arrival_rate']:.2f}",
+                flush=True,
+            )
+        for name, st in fair.get("paired_vs_policy_greedy", {}).items():
+            if not st.get("n"):
+                continue
+            print(
+                f"  [paired] policy_greedy - {name:15s} "
+                f"delta={st['delta_mean']:+.1f}s ({st['delta_pct']:+.1f}%) "
+                f"ci95=[{st['ci95_low']:+.1f}, {st['ci95_high']:+.1f}] "
+                f"win_rate={st['win_rate']:.2f} n={st['n']:.0f}",
                 flush=True,
             )
         print(
@@ -1837,7 +1903,8 @@ def run_training(
             f"beats_dijkstra_bpr_fair={fair.get('beats_dijkstra_bpr_fair')} | "
             f"delta_greedy-greedy_load={fair.get('delta_fleet_greedy_minus_greedy_load')} "
             f"delta_obj-greedy_load={fair.get('delta_objective_greedy_minus_greedy_load')} "
-            f"beats_greedy_load_fair={fair.get('beats_greedy_load_fair')}",
+            f"beats_greedy_load_fair={fair.get('beats_greedy_load_fair')} "
+            f"beats_greedy_informed_fair={fair.get('beats_greedy_informed_fair')}",
             flush=True,
         )
     else:
@@ -1859,7 +1926,7 @@ def run_training(
     grd = fair.get("greedy_load", {})
     baselines = {
         k: fair[k]
-        for k in ("dijkstra", "dijkstra_bpr", "random", "greedy_load", "social")
+        for k in ("dijkstra", "dijkstra_bpr", "random", "greedy_load", "greedy_informed", "social")
         if k in fair and isinstance(fair[k], dict) and "fleet_mean" in fair[k]
     }
     summary = {
@@ -1895,7 +1962,10 @@ def run_training(
                 "dijkstra_bpr",
                 "random",
                 "greedy_load",
+                "greedy_informed",
                 "social",
+                "paired_vs_policy_greedy",
+                "beats_greedy_informed_fair",
                 "delta_fleet_greedy_minus_dijkstra",
                 "delta_fleet_greedy_minus_dijkstra_bpr",
                 "delta_fleet_greedy_minus_greedy_load",
@@ -1929,6 +1999,7 @@ def run_training(
         "beats_dijkstra_fair": fair.get("beats_dijkstra_fair"),
         "beats_dijkstra_bpr_fair": fair.get("beats_dijkstra_bpr_fair"),
         "beats_greedy_load_fair": fair.get("beats_greedy_load_fair"),
+        "beats_greedy_informed_fair": fair.get("beats_greedy_informed_fair"),
         "beats_dijkstra_stoch": fair.get("beats_dijkstra_stoch"),
         "reward_mode": env.reward_mode,
         "beats_random_fair": bool(
