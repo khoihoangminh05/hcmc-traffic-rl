@@ -849,6 +849,128 @@ def test_truncation_costs_more_the_farther_a_car_is_left() -> None:
         assert not any(env._true_arrived)
 
 
+def test_no_uturn_blocks_going_straight_back() -> None:
+    """Back to the node just left is masked for everyone, unless it is the only exit."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "O", 30.0, "residential"),
+                ("A", "D", 60.0, "residential"),
+                ("O", "X", 30.0, "residential"),
+                ("X", "O", 30.0, "residential"),
+            ],
+        )
+        env = MicroAlleyEnv(
+            dp, gp, n_agents=2, max_degree=3, max_steps=20, seed=0,
+            depart_span_s=0.0, no_uturn=True,
+        )
+        env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+        to_a = env._neighbors("O").index("A")
+        env.step({a: to_a for a in env.agents})
+        assert env._pos[0] == "A"
+        mask = env.action_mask(0)
+        back = env._neighbors("A").index("O")
+        assert mask[back] == 0.0
+        assert mask[env._neighbors("A").index("D")] == 1.0
+        assert env._neighbors("A")[env.baseline_dijkstra_actions()["agent_0"]] == "D"
+        assert env._neighbors("A")[env.baseline_greedy_load_actions()["agent_0"]] == "D"
+        # X is a dead end: its only exit is back to O, which must stay open.
+        env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+        to_x = env._neighbors("O").index("X")
+        env.step({a: to_x for a in env.agents})
+        assert env._pos[0] == "X"
+        assert env.action_mask(0)[env._neighbors("X").index("O")] == 1.0
+
+
+def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
+    """A car past its time budget fails on its own; greedy and Dijkstra arrive."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "O", 30.0, "residential"),
+                ("A", "B", 200.0, "residential"),
+                ("B", "D", 200.0, "residential"),
+            ],
+        )
+        kw = dict(
+            n_agents=2, max_degree=3, max_steps=400, seed=0, depart_span_s=0.0,
+            trip_cap_mult=1.5, trip_cap_min_s=30.0,
+        )
+        env = MicroAlleyEnv(dp, gp, **kw)
+        od = ("O", "D")
+        for mode in ("dijkstra", "greedy"):
+            env.reset(options={"t": 28800.0, "ods": [od] * 2})
+            for _ in range(400):
+                acts = (
+                    env.baseline_dijkstra_actions()
+                    if mode == "dijkstra"
+                    else env.baseline_greedy_load_actions()
+                )
+                _, _, _, _, _, info = env.step(acts)
+                if info["all_done"]:
+                    break
+            assert info["arrival_rate"] == 1.0, mode
+            assert not info["truncated"]
+        # Shuttle O <-> A forever: the trip budget ends it, not the step cap.
+        env.reset(options={"t": 28800.0, "ods": [od] * 2})
+        ret = np.zeros(2)
+        for _ in range(400):
+            acts = {}
+            for i, a in enumerate(env.agents):
+                neigh = env._neighbors(env._pos[i])
+                acts[a] = neigh.index("A") if "A" in neigh else neigh.index("O")
+            _, rew, _, _, _, info = env.step(acts)
+            ret += [rew[x] for x in env.agents]
+            if info["all_done"]:
+                break
+        assert info["all_done"] and not info["truncated"]
+        assert info["arrival_rate"] == 0.0
+        assert min(env._travel) >= 2000.0
+        np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
+
+
+def test_progress_shaping_leaves_the_score_alone() -> None:
+    """Shaping only moves reward. Travel and city are unchanged, and the extra
+    reward per car telescopes to its starting time-to-go when γ = 1."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "O", 30.0, "residential"),
+                ("A", "B", 200.0, "residential"),
+                ("B", "D", 200.0, "residential"),
+            ],
+        )
+        od = ("O", "D")
+
+        def run(coef: float) -> tuple[np.ndarray, list[float], list[float], float]:
+            env = MicroAlleyEnv(
+                dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0,
+                depart_span_s=0.0, share_coef=8.0,
+                progress_shaping=coef, shaping_gamma=1.0,
+            )
+            env.reset(options={"t": 28800.0, "ods": [od] * 2})
+            start = env._remain_bpr("O", "D")
+            ret = np.zeros(2)
+            for _ in range(40):
+                _, rew, _, _, _, info = env.step(env.baseline_greedy_load_actions())
+                ret += [rew[a] for a in env.agents]
+                if info["all_done"]:
+                    break
+            assert info["arrival_rate"] == 1.0
+            return ret, list(env._travel), list(env._city), start
+
+        ret_off, trav_off, city_off, start = run(0.0)
+        ret_on, trav_on, city_on, _ = run(1.0)
+        assert trav_on == trav_off and city_on == city_off
+        np.testing.assert_allclose(ret_on - ret_off, start / 1000.0, rtol=1e-6, atol=1e-9)
+
+
 def test_acting_obs_matches_a_full_recompute() -> None:
     """Ready agents always get a fresh vector; mid-edge agents may reuse cache."""
     with tempfile.TemporaryDirectory() as td:
@@ -936,6 +1058,12 @@ def main() -> None:
     print("PASS test_sumo_red_light_holds_a_vehicle")
     test_truncation_costs_more_the_farther_a_car_is_left()
     print("PASS test_truncation_costs_more_the_farther_a_car_is_left")
+    test_no_uturn_blocks_going_straight_back()
+    print("PASS test_no_uturn_blocks_going_straight_back")
+    test_trip_cap_ends_a_looping_car_but_not_a_baseline()
+    print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_progress_shaping_leaves_the_score_alone()
+    print("PASS test_progress_shaping_leaves_the_score_alone")
     test_acting_obs_matches_a_full_recompute()
     print("PASS test_acting_obs_matches_a_full_recompute")
     test_subproc_returns_agent_done()

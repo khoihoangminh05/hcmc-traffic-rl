@@ -85,6 +85,11 @@ def env_kwargs_from_cfg(
         "shock_rate": float(env_cfg.get("shock_rate", 0.0)),
         "share_coef": float(env_cfg.get("share_coef", 0.0)),
         "include_alley_info": bool(env_cfg.get("include_alley_info", True)),
+        "no_uturn": bool(env_cfg.get("no_uturn", False)),
+        "trip_cap_mult": float(env_cfg.get("trip_cap_mult", 0.0)),
+        "trip_cap_min_s": float(env_cfg.get("trip_cap_min_s", 1800.0)),
+        "progress_shaping": float(env_cfg.get("progress_shaping", 0.0)),
+        "shaping_gamma": float(env_cfg.get("shaping_gamma", 0.999)),
     }
 
 

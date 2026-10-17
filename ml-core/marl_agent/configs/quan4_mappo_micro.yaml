@@ -1,10 +1,12 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3o
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3p
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, Dijkstra and random
-# are scored at the end, not cloned first. Do not resume v3n.
+# are scored at the end, not cloned first. Do not resume v3o.
 # v3n collapsed: truncation cost max(8000, 4·remain) was flat for every trip
 # here, so the policy bounced on short links (fleet ≈ 8183s, nobody arrived).
 # Truncation is now base + 4·remain, so each second still to go costs.
+# v3o reached 0.81 arrival, then slid to 0.78 with more looping. v3p cuts a
+# trip on its own time budget and adds potential-based progress shaping.
 # Step only rebuilds obs for vehicles about to act; merge pressure is cached.
 # Reward for every controller is realized travel time plus the pile penalty.
 # A light is only a place in the observation. Phase and cycle are applied
@@ -47,7 +49,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3o
+  data_tag: mappo_micro_v3p
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -93,6 +95,19 @@ env:
   share_coef: 8.0
   # Set false for the ablation: same transition, alley class/cap/density hidden.
   include_alley_info: true
+  # Off: banning a turn back made greedy_load 5–7% worse on the objective
+  # (it turns away from a jammed alley). That would weaken the baseline.
+  no_uturn: false
+  # A trip still out after max(min_s, mult · congested trip time) fails on
+  # its own and pays the truncation cost. Quận 4, 3 eps: Dijkstra's slowest
+  # car took 4.3× its congested time, so 10× never cuts a baseline.
+  trip_cap_mult: 10.0
+  trip_cap_min_s: 1800.0
+  # MAPPO training signal only: coef · (time-to-go before − γ · after) per hop.
+  # Potential-based, so the optimal policy is unchanged; the compared score
+  # (travel + pile penalty) does not include it. Keep shaping_gamma = ppo.gamma.
+  progress_shaping: 1.0
+  shaping_gamma: 0.999
   compact_dim: 192
   bpr_alpha: 0.15
   bpr_beta: 4.0

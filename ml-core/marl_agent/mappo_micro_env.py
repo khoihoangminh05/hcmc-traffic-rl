@@ -61,6 +61,11 @@ class MicroAlleyEnv:
         shock_rate: float = 0.0,
         share_coef: float = 0.0,
         include_alley_info: bool = True,
+        no_uturn: bool = False,
+        trip_cap_mult: float = 0.0,
+        trip_cap_min_s: float = 1800.0,
+        progress_shaping: float = 0.0,
+        shaping_gamma: float = 0.999,
     ) -> None:
         if reward_mode not in ("marginal", "travel", "legacy"):
             raise ValueError(f"reward_mode={reward_mode!r}")
@@ -86,6 +91,19 @@ class MicroAlleyEnv:
         # of the BPR slowdown, which is already inside travel time.
         self.share_coef = max(0.0, float(share_coef))
         self.include_alley_info = bool(include_alley_info)
+        # Same rule for every controller: do not go straight back to the node
+        # just left, unless it is the only exit.
+        self.no_uturn = bool(no_uturn)
+        # A trip still out after max(min_s, mult · congested trip time) has
+        # failed and is truncated on its own. 0 = only the fleet step cap.
+        self.trip_cap_mult = max(0.0, float(trip_cap_mult))
+        self.trip_cap_min_s = max(0.0, float(trip_cap_min_s))
+        # Training signal only, potential-based (Ng et al. 1999): each hop adds
+        # coef · (R(curr) − γ·R(next)) / scale, R = congested time to go.
+        # It does not change the optimal policy, and it is not in _travel or
+        # _city, so the compared score is untouched. γ must equal ppo.gamma.
+        self.progress_shaping = max(0.0, float(progress_shaping))
+        self.shaping_gamma = float(shaping_gamma)
         self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = max(2, int(n_agents))
@@ -175,6 +193,7 @@ class MicroAlleyEnv:
         self._load_signals()
         # Reused between steps for vehicles that are not about to act.
         self._obs_cache: list[np.ndarray | None] = [None] * self.n_agents
+        self._trip_cap: list[float] = [float("inf")] * self.n_agents
         self._merge_cache: dict[tuple[str, str], float] = {}
         self._approach_cache: dict[str, float] = {}
 
@@ -728,7 +747,7 @@ class MicroAlleyEnv:
         if self._done[i]:
             return None
         curr, dest = self._pos[i], self._ods[i][1]
-        cand = self._neighbors(curr)[: self.max_degree]
+        cand = self._allowed_next(i)
         if not cand:
             return None
         best = min(
@@ -756,7 +775,7 @@ class MicroAlleyEnv:
             if i not in ready or self._done[i]:
                 continue
             curr, dest = self._pos[i], self._ods[i][1]
-            cand = self._neighbors(curr)[: self.max_degree]
+            cand = self._allowed_next(i)
             if not cand:
                 continue
             prior[i] = {(curr, n): committed.get((curr, n), 0) for n in cand}
@@ -831,6 +850,21 @@ class MicroAlleyEnv:
     def _neighbors(self, node: str) -> list[str]:
         return self._out.get(node, [])
 
+    def _blocked_next(self, i: int) -> str | None:
+        """The node agent i just came from, when going back is not allowed."""
+        if not self.no_uturn or len(self._path_hist[i]) < 2:
+            return None
+        prev = self._path_hist[i][-2]
+        neigh = self._neighbors(self._pos[i])[: self.max_degree]
+        if prev not in neigh or len(neigh) < 2:
+            return None
+        return prev
+
+    def _allowed_next(self, i: int) -> list[str]:
+        neigh = self._neighbors(self._pos[i])[: self.max_degree]
+        blocked = self._blocked_next(i)
+        return [n for n in neigh if n != blocked]
+
     def action_mask(self, agent_idx: int) -> np.ndarray:
         mask = np.zeros(self.max_degree, dtype=np.float32)
         ready = set(getattr(self, "_awaiting", []))
@@ -841,8 +875,10 @@ class MicroAlleyEnv:
         if not neigh:
             mask[0] = 1.0
             return mask
+        blocked = self._blocked_next(agent_idx)
         for i in range(min(len(neigh), self.max_degree)):
-            mask[i] = 1.0
+            if neigh[i] != blocked:
+                mask[i] = 1.0
         return mask
 
     # obs = [t(2), peak(3), emb O/D/curr(24), scalars(7), dens(4), unc(3)] + neighbors
@@ -911,6 +947,7 @@ class MicroAlleyEnv:
         rows = np.zeros((self.max_degree, nf), dtype=np.float32)
         prior = self._prior_load[i] if i < len(self._prior_load) else {}
         pred = self._pred_tt[i] if i < len(getattr(self, "_pred_tt", [])) else {}
+        blocked = self._blocked_next(i) if not self._done[i] else None
         q_vals: list[float] = []
         for j, nxt in enumerate(neigh):
             e = (curr, nxt)
@@ -947,12 +984,13 @@ class MicroAlleyEnv:
             rows[j, self.SHOCK_MAG_IDX] = mag
             rows[j, self.MERGE_IDX] = self._merge_pressure(curr, nxt)
             rows[j, self.HAS_SIGNAL_IDX] = 1.0 if nxt in self._signals else 0.0
-        if q_vals:
-            best_light, best_q = min(q_vals)
+        open_q = [qv for j, qv in enumerate(q_vals) if neigh[j] != blocked]
+        if open_q:
+            best_light, best_q = min(open_q)
             for j, (lit, q) in enumerate(q_vals):
                 # 0 on the hop the heuristic takes. A light is refused while
                 # any exit without a light exists. The gap is not the red time.
-                if lit > best_light:
+                if neigh[j] == blocked or lit > best_light:
                     rows[j, self.REGRET_IDX] = 50.0
                 else:
                     rows[j, self.REGRET_IDX] = min((q - best_q) / 100.0, 50.0)
@@ -1231,6 +1269,12 @@ class MicroAlleyEnv:
         else:
             self._sample_shocks()
         self._assign_departures()
+        self._trip_cap = [
+            max(self.trip_cap_min_s, self.trip_cap_mult * self._remain_bpr(o, d))
+            if self.trip_cap_mult > 0.0
+            else float("inf")
+            for o, d in self._ods
+        ]
         self._advance_to_ready()
         self._rebuild_node_occ()
         self._refresh_intents()
@@ -1468,43 +1512,61 @@ class MicroAlleyEnv:
                 t = self._sim
             self._sim = float(t)
             ready = self._settle_events(self._sim)
+            if ready and self.trip_cap_mult > 0.0:
+                # A car only stops at a node, so the budget is checked there.
+                keep: list[int] = []
+                for i in ready:
+                    if self._sim - float(self._depart[i]) >= self._trip_cap[i]:
+                        self._truncate_agent(i, self._sim)
+                    else:
+                        keep.append(i)
+                ready = keep
             if ready:
                 self._awaiting = ready
                 return
 
-    def _force_truncate(self) -> None:
+    def _shaping(self, curr: str, nxt: str, dest: str) -> float:
+        rem_cap = float(self.reward_weights.get("truncate_remain_cap_s", 3600.0))
+        r0 = min(rem_cap, self._remain_bpr(curr, dest))
+        r1 = 0.0 if nxt == dest else min(rem_cap, self._remain_bpr(nxt, dest))
+        return float(self.progress_shaping * (r0 - self.shaping_gamma * r1) / self.travel_scale)
+
+    def _truncate_agent(self, i: int, now: float) -> None:
+        """End agent i's trip as a failure. Same charge for every controller."""
         w = self.reward_weights
         scale = self.travel_scale if self.reward_mode != "legacy" else 40.0
         fail_mult = float(w.get("truncate_fail_mult", 4.0))
         fail_base = float(w.get("truncate_fail_base", 2000.0))
         rem_cap = float(w.get("truncate_remain_cap_s", 3600.0))
+        if self._edge_of[i] is not None:
+            edge = self._edge_of[i]
+            self._sync_edge(edge, now)
+            actual = max(0.0, now - self._enter_t[i])
+            self._emit(i, actual - self._booked[i])
+            self._travel[i] += actual
+            self._on_edge[edge].remove(i)
+            self._edge_of[i] = None
+            self._pos[i] = edge[1]
+        if self._wake_at[i] is not None:
+            waited = max(0.0, now - self._queue_since[i])
+            self._corr[i] -= waited / scale
+            self._travel[i] += waited
+            self._queue_edge[i] = None
+            self._wake_at[i] = None
+        # Additive, not max(floor, ...): a flat floor made every unfinished
+        # trip cost the same, so a policy could bounce on short links and
+        # never approach the destination. Each second still to go costs more.
+        rem = min(rem_cap, self._remain_free(self._pos[i], self._ods[i][1]))
+        pen = fail_base + fail_mult * rem
+        self._corr[i] -= pen / scale
+        self._travel[i] += pen
+        self._done[i] = True
+
+    def _force_truncate(self) -> None:
         now = float(self._sim)
         for i in range(self.n_agents):
-            if self._done[i]:
-                continue
-            if self._edge_of[i] is not None:
-                edge = self._edge_of[i]
-                self._sync_edge(edge, now)
-                actual = max(0.0, now - self._enter_t[i])
-                self._emit(i, actual - self._booked[i])
-                self._travel[i] += actual
-                self._on_edge[edge].remove(i)
-                self._edge_of[i] = None
-                self._pos[i] = edge[1]
-            if self._wake_at[i] is not None:
-                waited = max(0.0, now - self._queue_since[i])
-                self._corr[i] -= waited / scale
-                self._travel[i] += waited
-                self._queue_edge[i] = None
-                self._wake_at[i] = None
-            # Additive, not max(floor, ...): a flat floor made every unfinished
-            # trip cost the same, so a policy could bounce on short links and
-            # never approach the destination. Each second still to go costs more.
-            rem = min(rem_cap, self._remain_free(self._pos[i], self._ods[i][1]))
-            pen = fail_base + fail_mult * rem
-            self._corr[i] -= pen / scale
-            self._travel[i] += pen
-            self._done[i] = True
+            if not self._done[i]:
+                self._truncate_agent(i, now)
         self._awaiting = []
 
     def step(
@@ -1568,6 +1630,8 @@ class MicroAlleyEnv:
                 # on other vehicles a second time and is not the compared score.
                 cost = tt + (ext if self.reward_mode == "marginal" else 0.0)
                 imm[i] = float(-cost / scale)
+                if self.progress_shaping > 0.0:
+                    imm[i] += self._shaping(curr, v, self._ods[i][1])
         self._awaiting = []
         self._advance_to_ready()
 
@@ -1638,8 +1702,11 @@ class MicroAlleyEnv:
             if not cand:
                 acts[a] = 0
                 continue
+            blocked = self._blocked_next(i)
             best_j, best_d = 0, 1e18
             for j, nxt in enumerate(cand):
+                if nxt == blocked:
+                    continue
                 d = self._edge_free_time(curr, nxt) + self._remain_free(nxt, dest)
                 if d < best_d:
                     best_d, best_j = d, j
