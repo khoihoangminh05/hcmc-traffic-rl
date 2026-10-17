@@ -933,6 +933,34 @@ def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
         np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
 
 
+def test_dead_end_is_not_offered_and_never_freezes_the_episode() -> None:
+    """X has no exit. It is masked for O->D; a car that starts there fails at once."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "D", 30.0, "residential"),
+                ("O", "X", 10.0, "residential"),
+                ("D", "O", 30.0, "residential"),
+            ],
+        )
+        env = MicroAlleyEnv(dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0, depart_span_s=0.0)
+        env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+        mask = env.action_mask(0)
+        assert mask[env._neighbors("O").index("X")] == 0.0
+        assert mask[env._neighbors("O").index("A")] == 1.0
+        env.reset(options={"t": 28800.0, "ods": [("X", "D"), ("O", "D")]})
+        assert env._done[0] and not env._true_arrived[0]
+        assert env._travel[0] >= 2000.0
+        for _ in range(40):
+            _, _, _, _, _, info = env.step(env.baseline_greedy_load_actions())
+            if info["all_done"]:
+                break
+        assert info["all_done"] and not info["truncated"]
+        assert env._true_arrived[1]
+
+
 def test_progress_shaping_leaves_the_score_alone() -> None:
     """Shaping only moves reward. Travel and city are unchanged, and the extra
     reward per car telescopes to its starting time-to-go when γ = 1."""
@@ -1062,6 +1090,8 @@ def main() -> None:
     print("PASS test_no_uturn_blocks_going_straight_back")
     test_trip_cap_ends_a_looping_car_but_not_a_baseline()
     print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_dead_end_is_not_offered_and_never_freezes_the_episode()
+    print("PASS test_dead_end_is_not_offered_and_never_freezes_the_episode")
     test_progress_shaping_leaves_the_score_alone()
     print("PASS test_progress_shaping_leaves_the_score_alone")
     test_acting_obs_matches_a_full_recompute()

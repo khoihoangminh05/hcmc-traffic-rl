@@ -861,9 +861,18 @@ class MicroAlleyEnv:
         return prev
 
     def _allowed_next(self, i: int) -> list[str]:
+        """Exits agent i may take. Same set for every controller.
+
+        A node from which the destination cannot be reached is not offered:
+        Quận 4 has one edge into a dead end with no way out. Baselines never
+        chose it (cost-to-go 1e5); a learner that did froze the episode.
+        """
         neigh = self._neighbors(self._pos[i])[: self.max_degree]
         blocked = self._blocked_next(i)
-        return [n for n in neigh if n != blocked]
+        dest = self._ods[i][1]
+        open_ = [n for n in neigh if n != blocked]
+        reach = [n for n in open_ if n == dest or self._remain_free(n, dest) < 1e4]
+        return reach or open_ or list(neigh)
 
     def action_mask(self, agent_idx: int) -> np.ndarray:
         mask = np.zeros(self.max_degree, dtype=np.float32)
@@ -875,9 +884,9 @@ class MicroAlleyEnv:
         if not neigh:
             mask[0] = 1.0
             return mask
-        blocked = self._blocked_next(agent_idx)
+        allowed = set(self._allowed_next(agent_idx))
         for i in range(min(len(neigh), self.max_degree)):
-            if neigh[i] != blocked:
+            if neigh[i] in allowed:
                 mask[i] = 1.0
         return mask
 
@@ -947,7 +956,7 @@ class MicroAlleyEnv:
         rows = np.zeros((self.max_degree, nf), dtype=np.float32)
         prior = self._prior_load[i] if i < len(self._prior_load) else {}
         pred = self._pred_tt[i] if i < len(getattr(self, "_pred_tt", [])) else {}
-        blocked = self._blocked_next(i) if not self._done[i] else None
+        allowed = set(self._allowed_next(i)) if not self._done[i] else set(neigh)
         q_vals: list[float] = []
         for j, nxt in enumerate(neigh):
             e = (curr, nxt)
@@ -984,13 +993,13 @@ class MicroAlleyEnv:
             rows[j, self.SHOCK_MAG_IDX] = mag
             rows[j, self.MERGE_IDX] = self._merge_pressure(curr, nxt)
             rows[j, self.HAS_SIGNAL_IDX] = 1.0 if nxt in self._signals else 0.0
-        open_q = [qv for j, qv in enumerate(q_vals) if neigh[j] != blocked]
+        open_q = [qv for j, qv in enumerate(q_vals) if neigh[j] in allowed]
         if open_q:
             best_light, best_q = min(open_q)
             for j, (lit, q) in enumerate(q_vals):
                 # 0 on the hop the heuristic takes. A light is refused while
                 # any exit without a light exists. The gap is not the red time.
-                if neigh[j] == blocked or lit > best_light:
+                if neigh[j] not in allowed or lit > best_light:
                     rows[j, self.REGRET_IDX] = 50.0
                 else:
                     rows[j, self.REGRET_IDX] = min((q - best_q) / 100.0, 50.0)
@@ -1512,11 +1521,16 @@ class MicroAlleyEnv:
                 t = self._sim
             self._sim = float(t)
             ready = self._settle_events(self._sim)
-            if ready and self.trip_cap_mult > 0.0:
+            if ready:
                 # A car only stops at a node, so the budget is checked there.
+                # A node with no exit would never wake the car again.
                 keep: list[int] = []
                 for i in ready:
-                    if self._sim - float(self._depart[i]) >= self._trip_cap[i]:
+                    over = (
+                        self.trip_cap_mult > 0.0
+                        and self._sim - float(self._depart[i]) >= self._trip_cap[i]
+                    )
+                    if over or not self._neighbors(self._pos[i]):
                         self._truncate_agent(i, self._sim)
                     else:
                         keep.append(i)
@@ -1702,10 +1716,10 @@ class MicroAlleyEnv:
             if not cand:
                 acts[a] = 0
                 continue
-            blocked = self._blocked_next(i)
+            allowed = set(self._allowed_next(i))
             best_j, best_d = 0, 1e18
             for j, nxt in enumerate(cand):
-                if nxt == blocked:
+                if nxt not in allowed:
                     continue
                 d = self._edge_free_time(curr, nxt) + self._remain_free(nxt, dest)
                 if d < best_d:

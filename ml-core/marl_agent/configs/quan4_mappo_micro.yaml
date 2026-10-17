@@ -170,8 +170,9 @@ bc:
   dagger_stop_beta: 0.15
   epochs_per_update: 6
   critic_fit_episodes: 16
-  # Val during training. Final paired suite still uses baseline.n_episodes.
-  fair_check_episodes: 4
+  # Val during training, same seeds every eval. 4 episodes spread ~480–810s
+  # per episode, too noisy to pick best.pt with min_delta 10s.
+  fair_check_episodes: 8
   min_arrival_rate: 0.95
   max_arrival_gap_vs_dijkstra: 0.05
   max_fleet_ratio_vs_teacher: 1.10
@@ -203,7 +204,9 @@ train:
 
 early_stopping:
   enabled: true
-  patience: 40
+  # Evals, not updates. 40 × eval_every 50 kept running ~2000 updates (~3 days)
+  # after the best point. 10 = 500 updates without a 10s gain.
+  patience: 10
   min_delta: 10.0
   arrival_penalty: 12000.0
   restore_best: true
