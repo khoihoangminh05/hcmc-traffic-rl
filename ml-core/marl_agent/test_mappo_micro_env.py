@@ -933,6 +933,42 @@ def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
         np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
 
 
+def test_uturn_costs_time_and_the_obs_marks_the_way_back() -> None:
+    """Going straight back costs uturn_delay_s (scaled by pace) for any controller.
+    The exit back to the previous node is flagged, and visits are counted."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "O", 30.0, "residential"),
+                ("A", "D", 300.0, "residential"),
+            ],
+        )
+
+        def shuttle(delay: float) -> tuple[float, MicroAlleyEnv, np.ndarray]:
+            env = MicroAlleyEnv(
+                dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0,
+                depart_span_s=0.0, uturn_delay_s=delay,
+            )
+            env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+            env.step({a: env._neighbors("O").index("A") for a in env.agents})
+            assert env._pos[0] == "A"
+            obs = env._build_obs()
+            blk = env.neighbor_block(obs["agent_0"])
+            t_before = env._travel[0]
+            env.step({a: env._neighbors("A").index("O") for a in env.agents})
+            return env._travel[0] - t_before, env, blk
+
+        plain, _, _ = shuttle(0.0)
+        slow, env, blk = shuttle(5.0)
+        assert slow >= plain + 5.0 - 1e-6, (plain, slow)
+        back = env._neighbors("A").index("O")
+        fwd = env._neighbors("A").index("D")
+        assert blk[back, env.BACK_IDX] == 1.0 and blk[fwd, env.BACK_IDX] == 0.0
+        assert blk[back, env.VISITED_IDX] > 0.0 and blk[fwd, env.VISITED_IDX] == 0.0
+
+
 def test_accident_is_not_visible_before_it_starts() -> None:
     with tempfile.TemporaryDirectory() as td:
         gp, dp = _graph(
@@ -1147,6 +1183,8 @@ def main() -> None:
     print("PASS test_no_uturn_blocks_going_straight_back")
     test_trip_cap_ends_a_looping_car_but_not_a_baseline()
     print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_uturn_costs_time_and_the_obs_marks_the_way_back()
+    print("PASS test_uturn_costs_time_and_the_obs_marks_the_way_back")
     test_accident_is_not_visible_before_it_starts()
     print("PASS test_accident_is_not_visible_before_it_starts")
     test_informed_greedy_uses_the_timetable_mappo_sees()

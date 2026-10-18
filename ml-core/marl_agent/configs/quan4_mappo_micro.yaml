@@ -1,7 +1,10 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3q
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3r
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, greedy_informed,
-# Dijkstra and random are scored at the end, not cloned first. Do not resume v3p.
+# Dijkstra and random are scored at the end, not cloned first. Do not resume v3q.
+# v3q diag: failing cars ping-ponged A->B->A on short links (88% in a <=3-node
+# loop). v3r adds "came from" and "visited" per exit, a physical U-turn time,
+# and a smaller PPO step.
 # Fairness: an accident is not visible before it starts. School and resident
 # timetables are visible to MAPPO, and greedy_informed uses the same timetable,
 # so a win over it is not extra information.
@@ -52,7 +55,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3q
+  data_tag: mappo_micro_v3r
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -102,16 +105,21 @@ env:
   # (it turns away from a jammed alley). That would weaken the baseline.
   no_uturn: false
   # A trip still out after max(min_s, mult · congested trip time) fails on
-  # its own and pays the truncation cost. Quận 4, 3 eps: Dijkstra's slowest
-  # car took 4.3× its congested time, so 10× never cuts a baseline.
-  trip_cap_mult: 10.0
+  # its own and pays the truncation cost. Quận 4: Dijkstra's slowest car took
+  # 4.3× its congested time. 10× let lost cars wander 5000–9000s; 6× still
+  # clears every baseline (checked on 6 seeds).
+  trip_cap_mult: 6.0
   trip_cap_min_s: 1800.0
   # MAPPO training signal only: coef · (time-to-go before − γ · after) per hop.
   # Potential-based, so the optimal policy is unchanged; the compared score
   # (travel + pile penalty) does not include it. Keep shaping_gamma = ppo.gamma.
   progress_shaping: 1.0
   shaping_gamma: 0.999
-  compact_dim: 192
+  # 43 scalars + 8 exits × 20 features = 203, padded.
+  compact_dim: 208
+  # Seconds (at free-flow pace, scaled by congestion) to turn a motorbike around
+  # into the link just left. Paid by every controller; greedy_load forecasts it.
+  uturn_delay_s: 5.0
   bpr_alpha: 0.15
   bpr_beta: 4.0
   bpr_load_cap: 12.0
@@ -143,8 +151,9 @@ model:
   hidden: 256
 
 optim:
-  # 3e-5 protected a BC clone. From scratch it moved kl ≈ 1e-4 per update.
-  lr_actor: 3.0e-4
+  # 3e-5 protected a BC clone. 3e-4 with 8 epochs (v3o, v3q) peaked at
+  # update 50 and only got worse after, entropy falling to 0.06.
+  lr_actor: 1.0e-4
   lr_critic: 5.0e-4
   weight_decay: 1.0e-5
   grad_clip_norm: 1.0
@@ -189,8 +198,8 @@ ppo:
   n_envs: 16
   use_subproc: true
   minibatch_size: 8192
-  # Learning took ~0s against ~130s of collect, so reuse each batch more.
-  ppo_epochs: 8
+  # 8 epochs with lr 3e-4 overfit each batch; 4 with lr 1e-4.
+  ppo_epochs: 4
   clip_eps: 0.2
   value_coef: 0.5
   entropy_coef: 0.01

@@ -47,7 +47,7 @@ class MicroAlleyEnv:
         n_agents: int = 16,
         max_degree: int = 8,
         max_steps: int = 200,
-        compact_dim: int = 192,
+        compact_dim: int = 208,
         bpr_alpha: float = 0.15,
         bpr_beta: float = 4.0,
         bpr_load_cap: float = 12.0,
@@ -66,6 +66,7 @@ class MicroAlleyEnv:
         trip_cap_min_s: float = 1800.0,
         progress_shaping: float = 0.0,
         shaping_gamma: float = 0.999,
+        uturn_delay_s: float = 0.0,
     ) -> None:
         if reward_mode not in ("marginal", "travel", "legacy"):
             raise ValueError(f"reward_mode={reward_mode!r}")
@@ -104,6 +105,10 @@ class MicroAlleyEnv:
         # _city, so the compared score is untouched. γ must equal ppo.gamma.
         self.progress_shaping = max(0.0, float(progress_shaping))
         self.shaping_gamma = float(shaping_gamma)
+        # Turning a motorbike around in an alley takes time. Charged as extra
+        # free-flow seconds on the link back, so it grows with congestion.
+        # Every controller pays it, and greedy_load's forecast includes it.
+        self.uturn_delay_s = max(0.0, float(uturn_delay_s))
         self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = max(2, int(n_agents))
@@ -671,7 +676,7 @@ class MicroAlleyEnv:
         return sorted(out)
 
     def _forecast_entry(
-        self, u: str, v: str, n_extra: int, informed: bool = False
+        self, u: str, v: str, n_extra: int, informed: bool = False, me_extra: float = 0.0
     ) -> tuple[float, float]:
         """Own crossing time and the extra time imposed on vehicles already in.
 
@@ -691,7 +696,7 @@ class MicroAlleyEnv:
         ids = list(self._on_edge.get(edge, []))
         n = len(ids)
         if n + int(n_extra) >= self._storage(edge):
-            tt = self._entry_wait(edge, n + int(n_extra)) + t0 * self._pace(
+            tt = self._entry_wait(edge, n + int(n_extra)) + (t0 + me_extra) * self._pace(
                 edge, self._storage(edge)
             )
             return float(tt), 0.0
@@ -707,8 +712,10 @@ class MicroAlleyEnv:
 
         breaks = self._schedule_breaks(edge, now) if informed else []
 
-        def walls(n_new: int) -> list[float]:
+        def walls(n_new: int, last_extra: float = 0.0) -> list[float]:
             rem = list(exist) + [t0] * n_new
+            if n_new and last_extra > 0.0:
+                rem[-1] += last_extra
             out_w = [0.0] * len(rem)
             alive = [k for k, r in enumerate(rem) if r > 1e-5]
             wall = 0.0
@@ -737,7 +744,7 @@ class MicroAlleyEnv:
 
         prior = max(0, int(n_extra))
         without = walls(prior)
-        with_me = walls(prior + 1)
+        with_me = walls(prior + 1, me_extra)
         ext = 0.0
         for k in range(len(without)):
             ext += max(0.0, with_me[k] - without[k])
@@ -814,7 +821,9 @@ class MicroAlleyEnv:
             prior[i] = {(curr, n): committed.get((curr, n), 0) for n in cand}
             scored: list[tuple[float, str]] = []
             for n in cand:
-                tt, ext = self._forecast_entry(curr, n, prior[i][(curr, n)], informed)
+                tt, ext = self._forecast_entry(
+                    curr, n, prior[i][(curr, n)], informed, self._uturn_extra(i, n)
+                )
                 pred_tt[i][(curr, n)] = tt
                 pred_ext[i][(curr, n)] = ext
                 has_light, q = self._hop_rank(n, dest, tt, ext, social)
@@ -883,6 +892,13 @@ class MicroAlleyEnv:
     def _neighbors(self, node: str) -> list[str]:
         return self._out.get(node, [])
 
+    def _came_from(self, i: int) -> str | None:
+        hist = self._path_hist[i]
+        return hist[-2] if len(hist) >= 2 else None
+
+    def _uturn_extra(self, i: int, nxt: str) -> float:
+        return self.uturn_delay_s if nxt == self._came_from(i) else 0.0
+
     def _blocked_next(self, i: int) -> str | None:
         """The node agent i just came from, when going back is not allowed."""
         if not self.no_uturn or len(self._path_hist[i]) < 2:
@@ -927,13 +943,19 @@ class MicroAlleyEnv:
     # neighbor 14–15 = scheduled shock the heuristic does not read.
     # neighbor 16 = vehicles on other approaches that will still use this edge.
     # neighbor 17 = 1 if the next node has a light, else 0. Not the phase or cycle.
+    # neighbor 18 = 1 if this exit goes back to the node just left.
+    # neighbor 19 = times this car has already been at that node, /5, capped.
+    # A memoryless policy ping-ponged A->B->A on short links (v3q diag: 88% of
+    # failing cars in a <=3-node loop). A driver knows where they came from.
     OBS_SCALAR_DIM = 43
-    NEIGH_FEATS = 18
+    NEIGH_FEATS = 20
     REGRET_IDX = 13
     SHOCK_ETA_IDX = 14
     SHOCK_MAG_IDX = 15
     MERGE_IDX = 16
     HAS_SIGNAL_IDX = 17
+    BACK_IDX = 18
+    VISITED_IDX = 19
 
     def _hop_rank(
         self, nxt: str, dest: str, tt: float, ext: float, social: bool
@@ -990,6 +1012,7 @@ class MicroAlleyEnv:
         prior = self._prior_load[i] if i < len(self._prior_load) else {}
         pred = self._pred_tt[i] if i < len(getattr(self, "_pred_tt", [])) else {}
         allowed = set(self._allowed_next(i)) if not self._done[i] else set(neigh)
+        came_from = self._came_from(i)
         q_vals: list[float] = []
         for j, nxt in enumerate(neigh):
             e = (curr, nxt)
@@ -1000,7 +1023,13 @@ class MicroAlleyEnv:
             # live = vehicles physically still inside the alley.
             others = float(prior.get(e, 0))
             live = float(len(self._on_edge.get(e, [])))
-            tt_pred = float(pred[e]) if e in pred else self._forecast_tt(curr, nxt, int(others))
+            tt_pred = (
+                float(pred[e])
+                if e in pred
+                else self._forecast_entry(
+                    curr, nxt, int(others), False, self._uturn_extra(i, nxt)
+                )[0]
+            )
             avoid, q = self._hop_rank(nxt, d, tt_pred, 0.0, False)
             q_vals.append((avoid, q))
             eta, mag = self._shock_view(e)
@@ -1026,6 +1055,8 @@ class MicroAlleyEnv:
             rows[j, self.SHOCK_MAG_IDX] = mag
             rows[j, self.MERGE_IDX] = self._merge_pressure(curr, nxt)
             rows[j, self.HAS_SIGNAL_IDX] = 1.0 if nxt in self._signals else 0.0
+            rows[j, self.BACK_IDX] = 1.0 if nxt == came_from else 0.0
+            rows[j, self.VISITED_IDX] = min(self._path_hist[i].count(nxt), 5) / 5.0
         open_q = [qv for j, qv in enumerate(q_vals) if neigh[j] in allowed]
         if open_q:
             best_light, best_q = min(open_q)
@@ -1404,14 +1435,19 @@ class MicroAlleyEnv:
             for j in done:
                 alive.remove(j)
 
-    def _commit_entry(self, i: int, u: str, v: str, now: float) -> tuple[float, float]:
-        """Put i on (u, v) at `now`. Return (own forecast tt, delay imposed on vehicles already inside)."""
+    def _commit_entry(
+        self, i: int, u: str, v: str, now: float, extra_free: float = 0.0
+    ) -> tuple[float, float]:
+        """Put i on (u, v) at `now`. Return (own forecast tt, delay imposed on vehicles already inside).
+
+        `extra_free` free-flow seconds are added before the link (a U-turn).
+        """
         edge = (u, v)
         self._sync_edge(edge, now)
         before = {j: self._exit_t[j] for j in self._on_edge[edge]}
         self._on_edge[edge].append(i)
         self._edge_of[i] = edge
-        self._prog[i] = 0.0
+        self._prog[i] = -float(extra_free)
         self._enter_t[i] = now
         self._booked[i] = 0.0
         self._forecast_exits(edge, now)
@@ -1657,7 +1693,7 @@ class MicroAlleyEnv:
                 self._queue_since[i] = now
                 self._wake_at[i] = min(exits) if exits else now + 0.5
                 continue
-            tt, ext = self._commit_entry(i, curr, v, now)
+            tt, ext = self._commit_entry(i, curr, v, now, self._uturn_extra(i, v))
             if legacy:
                 cap = max(0.5, self._cap[(curr, v)])
                 load = float(self._bg_load.get((curr, v), 0.0)) + float(

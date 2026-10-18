@@ -71,7 +71,7 @@ def env_kwargs_from_cfg(
         "n_agents": int(env_cfg.get("n_agents", 16)),
         "max_degree": int(env_cfg.get("max_degree", 8)),
         "max_steps": int(env_cfg.get("max_steps", 200)),
-        "compact_dim": int(env_cfg.get("compact_dim", 192)),
+        "compact_dim": int(env_cfg.get("compact_dim", 208)),
         "bpr_alpha": float(env_cfg.get("bpr_alpha", 0.15)),
         "bpr_beta": float(env_cfg.get("bpr_beta", 4.0)),
         "bpr_load_cap": float(env_cfg.get("bpr_load_cap", 12.0)),
@@ -90,6 +90,7 @@ def env_kwargs_from_cfg(
         "trip_cap_min_s": float(env_cfg.get("trip_cap_min_s", 1800.0)),
         "progress_shaping": float(env_cfg.get("progress_shaping", 0.0)),
         "shaping_gamma": float(env_cfg.get("shaping_gamma", 0.999)),
+        "uturn_delay_s": float(env_cfg.get("uturn_delay_s", 0.0)),
     }
 
 
@@ -2081,7 +2082,7 @@ def main() -> None:
         cfg.setdefault("bc", {})["fair_check_episodes"] = 2
         cfg.setdefault("bc", {})["critic_fit_episodes"] = 2
         cfg.setdefault("bc", {})["freeze_actor_updates"] = 0
-        cfg.setdefault("env", {})["compact_dim"] = 192
+        cfg.setdefault("env", {})["compact_dim"] = 208
         cfg.setdefault("experiment", {})["data_tag"] = (
             str(cfg.get("experiment", {}).get("data_tag", "mappo_micro_v1")) + "_smoke"
         )
