@@ -5,13 +5,15 @@
 Validation (best.pt selection) uses seeds 50000.. and the in-run final test
 starts at the same base, so its first episodes are the selection episodes.
 This script reruns the identical paired suite on a disjoint seed range and
-writes <run_dir>/heldout_eval.json.
+writes <run_dir>/heldout_eval.json (never overwritten: a later run gets a
+timestamp suffix).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -87,6 +89,9 @@ def main() -> None:
             )
     suffix = "" if args.n_agents is None else f"_n{env.n_agents}"
     out = args.run / f"heldout_eval{suffix}.json"
+    if out.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = args.run / f"heldout_eval{suffix}_{stamp}.json"
     out.write_text(json.dumps(fair, indent=2, ensure_ascii=False, default=float), encoding="utf-8")
     print(f"[heldout] wrote {out}", flush=True)
 
