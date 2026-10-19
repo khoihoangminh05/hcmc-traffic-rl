@@ -199,6 +199,8 @@ class MicroAlleyEnv:
         # Reused between steps for vehicles that are not about to act.
         self._obs_cache: list[np.ndarray | None] = [None] * self.n_agents
         self._trip_cap: list[float] = [float("inf")] * self.n_agents
+        self._crowd_vs = 0.0
+        self._crowd_entries = 0
         self._merge_cache: dict[tuple[str, str], float] = {}
         self._approach_cache: dict[str, float] = {}
 
@@ -1324,6 +1326,8 @@ class MicroAlleyEnv:
         self._live_edge = {}
         self._on_edge = {e: [] for e in self._edge_index}
         self._edge_clock = {}
+        self._crowd_vs = 0.0
+        self._crowd_entries = 0
         self._edge_of = [None] * self.n_agents
         self._prog = [0.0] * self.n_agents
         self._enter_t = [0.0] * self.n_agents
@@ -1400,6 +1404,10 @@ class MicroAlleyEnv:
         self._corr[i] -= float(delta_s) / self.travel_scale
         self._booked[i] += float(delta_s)
 
+    # Physical crowding, reported next to the pile penalty: seconds each vehicle
+    # spends on a narrow alley (cap <= 2.5) together with at least one other.
+    NARROW_CAP = 2.5
+
     def _sync_edge(self, edge: tuple[str, str], now: float) -> None:
         ids = self._on_edge.get(edge, [])
         last = float(self._edge_clock.get(edge, now))
@@ -1407,6 +1415,10 @@ class MicroAlleyEnv:
             dprog = (now - last) / self._pace(edge, len(ids))
             for j in ids:
                 self._prog[j] += dprog
+            # Occupancy only changes at entry/exit, and both sync first, so
+            # this integral is exact.
+            if len(ids) >= 2 and self._cap[edge] <= self.NARROW_CAP:
+                self._crowd_vs += (now - last) * len(ids)
         self._edge_clock[edge] = now
 
     def _forecast_exits(self, edge: tuple[str, str], now: float) -> None:
@@ -1459,6 +1471,8 @@ class MicroAlleyEnv:
             ext += max(0.0, delta)
             self._emit(j, delta)
         n_share = len(self._on_edge[edge])
+        if n_share >= 2 and self._cap[edge] <= self.NARROW_CAP:
+            self._crowd_entries += 1
         if self.share_coef > 0.0 and n_share >= 2 and self.reward_mode != "legacy":
             # Per extra vehicle already on the link, scaled by how narrow it is.
             # A long bypass shared by two cars is cheaper for the city than

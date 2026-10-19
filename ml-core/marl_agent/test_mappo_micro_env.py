@@ -933,6 +933,36 @@ def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
         np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
 
 
+def test_crowding_metric_counts_shared_narrow_alley_time() -> None:
+    """Two cars in the same narrow alley accumulate vehicle-seconds together;
+    one car alone accumulates none. Independent of share_coef."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(Path(td), [("O", "D", 80.0, "alley"), ("O", "B", 80.0, "residential"), ("B", "D", 80.0, "residential")])
+
+        def run(both_in_alley: bool) -> tuple[float, int]:
+            env = MicroAlleyEnv(dp, gp, n_agents=2, max_degree=3, max_steps=20, seed=0, depart_span_s=0.0)
+            env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+            j_d = env._neighbors("O").index("D")
+            j_b = env._neighbors("O").index("B")
+            for _ in range(20):
+                acts = {}
+                for i, a in enumerate(env.agents):
+                    if env._pos[i] == "O":
+                        acts[a] = j_d if (both_in_alley or i == 0) else j_b
+                    else:
+                        acts[a] = 0
+                _, _, _, _, _, info = env.step(acts)
+                if info["all_done"]:
+                    break
+            assert info["arrival_rate"] == 1.0
+            return env._crowd_vs, env._crowd_entries
+
+        shared_vs, shared_n = run(True)
+        alone_vs, alone_n = run(False)
+        assert alone_vs == 0.0 and alone_n == 0
+        assert shared_vs > 10.0 and shared_n == 1
+
+
 def test_uturn_costs_time_and_the_obs_marks_the_way_back() -> None:
     """Going straight back costs uturn_delay_s (scaled by pace) for any controller.
     The exit back to the previous node is flagged, and visits are counted."""
@@ -1183,6 +1213,8 @@ def main() -> None:
     print("PASS test_no_uturn_blocks_going_straight_back")
     test_trip_cap_ends_a_looping_car_but_not_a_baseline()
     print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_crowding_metric_counts_shared_narrow_alley_time()
+    print("PASS test_crowding_metric_counts_shared_narrow_alley_time")
     test_uturn_costs_time_and_the_obs_marks_the_way_back()
     print("PASS test_uturn_costs_time_and_the_obs_marks_the_way_back")
     test_accident_is_not_visible_before_it_starts()

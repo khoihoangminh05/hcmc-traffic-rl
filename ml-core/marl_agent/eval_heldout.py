@@ -34,13 +34,22 @@ def main() -> None:
     ap.add_argument("--ckpt", default="best.pt")
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--seed-base", type=int, default=60_000)
+    ap.add_argument(
+        "--n-agents",
+        type=int,
+        default=None,
+        help="Run the trained policy with a different fleet size (generalization)",
+    )
     args = ap.parse_args()
 
     base = Path(__file__).resolve().parents[1]
     cfg = yaml.safe_load((args.run / "hyperparameters.snapshot.yaml").read_text(encoding="utf-8"))
     d = cfg["data"]
+    env_cfg = dict(cfg["env"])
+    if args.n_agents is not None:
+        env_cfg["n_agents"] = int(args.n_agents)
     env = MicroAlleyEnv(**env_kwargs_from_cfg(
-        cfg["env"],
+        env_cfg,
         density=_resolve(d["density"], base),
         graph=_resolve(d["graph"], base),
         density_catalog=_load_density_catalog(d, base),
@@ -52,7 +61,7 @@ def main() -> None:
     t_eval = [float(x) for x in d.get("t_eval", [28800.0])]
     print(
         f"[heldout] ckpt={args.ckpt} update={ck.get('update')} "
-        f"episodes={args.episodes} seed_base={args.seed_base}",
+        f"episodes={args.episodes} seed_base={args.seed_base} n_agents={env.n_agents}",
         flush=True,
     )
     fair = evaluate_fair_suite(
@@ -64,17 +73,20 @@ def main() -> None:
         if m:
             print(
                 f"[heldout] {name:15s} objective={_objective(m):.1f}s travel={m['fleet_mean']:.1f}s "
-                f"city={m.get('city_mean', 0.0):.1f}s arr={m['arrival_rate']:.3f}",
+                f"city={m.get('city_mean', 0.0):.1f}s crowd={m.get('crowd_narrow_s', 0.0):.1f}s "
+                f"arr={m['arrival_rate']:.3f}",
                 flush=True,
             )
     for name, st in fair.get("paired_vs_policy_greedy", {}).items():
         if st.get("n"):
             print(
                 f"[heldout] policy - {name:15s} delta={st['delta_mean']:+.1f}s ({st['delta_pct']:+.1f}%) "
-                f"ci95=[{st['ci95_low']:+.1f}, {st['ci95_high']:+.1f}] win_rate={st['win_rate']:.2f}",
+                f"ci95=[{st['ci95_low']:+.1f}, {st['ci95_high']:+.1f}] win_rate={st['win_rate']:.2f} "
+                f"crowd={st.get('crowd_delta_pct', 0.0):+.1f}%",
                 flush=True,
             )
-    out = args.run / "heldout_eval.json"
+    suffix = "" if args.n_agents is None else f"_n{env.n_agents}"
+    out = args.run / f"heldout_eval{suffix}.json"
     out.write_text(json.dumps(fair, indent=2, ensure_ascii=False, default=float), encoding="utf-8")
     print(f"[heldout] wrote {out}", flush=True)
 

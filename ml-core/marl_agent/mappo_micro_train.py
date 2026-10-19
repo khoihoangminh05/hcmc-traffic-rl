@@ -137,21 +137,28 @@ def _fleet_metrics_from_env(env: MicroAlleyEnv, last: dict[str, Any]) -> dict[st
         "objective_mean": float(np.mean(travels + city)),
         "congestion": float(last.get("congestion", 0.0)),
         "arrival_rate": float(last.get("arrival_rate", 0.0)),
+        # Physical, independent of share_coef: per vehicle in the fleet.
+        "crowd_narrow_s": float(getattr(env, "_crowd_vs", 0.0)) / max(len(travels), 1),
+        "crowd_entries": float(getattr(env, "_crowd_entries", 0)) / max(len(travels), 1),
     }
+
+
+METRIC_KEYS = (
+    "fleet_mean",
+    "fleet_cvar90",
+    "city_mean",
+    "objective_mean",
+    "congestion",
+    "arrival_rate",
+    "crowd_narrow_s",
+    "crowd_entries",
+)
 
 
 def _mean_metric_dicts(rows: list[dict[str, float]]) -> dict[str, float]:
     if not rows:
-        return {
-            "fleet_mean": 0.0,
-            "fleet_cvar90": 0.0,
-            "city_mean": 0.0,
-            "objective_mean": 0.0,
-            "congestion": 0.0,
-            "arrival_rate": 0.0,
-            "n": 0.0,
-        }
-    keys = ("fleet_mean", "fleet_cvar90", "city_mean", "objective_mean", "congestion", "arrival_rate")
+        return {**{k: 0.0 for k in METRIC_KEYS}, "n": 0.0}
+    keys = METRIC_KEYS
     out = {k: float(np.mean([r[k] for r in rows])) for k in keys}
     out["n"] = float(len(rows))
     return out
@@ -175,8 +182,14 @@ def _paired_stats(
     base = np.asarray([_objective(base_rows[k]) for k in range(n)], dtype=np.float64)
     sd = float(d.std(ddof=1)) if n > 1 else 0.0
     half = 1.96 * sd / math.sqrt(n) if n > 1 else float("nan")
+    crowd_d = np.asarray(
+        [policy_rows[k].get("crowd_narrow_s", 0.0) - base_rows[k].get("crowd_narrow_s", 0.0) for k in range(n)],
+        dtype=np.float64,
+    )
+    crowd_base = float(np.mean([base_rows[k].get("crowd_narrow_s", 0.0) for k in range(n)]))
     return {
         "n": float(n),
+        "crowd_delta_pct": float(100.0 * crowd_d.mean() / max(crowd_base, 1e-9)),
         "delta_mean": float(d.mean()),
         "delta_sd": sd,
         "ci95_low": float(d.mean() - half),
@@ -1877,6 +1890,7 @@ def run_training(
             print(
                 f"  [fair] {name:15s} objective={_objective(m):.1f}s "
                 f"travel={m['fleet_mean']:.1f}s city={m.get('city_mean', 0.0):.1f}s "
+                f"crowd={m.get('crowd_narrow_s', 0.0):.1f}s "
                 f"cvar={m['fleet_cvar90']:.1f}s arr={m['arrival_rate']:.2f}",
                 flush=True,
             )
@@ -2032,6 +2046,18 @@ def main() -> None:
     parser.add_argument("--ippo", action="store_true")
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--n-agents", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--no-alley-info",
+        action="store_true",
+        help="Ablation: hide alley class/cap/density from the observation",
+    )
+    parser.add_argument(
+        "--share-coef",
+        type=float,
+        default=None,
+        help="Override env.share_coef (0 = no pile penalty in reward or score)",
+    )
     parser.add_argument(
         "--bc-only",
         action="store_true",
@@ -2045,6 +2071,15 @@ def main() -> None:
         cfg.setdefault("train", {})["max_updates"] = int(args.max_updates)
     if args.n_agents is not None:
         cfg.setdefault("env", {})["n_agents"] = int(args.n_agents)
+    if args.seed is not None:
+        cfg.setdefault("experiment", {})["seed"] = int(args.seed)
+    exp = cfg.setdefault("experiment", {})
+    if args.no_alley_info:
+        cfg.setdefault("env", {})["include_alley_info"] = False
+        exp["data_tag"] = str(exp.get("data_tag", "mappo_micro")) + "_noalley"
+    if args.share_coef is not None:
+        cfg.setdefault("env", {})["share_coef"] = float(args.share_coef)
+        exp["data_tag"] = str(exp.get("data_tag", "mappo_micro")) + f"_share{args.share_coef:g}"
     if args.bc_only:
         cfg.setdefault("train", {})["max_updates"] = 0
         cfg.setdefault("ppo", {})["n_envs"] = 1
