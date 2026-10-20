@@ -1142,6 +1142,10 @@ def run_training(
     ent_start = float(ppo_cfg.get("entropy_coef_start", entropy_coef))
     ent_end = float(ppo_cfg.get("entropy_coef_end", entropy_coef))
     ent_anneal = max(1, int(ppo_cfg.get("entropy_anneal_updates", 1)))
+    # Exploration bonus (revisit cost) scale: start -> 0 over N updates, so the
+    # final policy is trained on the true reward only.
+    exp_start = float(ppo_cfg.get("explore_scale_start", 1.0))
+    exp_anneal = max(1, int(ppo_cfg.get("explore_anneal_updates", 1)))
     gamma = float(ppo_cfg.get("gamma", 0.99))
     gae_lam = float(ppo_cfg.get("gae_lambda", 0.95))
     grad_clip = float(optim_cfg.get("grad_clip_norm", 1.0))
@@ -1405,6 +1409,12 @@ def run_training(
             last_update = update
             frac = min(1.0, (update - 1) / ent_anneal)
             entropy_coef = ent_start + (ent_end - ent_start) * frac
+            explore_scale = exp_start * max(0.0, 1.0 - (update - 1) / exp_anneal)
+            if vec is not None:
+                vec.set_explore_scale(explore_scale)
+            else:
+                for e in local_envs:
+                    e.explore_scale = explore_scale
             ep_returns: list[float] = []
             ep_fleet: list[float] = []
             ep_arr: list[float] = []
@@ -1770,7 +1780,8 @@ def run_training(
                     f"[ppo] {update}/{max_updates} | "
                     f"fleet={row['fleet_mean']:.0f}s arrival={arr_mean:.2f} | "
                     f"policy_loss={policy_mean:.4f} value_loss={value_mean:.4f} | "
-                    f"entropy={ent_mean:.3f} ent_coef={entropy_coef:.4f} kl={kl_mean:.4f} | "
+                    f"entropy={ent_mean:.3f} ent_coef={entropy_coef:.4f} "
+                    f"explore={explore_scale:.2f} kl={kl_mean:.4f} | "
                     f"samples={n_samples} collect={collect_sec:.0f}s learn={ppo_sec:.0f}s",
                     flush=True,
                 )

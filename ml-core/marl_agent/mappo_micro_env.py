@@ -110,12 +110,15 @@ class MicroAlleyEnv:
         # free-flow seconds on the link back, so it grows with congestion.
         # Every controller pays it, and greedy_load's forecast includes it.
         self.uturn_delay_s = max(0.0, float(uturn_delay_s))
-        # Training signal only, like progress_shaping: entering a node already
-        # visited k >= 2 times costs revisit_penalty_s · (k − 1) of reward.
-        # Not in _travel or _city, so the compared score and every baseline
-        # are untouched. Not potential-based: it may bias MAPPO away from a
-        # useful circle, which can only make beating greedy_load harder.
+        # Episodic count-based exploration bonus (cf. NGU, #Exploration):
+        # entering a node already visited k >= 2 times costs
+        # explore_scale · revisit_penalty_s · (k − 1) of training reward.
+        # It does not say which other exit to take, only that repeating the
+        # same lap is not free. The trainer anneals explore_scale to 0, so the
+        # final policy optimises the true reward. Not in _travel or _city:
+        # the compared score and every baseline are untouched.
         self.revisit_penalty_s = max(0.0, float(revisit_penalty_s))
+        self.explore_scale = 1.0
         self.density_path = Path(density_path)
         self.graph_path = graph_path
         self.n_agents = max(2, int(n_agents))
@@ -1737,10 +1740,12 @@ class MicroAlleyEnv:
                 imm[i] = float(-cost / scale)
                 if self.progress_shaping > 0.0:
                     imm[i] += self._shaping(curr, v, self._ods[i][1])
-                if self.revisit_penalty_s > 0.0:
+                if self.revisit_penalty_s > 0.0 and self.explore_scale > 0.0:
                     seen = self._path_hist[i].count(v)
                     if seen >= 2:
-                        imm[i] -= self.revisit_penalty_s * (seen - 1) / scale
+                        imm[i] -= (
+                            self.explore_scale * self.revisit_penalty_s * (seen - 1) / scale
+                        )
         self._awaiting = []
         self._advance_to_ready()
 

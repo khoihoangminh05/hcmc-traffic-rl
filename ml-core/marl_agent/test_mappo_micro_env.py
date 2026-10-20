@@ -946,11 +946,12 @@ def test_revisit_penalty_is_reward_only_and_grows_with_the_loop() -> None:
             ],
         )
 
-        def shuttle(pen: float) -> tuple[list[float], list[float], list[float]]:
+        def shuttle(pen: float, scale: float = 1.0) -> tuple[list[float], list[float], list[float]]:
             env = MicroAlleyEnv(
                 dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0,
                 depart_span_s=0.0, revisit_penalty_s=pen, share_coef=8.0,
             )
+            env.explore_scale = scale
             env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
             rews = []
             for _ in range(6):
@@ -970,6 +971,9 @@ def test_revisit_penalty_is_reward_only_and_grows_with_the_loop() -> None:
         assert gap[0] == 0.0 and gap[1] == 0.0 and gap[2] == 0.0, gap
         assert gap[3] > 0.0, gap
         assert gap[5] > gap[3], gap
+        # Annealed to zero: the training reward is the true reward again.
+        r_off, _, _ = shuttle(5.0, scale=0.0)
+        assert r_off == r0
 
 
 def test_crowding_metric_counts_shared_narrow_alley_time() -> None:
@@ -1190,6 +1194,7 @@ def test_subproc_returns_agent_done() -> None:
         vec = SubprocMicroEnvs([kw], start_method="spawn")
         try:
             vec.set_od_pool([(nodes[0], nodes[-1]), (nodes[1], nodes[-1])])
+            vec.set_explore_scale(0.5)
             vec.reset_batch([3], [28800.0])
             out = vec.step_batch(np.zeros((1, 2), dtype=np.int64))
             assert len(out) == 11 and out[6].shape == (1, 2)

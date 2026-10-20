@@ -63,6 +63,9 @@ def _worker(remote: Any, parent_remote: Any, env_kwargs: dict[str, Any]) -> None
             if cmd == "set_od_pool":
                 env.set_od_pool(data)
                 remote.send(("ok", True))
+            elif cmd == "set_explore_scale":
+                env.explore_scale = float(data)
+                remote.send(("ok", True))
             elif cmd == "reset":
                 seed, t = data
                 obs, gstate, info = env.reset(seed=int(seed), options={"t": float(t)})
@@ -185,6 +188,12 @@ class SubprocMicroEnvs:
             r.send(("set_od_pool", pairs))
         for i, r in enumerate(self._remotes):
             _recv_ok(r, what=f"set_od_pool[{i}]")
+
+    def set_explore_scale(self, scale: float) -> None:
+        for r in self._remotes:
+            r.send(("set_explore_scale", float(scale)))
+        for i, r in enumerate(self._remotes):
+            _recv_ok(r, what=f"set_explore_scale[{i}]")
 
     def reset_batch(
         self, seeds: list[int], ts: list[float]
