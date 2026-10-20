@@ -946,7 +946,8 @@ class MicroAlleyEnv:
     # neighbor 16 = vehicles on other approaches that will still use this edge.
     # neighbor 17 = 1 if the next node has a light, else 0. Not the phase or cycle.
     # neighbor 18 = 1 if this exit goes back to the node just left.
-    # neighbor 19 = times this car has already been at that node, /5, capped.
+    # neighbor 19 = times this car has already been at that node, /20, capped.
+    # A cap of 5 went flat while a v3r seed-43 car circled a node ~38 times.
     # A memoryless policy ping-ponged A->B->A on short links (v3q diag: 88% of
     # failing cars in a <=3-node loop). A driver knows where they came from.
     OBS_SCALAR_DIM = 43
@@ -1000,7 +1001,7 @@ class MicroAlleyEnv:
                     rem_here_bpr / 1000.0,
                     self._travel[i] / 1000.0,
                     n_here / max(self.n_agents, 1),
-                    min(revisits, 5.0) / 5.0,
+                    min(revisits, 20.0) / 20.0,
                     self._approaching(curr),
                 ],
                 dtype=np.float32,
@@ -1058,7 +1059,7 @@ class MicroAlleyEnv:
             rows[j, self.MERGE_IDX] = self._merge_pressure(curr, nxt)
             rows[j, self.HAS_SIGNAL_IDX] = 1.0 if nxt in self._signals else 0.0
             rows[j, self.BACK_IDX] = 1.0 if nxt == came_from else 0.0
-            rows[j, self.VISITED_IDX] = min(self._path_hist[i].count(nxt), 5) / 5.0
+            rows[j, self.VISITED_IDX] = min(self._path_hist[i].count(nxt), 20) / 20.0
         open_q = [qv for j, qv in enumerate(q_vals) if neigh[j] in allowed]
         if open_q:
             best_light, best_q = min(open_q)

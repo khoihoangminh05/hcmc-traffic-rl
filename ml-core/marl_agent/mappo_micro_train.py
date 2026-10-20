@@ -1136,6 +1136,11 @@ def run_training(
     clip_eps = float(ppo_cfg.get("clip_eps", 0.2))
     value_coef = float(ppo_cfg.get("value_coef", 0.5))
     entropy_coef = float(ppo_cfg.get("entropy_coef", 0.03))
+    # Linear anneal start -> end over the first N updates; absent keys keep
+    # the constant entropy_coef.
+    ent_start = float(ppo_cfg.get("entropy_coef_start", entropy_coef))
+    ent_end = float(ppo_cfg.get("entropy_coef_end", entropy_coef))
+    ent_anneal = max(1, int(ppo_cfg.get("entropy_anneal_updates", 1)))
     gamma = float(ppo_cfg.get("gamma", 0.99))
     gae_lam = float(ppo_cfg.get("gae_lambda", 0.95))
     grad_clip = float(optim_cfg.get("grad_clip_norm", 1.0))
@@ -1397,6 +1402,8 @@ def run_training(
 
         for update in range(1, max_updates + 1):
             last_update = update
+            frac = min(1.0, (update - 1) / ent_anneal)
+            entropy_coef = ent_start + (ent_end - ent_start) * frac
             ep_returns: list[float] = []
             ep_fleet: list[float] = []
             ep_arr: list[float] = []
@@ -1762,7 +1769,7 @@ def run_training(
                     f"[ppo] {update}/{max_updates} | "
                     f"fleet={row['fleet_mean']:.0f}s arrival={arr_mean:.2f} | "
                     f"policy_loss={policy_mean:.4f} value_loss={value_mean:.4f} | "
-                    f"entropy={ent_mean:.3f} kl={kl_mean:.4f} | "
+                    f"entropy={ent_mean:.3f} ent_coef={entropy_coef:.4f} kl={kl_mean:.4f} | "
                     f"samples={n_samples} collect={collect_sec:.0f}s learn={ppo_sec:.0f}s",
                     flush=True,
                 )

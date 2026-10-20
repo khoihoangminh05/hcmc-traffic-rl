@@ -1,7 +1,12 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3r
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3s
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, greedy_informed,
-# Dijkstra and random are scored at the end, not cloned first. Do not resume v3q.
+# Dijkstra and random are scored at the end, not cloned first. Do not resume v3r.
+# v3s = v3r transition and reward, unchanged (baselines identical). v3r seed 43
+# locked at update ~50 with ~20% of cars circling ~6-node blocks; seeds 42/44
+# converged. v3s anneals the entropy bonus 0.03 -> 0.005 over 400 updates and
+# counts visits up to 20 instead of 5. A cap on revisits was rejected: it made
+# greedy_load 8% worse (it circles a jammed block up to 11 times and arrives).
 # v3q diag: failing cars ping-ponged A->B->A on short links (88% in a <=3-node
 # loop). v3r adds "came from" and "visited" per exit, a physical U-turn time,
 # and a smaller PPO step.
@@ -55,7 +60,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3r
+  data_tag: mappo_micro_v3s
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -203,6 +208,10 @@ ppo:
   clip_eps: 0.2
   value_coef: 0.5
   entropy_coef: 0.01
+  # Anneal: keep exploring while routes are still being found, then sharpen.
+  entropy_coef_start: 0.03
+  entropy_coef_end: 0.005
+  entropy_anneal_updates: 400
   # episodes are ~60–200 hops; 0.99 discounted the arrival cost to ~0.13–0.55
   gamma: 0.999
   gae_lambda: 0.95
