@@ -933,6 +933,45 @@ def test_trip_cap_ends_a_looping_car_but_not_a_baseline() -> None:
         np.testing.assert_allclose(-ret * 1000.0, env._travel, rtol=1e-5, atol=1e-3)
 
 
+def test_revisit_penalty_is_reward_only_and_grows_with_the_loop() -> None:
+    """Shuttling O<->A: the penalty starts at the third visit and grows each
+    time; travel and city are identical with and without it."""
+    with tempfile.TemporaryDirectory() as td:
+        gp, dp = _graph(
+            Path(td),
+            [
+                ("O", "A", 30.0, "residential"),
+                ("A", "O", 30.0, "residential"),
+                ("A", "D", 300.0, "residential"),
+            ],
+        )
+
+        def shuttle(pen: float) -> tuple[list[float], list[float], list[float]]:
+            env = MicroAlleyEnv(
+                dp, gp, n_agents=2, max_degree=3, max_steps=40, seed=0,
+                depart_span_s=0.0, revisit_penalty_s=pen, share_coef=8.0,
+            )
+            env.reset(options={"t": 28800.0, "ods": [("O", "D"), ("O", "D")]})
+            rews = []
+            for _ in range(6):
+                acts = {}
+                for i, a in enumerate(env.agents):
+                    neigh = env._neighbors(env._pos[i])
+                    acts[a] = neigh.index("A") if "A" in neigh else neigh.index("O")
+                _, rew, _, _, _, _ = env.step(acts)
+                rews.append(rew["agent_0"])
+            return rews, list(env._travel), list(env._city)
+
+        r0, t0, c0 = shuttle(0.0)
+        r5, t5, c5 = shuttle(5.0)
+        assert t0 == t5 and c0 == c5
+        # Decisions enter A, O, A, O, A, O: the third visit of O is decision 4.
+        gap = [a - b for a, b in zip(r0, r5)]
+        assert gap[0] == 0.0 and gap[1] == 0.0 and gap[2] == 0.0, gap
+        assert gap[3] > 0.0, gap
+        assert gap[5] > gap[3], gap
+
+
 def test_crowding_metric_counts_shared_narrow_alley_time() -> None:
     """Two cars in the same narrow alley accumulate vehicle-seconds together;
     one car alone accumulates none. Independent of share_coef."""
@@ -1213,6 +1252,8 @@ def main() -> None:
     print("PASS test_no_uturn_blocks_going_straight_back")
     test_trip_cap_ends_a_looping_car_but_not_a_baseline()
     print("PASS test_trip_cap_ends_a_looping_car_but_not_a_baseline")
+    test_revisit_penalty_is_reward_only_and_grows_with_the_loop()
+    print("PASS test_revisit_penalty_is_reward_only_and_grows_with_the_loop")
     test_crowding_metric_counts_shared_narrow_alley_time()
     print("PASS test_crowding_metric_counts_shared_narrow_alley_time")
     test_uturn_costs_time_and_the_obs_marks_the_way_back()

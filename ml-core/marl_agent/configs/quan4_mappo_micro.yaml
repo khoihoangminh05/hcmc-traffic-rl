@@ -1,7 +1,11 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3s
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3t
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, greedy_informed,
-# Dijkstra and random are scored at the end, not cloned first. Do not resume v3r.
+# Dijkstra and random are scored at the end, not cloned first. Do not resume v3s.
+# v3t: v3s seed 43 still locked (entropy 0.057 at update 45, 62% arrival)
+# while seed 42 reached 1.0. Training reward now charges re-entering a node
+# already visited k >= 2 times: 5s · (k − 1). Score, transition, baselines
+# unchanged.
 # v3s = v3r transition and reward, unchanged (baselines identical). v3r seed 43
 # locked at update ~50 with ~20% of cars circling ~6-node blocks; seeds 42/44
 # converged. v3s anneals the entropy bonus 0.03 -> 0.005 over 400 updates and
@@ -60,7 +64,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3s
+  data_tag: mappo_micro_v3t
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
@@ -125,6 +129,9 @@ env:
   # Seconds (at free-flow pace, scaled by congestion) to turn a motorbike around
   # into the link just left. Paid by every controller; greedy_load forecasts it.
   uturn_delay_s: 5.0
+  # MAPPO training reward only (not travel, not the score): re-entering a node
+  # already visited k >= 2 times costs 5s · (k − 1). A single turn back is free.
+  revisit_penalty_s: 5.0
   bpr_alpha: 0.15
   bpr_beta: 4.0
   bpr_load_cap: 12.0

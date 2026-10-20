@@ -91,6 +91,7 @@ def env_kwargs_from_cfg(
         "progress_shaping": float(env_cfg.get("progress_shaping", 0.0)),
         "shaping_gamma": float(env_cfg.get("shaping_gamma", 0.999)),
         "uturn_delay_s": float(env_cfg.get("uturn_delay_s", 0.0)),
+        "revisit_penalty_s": float(env_cfg.get("revisit_penalty_s", 0.0)),
     }
 
 
