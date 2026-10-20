@@ -52,6 +52,10 @@ def main() -> None:
     loops, distinct_last = [], []
     light_fail = []
     arrived_all = []
+    # Alley-aversion check: what the policy took vs what greedy_load wanted.
+    alley_pick_fail, alley_greedy_fail, alley_wanted_when_disagree = [], [], []
+    alley_pick_ok = []
+    dest_alley_only_fail, dest_alley_only_ok = [], []
     for ep in range(args.episodes):
         obs, _, info = env.reset(seed=EVAL_SEED_BASE + ep, options={"t": t_eval[ep % len(t_eval)]})
         n = env.n_agents
@@ -59,6 +63,9 @@ def main() -> None:
         pgr = [[] for _ in range(n)]
         away = [[] for _ in range(n)]
         lit = [[] for _ in range(n)]
+        a_pick = [[] for _ in range(n)]
+        a_greedy = [[] for _ in range(n)]
+        a_want = [[] for _ in range(n)]
         for _ in range(env.max_steps):
             greedy = env.baseline_greedy_load_actions()
             o = torch.tensor(np.stack([obs[a] for a in env.agents]), dtype=torch.float32)
@@ -75,10 +82,15 @@ def main() -> None:
                 g = int(greedy[a])
                 agree[i].append(int(act[i]) == g)
                 pgr[i].append(float(probs[i, g]))
+                g_alley = g < len(neigh) and env._is_alley(env._g.edges[curr, neigh[g]])
+                a_greedy[i].append(bool(g_alley))
+                if int(act[i]) != g:
+                    a_want[i].append(bool(g_alley))
                 if int(act[i]) < len(neigh):
                     nxt = neigh[int(act[i])]
                     away[i].append(env._remain_free(nxt, dest) > env._remain_free(curr, dest))
                     lit[i].append(nxt in env._signals)
+                    a_pick[i].append(bool(env._is_alley(env._g.edges[curr, nxt])))
             acts = {a: int(act[i]) for i, a in enumerate(env.agents)}
             obs, _, _, _, _, info = env.step(acts)
             if info["all_done"]:
@@ -86,14 +98,23 @@ def main() -> None:
         arr = list(env._true_arrived)
         arrived_all.extend(arr)
         for i in range(n):
+            dest = env._ods[i][1]
+            preds = list(env._g.predecessors(dest))
+            alley_only = bool(preds) and all(env._is_alley(env._g.edges[p, dest]) for p in preds)
             if arr[i]:
                 agree_ok.extend(agree[i])
                 p_greedy_ok.extend(pgr[i])
+                alley_pick_ok.extend(a_pick[i])
+                dest_alley_only_ok.append(alley_only)
             else:
                 agree_fail.extend(agree[i])
                 p_greedy_fail.extend(pgr[i])
                 away_fail.extend(away[i])
                 light_fail.extend(lit[i])
+                alley_pick_fail.extend(a_pick[i])
+                alley_greedy_fail.extend(a_greedy[i])
+                alley_wanted_when_disagree.extend(a_want[i])
+                dest_alley_only_fail.append(alley_only)
                 hist = env._path_hist[i]
                 tail = hist[-30:]
                 distinct_last.append(len(set(tail)))
@@ -120,6 +141,14 @@ def main() -> None:
     print(
         f"[diag] failing cars:  hops_moving_away={mean(away_fail):.3f} "
         f"hops_into_a_light={mean(light_fail):.3f}"
+    )
+    print(
+        f"[diag] alley hops: arriving cars take={mean(alley_pick_ok):.3f} | failing cars take={mean(alley_pick_fail):.3f} "
+        f"greedy wants={mean(alley_greedy_fail):.3f} | when they disagree greedy wanted an alley={mean(alley_wanted_when_disagree):.3f}"
+    )
+    print(
+        f"[diag] destination reachable only through an alley: "
+        f"failing={mean(dest_alley_only_fail):.3f} arriving={mean(dest_alley_only_ok):.3f}"
     )
     if distinct_last:
         print(
