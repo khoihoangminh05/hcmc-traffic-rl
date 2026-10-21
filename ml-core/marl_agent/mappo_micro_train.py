@@ -1440,8 +1440,11 @@ def run_training(
 
             while ep_i < rollout_n:
                 chunk = min(n_envs, rollout_n - ep_i)
+                # Drawn from the run's own rng: seeds 42 and 43 used to share
+                # episodes offset by one (42 + 1 == 43 + 0). >= 1e6 never hits
+                # the eval ranges (50000.., 60000..).
                 seeds = [
-                    seed + update * 100_000 + ep_i + j for j in range(chunk)
+                    int(rng.integers(1_000_000, 2**31 - 1)) for _ in range(chunk)
                 ]
                 ts = [float(rng.choice(t_train)) for _ in range(chunk)]
 

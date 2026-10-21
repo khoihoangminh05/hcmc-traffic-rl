@@ -1,4 +1,6 @@
-# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3u
+# Quận 4 — MAPPO micro next-hop. data_tag: mappo_micro_v3v
+# v3v = v3u with independent training episodes per seed (v3u seeds shared an
+# offset copy of the same episode stream). Environment and reward unchanged.
 #
 # 50 vehicles. MAPPO starts from scratch. greedy_load, greedy_informed,
 # Dijkstra and random are scored at the end, not cloned first. Do not resume v3s/v3t.
@@ -69,7 +71,7 @@
 
 experiment:
   name: quan4_mappo_micro
-  data_tag: mappo_micro_v3u
+  data_tag: mappo_micro_v3v
   seed: 42
   device: auto
   output_root: artifacts/out/quan4/marl_runs
