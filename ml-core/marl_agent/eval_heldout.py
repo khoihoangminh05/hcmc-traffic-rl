@@ -42,6 +42,12 @@ def main() -> None:
         default=None,
         help="Run the trained policy with a different fleet size (generalization)",
     )
+    ap.add_argument(
+        "--share-coef",
+        type=float,
+        default=None,
+        help="Score with this pile-penalty coefficient (e.g. 8 for a share0 run)",
+    )
     args = ap.parse_args()
 
     base = Path(__file__).resolve().parents[1]
@@ -50,6 +56,8 @@ def main() -> None:
     env_cfg = dict(cfg["env"])
     if args.n_agents is not None:
         env_cfg["n_agents"] = int(args.n_agents)
+    if args.share_coef is not None:
+        env_cfg["share_coef"] = float(args.share_coef)
     env = MicroAlleyEnv(**env_kwargs_from_cfg(
         env_cfg,
         density=_resolve(d["density"], base),
@@ -63,7 +71,8 @@ def main() -> None:
     t_eval = [float(x) for x in d.get("t_eval", [28800.0])]
     print(
         f"[heldout] ckpt={args.ckpt} update={ck.get('update')} "
-        f"episodes={args.episodes} seed_base={args.seed_base} n_agents={env.n_agents}",
+        f"episodes={args.episodes} seed_base={args.seed_base} n_agents={env.n_agents} "
+        f"share_coef={env.share_coef:g}",
         flush=True,
     )
     fair = evaluate_fair_suite(
@@ -88,6 +97,8 @@ def main() -> None:
                 flush=True,
             )
     suffix = "" if args.n_agents is None else f"_n{env.n_agents}"
+    if args.share_coef is not None:
+        suffix += f"_share{args.share_coef:g}"
     out = args.run / f"heldout_eval{suffix}.json"
     if out.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
