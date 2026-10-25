@@ -1,7 +1,12 @@
 # Bàn giao dự án: MAPPO micro next-hop, mạng hẻm Quận 4 (TP.HCM)
 
-Cập nhật: 24/10/2026. Commit mới nhất khi viết: `8ad774e`.
+Cập nhật: 25/10/2026. Commit mới nhất khi viết: `8ad774e`.
 Tài liệu này đủ để một agent hoặc người khác tiếp tục mà không cần đọc lại lịch sử chat.
+
+**Mốc v3v đóng băng:** tag git `v3v-paper-baseline` giữ đúng code đã sinh mọi kết quả v3v.
+Muốn dựng lại: `git checkout v3v-paper-baseline`. Toàn bộ số liệu thô của test sạch
+nằm ở `.docs/results_v3v/heldout_raw.txt`. Nếu hướng SUMO (mục 12) thất bại, bài
+vẫn viết được từ v3v với các số liệu này.
 
 ---
 
@@ -294,6 +299,29 @@ Kết quả test sạch dạng text trên sol1: `~/heldout_v3v_A.txt`, `~/heldou
 cd D:\LapTrinh\System\HCMC_urban_traffic_optimization\hcmc-traffic-rl\ml-core\artifacts\out\quan4\marl_from_sol1
 scp -P 8000 -r "minhkhoi@sol1.swin.edu.vn:/mnt/data8tb/minhkhoi/hcmc-traffic-rl/marl_runs/*mappo_micro_v3v*" .
 ```
+
+---
+
+## 12. Hướng đang bàn (chưa chốt, 25/10/2026): chuyển sang SUMO + kiến trúc chú ý
+
+Người dùng đặt nguyên tắc mới:
+- Mọi luật (MARL, greedy, heuristic khác) chỉ được dùng thông tin một hệ thống thật đo được.
+  **Không được nhìn vào lõi mô phỏng:** công thức BPR, file nội suy mật độ, lộ trình xe nền.
+  Hiện `greedy_load` và các ô dự báo trong quan sát MAPPO đều vi phạm, vì dùng
+  `_forecast_entry` (phương trình của chính mô phỏng).
+- Lộ trình, giờ đi và hướng sắp đi của **50 xe trong đội** thì mọi luật được biết.
+  MARL khai thác; heuristic chỉ dùng nếu người viết heuristic tự viết thêm (vd `greedy_city`).
+- Chuyển hẳn lõi mô phỏng sang **SUMO** (`libsumo`; dự phòng chế độ mesoscopic nếu chậm).
+- Kiến trúc mới: mỗi xe chú ý (attention) tới tối đa K xe liên quan nhất trong đội, lọc trước
+  bằng đồ thị xung đột (thời gian tới lúc gặp trên đoạn chung). Thông tin từng xe: vị trí
+  tương đối, thời gian tới lúc gặp, các đoạn sắp đi, **loại xe** (cùng chính sách / heuristic /
+  khác). Train với **đội xe hỗn hợp** để mô hình học chơi khác nhau với từng loại.
+  Khi chạy thật với nhiều xe hơn, vẫn giữ K xe để đầu vào giống lúc train.
+- Đánh giá: tỉ lệ người dùng 10–100%, hệ thống mở (xe đến/đi liên tục), nhiều xe hơn lúc train.
+
+Các giai đoạn: (0) dựng môi trường SUMO và đo tốc độ, cổng ≤ khoảng 5s/episode/tiến trình;
+(1) baseline chỉ dùng thông tin công khai; (2) đưa MLP-MAPPO sang SUMO, train 1–2 seed;
+(3) kiến trúc mới; (4) loạt chính thức. Kết quả v3v trở thành kết quả sơ bộ / phụ lục.
 
 ---
 

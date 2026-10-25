@@ -1,0 +1,245 @@
+Held-out paired test (eval_heldout), 30 episodes, seed_base 60000.
+Code: tag v3v-paper-baseline (training code from commit 57f68f0; eval flag --share-coef from 8ad774e).
+Copied verbatim from sol1 ~/heldout_v3v_A.txt, ~/heldout_v3v_B.txt, ~/heldout_v3v_seed46.txt,
+~/heldout_v3v_share0.txt, ~/heldout_v3v_noalley.txt, ~/heldout_v3v_ippo.txt.
+
+== quan4_mappo_micro_mappo_micro_v3v_20261021T120334Z_seed42
+[heldout] ckpt=best.pt update=300 episodes=30 seed_base=60000 n_agents=50
+[heldout] policy_greedy   objective=501.4s travel=460.6s city=40.8s crowd=34.9s arr=1.000
+[heldout] policy_stoch    objective=513.0s travel=472.6s city=40.4s crowd=34.6s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-149.3s (-22.9%) ci95=[-185.0, -113.6] win_rate=1.00 crowd=-78.9%
+[heldout] policy - dijkstra_bpr    delta=-145.3s (-22.5%) ci95=[-179.1, -111.6] win_rate=1.00 crowd=-78.4%
+[heldout] policy - random          delta=-5091.9s (-91.0%) ci95=[-5136.2, -5047.5] win_rate=1.00 crowd=-69.5%
+[heldout] policy - greedy_load     delta=-39.3s (-7.3%) ci95=[-46.3, -32.3] win_rate=1.00 crowd=-44.4%
+[heldout] policy - greedy_informed delta=-39.2s (-7.3%) ci95=[-46.2, -32.2] win_rate=1.00 crowd=-44.5%
+[heldout] ckpt=best.pt update=300 episodes=30 seed_base=60000 n_agents=100
+[heldout] policy_greedy   objective=631.6s travel=511.1s city=120.5s crowd=96.3s arr=1.000
+[heldout] policy_stoch    objective=641.8s travel=523.8s city=118.0s crowd=94.9s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-776.7s (-55.2%) ci95=[-912.1, -641.3] win_rate=1.00 crowd=-85.3%
+[heldout] policy - dijkstra_bpr    delta=-788.3s (-55.5%) ci95=[-923.1, -653.5] win_rate=1.00 crowd=-85.5%
+[heldout] policy - random          delta=-3852.8s (-85.9%) ci95=[-3877.5, -3828.0] win_rate=1.00 crowd=-4.7%
+[heldout] policy - greedy_load     delta=-66.5s (-9.5%) ci95=[-77.6, -55.4] win_rate=1.00 crowd=-23.8%
+[heldout] policy - greedy_informed delta=-64.4s (-9.3%) ci95=[-75.6, -53.2] win_rate=1.00 crowd=-23.4%
+
+== quan4_mappo_micro_mappo_micro_v3v_20261021T120359Z_seed43
+[heldout] ckpt=best.pt update=800 episodes=30 seed_base=60000 n_agents=50
+[heldout] policy_greedy   objective=485.4s travel=462.7s city=22.7s crowd=19.2s arr=1.000
+[heldout] policy_stoch    objective=488.2s travel=464.7s city=23.4s crowd=19.3s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-165.3s (-25.4%) ci95=[-201.4, -129.1] win_rate=1.00 crowd=-88.4%
+[heldout] policy - dijkstra_bpr    delta=-161.3s (-24.9%) ci95=[-195.6, -127.0] win_rate=1.00 crowd=-88.1%
+[heldout] policy - random          delta=-5107.8s (-91.3%) ci95=[-5151.9, -5063.7] win_rate=1.00 crowd=-83.2%
+[heldout] policy - greedy_load     delta=-55.3s (-10.2%) ci95=[-63.0, -47.5] win_rate=1.00 crowd=-69.4%
+[heldout] policy - greedy_informed delta=-55.2s (-10.2%) ci95=[-62.9, -47.5] win_rate=1.00 crowd=-69.5%
+[heldout] ckpt=best.pt update=800 episodes=30 seed_base=60000 n_agents=100
+[heldout] policy_greedy   objective=611.5s travel=508.0s city=103.6s crowd=83.1s arr=1.000
+[heldout] policy_stoch    objective=613.0s travel=511.2s city=101.8s crowd=82.9s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-796.8s (-56.6%) ci95=[-933.8, -659.8] win_rate=1.00 crowd=-87.3%
+[heldout] policy - dijkstra_bpr    delta=-808.4s (-56.9%) ci95=[-945.1, -671.7] win_rate=1.00 crowd=-87.4%
+[heldout] policy - random          delta=-3872.8s (-86.4%) ci95=[-3898.4, -3847.3] win_rate=1.00 crowd=-17.7%
+[heldout] policy - greedy_load     delta=-86.6s (-12.4%) ci95=[-98.8, -74.4] win_rate=1.00 crowd=-34.3%
+[heldout] policy - greedy_informed delta=-84.5s (-12.1%) ci95=[-96.6, -72.5] win_rate=1.00 crowd=-33.9%
+
+== quan4_mappo_micro_mappo_micro_v3v_20261021T120451Z_seed44
+[heldout] ckpt=best.pt update=250 episodes=30 seed_base=60000 n_agents=50
+[heldout] policy_greedy   objective=513.9s travel=460.9s city=53.0s crowd=46.0s arr=1.000
+[heldout] policy_stoch    objective=527.9s travel=481.1s city=46.8s crowd=40.2s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-136.8s (-21.0%) ci95=[-172.8, -100.7] win_rate=1.00 crowd=-72.2%
+[heldout] policy - dijkstra_bpr    delta=-132.8s (-20.5%) ci95=[-166.9, -98.6] win_rate=1.00 crowd=-71.5%
+[heldout] policy - random          delta=-5079.3s (-90.8%) ci95=[-5122.8, -5035.9] win_rate=1.00 crowd=-59.7%
+[heldout] policy - greedy_load     delta=-26.8s (-4.9%) ci95=[-34.7, -18.9] win_rate=0.87 crowd=-26.6%
+[heldout] policy - greedy_informed delta=-26.7s (-4.9%) ci95=[-34.5, -18.9] win_rate=0.87 crowd=-26.7%
+[heldout] ckpt=best.pt update=250 episodes=30 seed_base=60000 n_agents=100
+[heldout] policy_greedy   objective=648.7s travel=515.4s city=133.3s crowd=110.7s arr=1.000
+[heldout] policy_stoch    objective=662.6s travel=534.4s city=128.1s crowd=106.5s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-759.6s (-53.9%) ci95=[-894.8, -624.4] win_rate=1.00 crowd=-83.1%
+[heldout] policy - dijkstra_bpr    delta=-771.2s (-54.3%) ci95=[-905.7, -636.7] win_rate=1.00 crowd=-83.3%
+[heldout] policy - random          delta=-3835.6s (-85.5%) ci95=[-3859.9, -3811.4] win_rate=1.00 crowd=+9.6%
+[heldout] policy - greedy_load     delta=-49.4s (-7.1%) ci95=[-60.1, -38.7] win_rate=1.00 crowd=-12.4%
+[heldout] policy - greedy_informed delta=-47.3s (-6.8%) ci95=[-58.0, -36.6] win_rate=1.00 crowd=-11.9%
+
+== quan4_mappo_micro_mappo_micro_v3v_20261021T120623Z_seed45
+[heldout] ckpt=best.pt update=400 episodes=30 seed_base=60000 n_agents=50
+[heldout] policy_greedy   objective=500.2s travel=460.9s city=39.3s crowd=31.3s arr=1.000
+[heldout] policy_stoch    objective=507.8s travel=470.2s city=37.7s crowd=29.6s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-150.5s (-23.1%) ci95=[-185.4, -115.5] win_rate=1.00 crowd=-81.1%
+[heldout] policy - dijkstra_bpr    delta=-146.5s (-22.7%) ci95=[-179.6, -113.3] win_rate=1.00 crowd=-80.7%
+[heldout] policy - random          delta=-5093.0s (-91.1%) ci95=[-5137.3, -5048.8] win_rate=1.00 crowd=-72.6%
+[heldout] policy - greedy_load     delta=-40.5s (-7.5%) ci95=[-47.2, -33.7] win_rate=1.00 crowd=-50.1%
+[heldout] policy - greedy_informed delta=-40.4s (-7.5%) ci95=[-47.1, -33.7] win_rate=1.00 crowd=-50.2%
+[heldout] ckpt=best.pt update=400 episodes=30 seed_base=60000 n_agents=100
+[heldout] policy_greedy   objective=626.6s travel=510.3s city=116.4s crowd=90.1s arr=1.000
+[heldout] policy_stoch    objective=634.9s travel=520.5s city=114.5s crowd=89.3s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-781.7s (-55.5%) ci95=[-916.8, -646.6] win_rate=1.00 crowd=-86.2%
+[heldout] policy - dijkstra_bpr    delta=-793.3s (-55.9%) ci95=[-927.7, -658.9] win_rate=1.00 crowd=-86.4%
+[heldout] policy - random          delta=-3857.7s (-86.0%) ci95=[-3882.4, -3833.1] win_rate=1.00 crowd=-10.8%
+[heldout] policy - greedy_load     delta=-71.5s (-10.2%) ci95=[-82.1, -60.9] win_rate=1.00 crowd=-28.8%
+[heldout] policy - greedy_informed delta=-69.4s (-10.0%) ci95=[-80.2, -58.7] win_rate=1.00 crowd=-28.4%
+
+== quan4_mappo_micro_mappo_micro_v3v_20261023T024755Z_seed46
+stop: early_stop: no val improve for 10 evals (best=523.0970 @ update 350) | best_update: 350
+[heldout] ckpt=best.pt update=350 episodes=30 seed_base=60000 n_agents=50 share_coef=8
+[heldout] policy_greedy   objective=503.9s travel=461.9s city=42.0s crowd=35.1s arr=1.000
+[heldout] policy_stoch    objective=516.8s travel=476.6s city=40.2s crowd=34.2s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-146.8s (-22.6%) ci95=[-182.2, -111.4] win_rate=1.00 crowd=-78.8%
+[heldout] policy - dijkstra_bpr    delta=-142.8s (-22.1%) ci95=[-176.4, -109.3] win_rate=1.00 crowd=-78.3%
+[heldout] policy - random          delta=-5089.4s (-91.0%) ci95=[-5133.1, -5045.6] win_rate=1.00 crowd=-69.3%
+[heldout] policy - greedy_load     delta=-36.8s (-6.8%) ci95=[-44.0, -29.5] win_rate=1.00 crowd=-44.1%
+[heldout] policy - greedy_informed delta=-36.7s (-6.8%) ci95=[-43.9, -29.5] win_rate=1.00 crowd=-44.2%
+[heldout] ckpt=best.pt update=350 episodes=30 seed_base=60000 n_agents=100 share_coef=8
+[heldout] policy_greedy   objective=632.1s travel=512.2s city=119.9s crowd=94.5s arr=1.000
+[heldout] policy_stoch    objective=644.9s travel=528.7s city=116.2s crowd=92.2s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-776.2s (-55.1%) ci95=[-911.7, -640.7] win_rate=1.00 crowd=-85.6%
+[heldout] policy - dijkstra_bpr    delta=-787.8s (-55.5%) ci95=[-922.3, -653.2] win_rate=1.00 crowd=-85.7%
+[heldout] policy - random          delta=-3852.2s (-85.9%) ci95=[-3878.4, -3826.1] win_rate=1.00 crowd=-6.4%
+[heldout] policy - greedy_load     delta=-66.0s (-9.5%) ci95=[-78.0, -54.0] win_rate=1.00 crowd=-25.2%
+[heldout] policy - greedy_informed delta=-63.9s (-9.2%) ci95=[-75.8, -52.0] win_rate=1.00 crowd=-24.8%
+
+== quan4_mappo_micro_mappo_micro_v3v_share0_20261023T024831Z_seed42
+stop: early_stop: no val improve for 10 evals (best=499.2624 @ update 50) | best_update: 50
+[heldout] ckpt=best.pt update=50 episodes=30 seed_base=60000 n_agents=50 share_coef=8
+[heldout] policy_greedy   objective=586.8s travel=486.2s city=100.7s crowd=102.6s arr=1.000
+[heldout] policy_stoch    objective=629.5s travel=538.1s city=91.4s crowd=85.6s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-63.8s (-9.8%) ci95=[-95.5, -32.1] win_rate=0.87 crowd=-38.0%
+[heldout] policy - dijkstra_bpr    delta=-59.8s (-9.3%) ci95=[-89.3, -30.4] win_rate=0.87 crowd=-36.5%
+[heldout] policy - random          delta=-5006.4s (-89.5%) ci95=[-5050.0, -4962.8] win_rate=1.00 crowd=-10.2%
+[heldout] policy - greedy_load     delta=+46.2s (+8.5%) ci95=[+38.8, +53.6] win_rate=0.00 crowd=+63.7%
+[heldout] policy - greedy_informed delta=+46.2s (+8.6%) ci95=[+38.9, +53.6] win_rate=0.00 crowd=+63.4%
+[heldout] ckpt=best.pt update=50 episodes=30 seed_base=60000 n_agents=100 share_coef=8
+[heldout] policy_greedy   objective=788.1s travel=601.9s city=186.2s crowd=195.3s arr=1.000
+[heldout] policy_stoch    objective=820.1s travel=642.3s city=177.7s crowd=184.3s arr=0.999
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-620.2s (-44.0%) ci95=[-754.5, -485.9] win_rate=1.00 crowd=-70.2%
+[heldout] policy - dijkstra_bpr    delta=-631.8s (-44.5%) ci95=[-765.2, -498.4] win_rate=1.00 crowd=-70.5%
+[heldout] policy - random          delta=-3696.3s (-82.4%) ci95=[-3729.2, -3663.4] win_rate=1.00 crowd=+93.4%
+[heldout] policy - greedy_load     delta=+90.0s (+12.9%) ci95=[+78.7, +101.2] win_rate=0.00 crowd=+54.5%
+[heldout] policy - greedy_informed delta=+92.1s (+13.2%) ci95=[+80.3, +103.8] win_rate=0.00 crowd=+55.3%
+[heldout] ckpt=best.pt update=50 episodes=30 seed_base=60000 n_agents=50 share_coef=0
+[heldout] policy_greedy   objective=486.2s travel=486.2s city=0.0s crowd=102.6s arr=1.000
+[heldout] policy_stoch    objective=542.1s travel=542.1s city=0.0s crowd=88.7s arr=1.000
+[heldout] greedy_load     objective=464.7s travel=464.7s city=0.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=464.6s travel=464.6s city=0.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=536.5s travel=536.5s city=0.0s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=541.1s travel=541.1s city=0.0s crowd=165.5s arr=1.000
+[heldout] random          objective=5520.6s travel=5520.6s city=0.0s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-54.9s (-10.1%) ci95=[-83.6, -26.2] win_rate=0.87 crowd=-38.0%
+[heldout] policy - dijkstra_bpr    delta=-50.3s (-9.4%) ci95=[-77.3, -23.4] win_rate=0.83 crowd=-36.5%
+[heldout] policy - random          delta=-5034.5s (-91.2%) ci95=[-5077.8, -4991.1] win_rate=1.00 crowd=-10.2%
+[heldout] policy - greedy_load     delta=+21.5s (+4.6%) ci95=[+18.1, +24.9] win_rate=0.00 crowd=+63.7%
+[heldout] policy - greedy_informed delta=+21.5s (+4.6%) ci95=[+18.1, +24.9] win_rate=0.00 crowd=+63.4%
+
+== quan4_mappo_micro_mappo_micro_v3v_noalley_20261023T024918Z_seed42
+stop: early_stop: no val improve for 10 evals (best=522.5636 @ update 350) | best_update: 350
+[heldout] ckpt=best.pt update=350 episodes=30 seed_base=60000 n_agents=50 share_coef=8
+[heldout] policy_greedy   objective=499.6s travel=459.8s city=39.7s crowd=33.4s arr=1.000
+[heldout] policy_stoch    objective=511.0s travel=471.6s city=39.4s crowd=32.9s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-151.1s (-23.2%) ci95=[-186.7, -115.5] win_rate=1.00 crowd=-79.8%
+[heldout] policy - dijkstra_bpr    delta=-147.1s (-22.7%) ci95=[-180.8, -113.5] win_rate=1.00 crowd=-79.4%
+[heldout] policy - random          delta=-5093.7s (-91.1%) ci95=[-5137.6, -5049.7] win_rate=1.00 crowd=-70.8%
+[heldout] policy - greedy_load     delta=-41.1s (-7.6%) ci95=[-48.6, -33.6] win_rate=1.00 crowd=-46.8%
+[heldout] policy - greedy_informed delta=-41.0s (-7.6%) ci95=[-48.5, -33.5] win_rate=1.00 crowd=-46.9%
+[heldout] ckpt=best.pt update=350 episodes=30 seed_base=60000 n_agents=100 share_coef=8
+[heldout] policy_greedy   objective=630.1s travel=509.0s city=121.1s crowd=95.2s arr=1.000
+[heldout] policy_stoch    objective=642.6s travel=522.0s city=120.5s crowd=95.5s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-778.2s (-55.3%) ci95=[-913.8, -642.5] win_rate=1.00 crowd=-85.5%
+[heldout] policy - dijkstra_bpr    delta=-789.8s (-55.6%) ci95=[-924.8, -654.7] win_rate=1.00 crowd=-85.6%
+[heldout] policy - random          delta=-3854.2s (-85.9%) ci95=[-3879.5, -3829.0] win_rate=1.00 crowd=-5.7%
+[heldout] policy - greedy_load     delta=-68.0s (-9.7%) ci95=[-78.6, -57.3] win_rate=1.00 crowd=-24.7%
+[heldout] policy - greedy_informed delta=-65.9s (-9.5%) ci95=[-76.7, -55.1] win_rate=1.00 crowd=-24.3%
+
+== quan4_mappo_micro_mappo_micro_v3v_ippo_20261023T024958Z_seed42
+stop: early_stop: no val improve for 10 evals (best=524.9491 @ update 300) | best_update: 300
+[heldout] ckpt=best.pt update=300 episodes=30 seed_base=60000 n_agents=50 share_coef=8
+[heldout] policy_greedy   objective=501.5s travel=461.1s city=40.4s crowd=37.0s arr=1.000
+[heldout] policy_stoch    objective=515.0s travel=475.7s city=39.3s crowd=36.0s arr=1.000
+[heldout] greedy_load     objective=540.7s travel=464.7s city=76.0s crowd=62.7s arr=1.000
+[heldout] greedy_informed objective=540.6s travel=464.6s city=76.0s crowd=62.8s arr=1.000
+[heldout] dijkstra_bpr    objective=646.7s travel=536.5s city=110.2s crowd=161.7s arr=1.000
+[heldout] dijkstra        objective=650.7s travel=541.1s city=109.6s crowd=165.5s arr=1.000
+[heldout] random          objective=5593.2s travel=5520.6s city=72.6s crowd=114.3s arr=0.011
+[heldout] policy - dijkstra        delta=-149.2s (-22.9%) ci95=[-184.8, -113.5] win_rate=1.00 crowd=-77.6%
+[heldout] policy - dijkstra_bpr    delta=-145.2s (-22.5%) ci95=[-178.9, -111.5] win_rate=1.00 crowd=-77.1%
+[heldout] policy - random          delta=-5091.8s (-91.0%) ci95=[-5135.9, -5047.6] win_rate=1.00 crowd=-67.6%
+[heldout] policy - greedy_load     delta=-39.2s (-7.2%) ci95=[-46.5, -31.8] win_rate=1.00 crowd=-41.0%
+[heldout] policy - greedy_informed delta=-39.1s (-7.2%) ci95=[-46.4, -31.8] win_rate=1.00 crowd=-41.1%
+[heldout] ckpt=best.pt update=300 episodes=30 seed_base=60000 n_agents=100 share_coef=8
+[heldout] policy_greedy   objective=626.3s travel=511.0s city=115.4s crowd=93.6s arr=1.000
+[heldout] policy_stoch    objective=642.1s travel=529.1s city=113.1s crowd=93.0s arr=1.000
+[heldout] greedy_load     objective=698.1s travel=537.0s city=161.1s crowd=126.4s arr=1.000
+[heldout] greedy_informed objective=696.0s travel=535.9s city=160.1s crowd=125.7s arr=1.000
+[heldout] dijkstra_bpr    objective=1419.9s travel=1223.5s city=196.4s crowd=661.9s arr=0.936
+[heldout] dijkstra        objective=1408.3s travel=1212.8s city=195.5s crowd=654.7s arr=0.939
+[heldout] random          objective=4484.4s travel=4412.7s city=71.7s crowd=101.0s arr=0.011
+[heldout] policy - dijkstra        delta=-782.0s (-55.5%) ci95=[-917.6, -646.3] win_rate=1.00 crowd=-85.7%
+[heldout] policy - dijkstra_bpr    delta=-793.6s (-55.9%) ci95=[-928.6, -658.6] win_rate=1.00 crowd=-85.9%
+[heldout] policy - random          delta=-3858.0s (-86.0%) ci95=[-3884.1, -3832.0] win_rate=1.00 crowd=-7.3%
+[heldout] policy - greedy_load     delta=-71.8s (-10.3%) ci95=[-82.5, -61.1] win_rate=1.00 crowd=-26.0%
+[heldout] policy - greedy_informed delta=-69.7s (-10.0%) ci95=[-80.3, -59.1] win_rate=1.00 crowd=-25.5%
