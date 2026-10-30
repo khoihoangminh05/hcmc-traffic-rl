@@ -110,6 +110,12 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
 - [x] P1.1 ghép cạnh: `ml-core/data_fusion/match_probe.py` + test `python -m data_fusion.test_match_probe` (MATCH_PROBE_TESTS_OK).
 - [x] P1.1 (2026-10-30) theo docs Directions: driving-traffic nhận 25 tọa độ, nên mỗi tuyến có thêm tối đa 8 via ở giữa cạnh hẻm (`waypoints=0;N-1`, `bearings` ±45°) để ép đi đúng tuyến. Chế độ typical: `POST /mapbox/probe/typical?start=YYYY-MM-DD&days=7&stepMin=15`, `GET` để xem tiến độ; quota tháng chung cho live + typical (`state/mapbox_quota.json`). Poller seed 18 m cũ tắt (`MAPBOX_OD_FILE=` trống).
 - [x] P1.1 worker probe chạy trên sol1 (tmux `probe`, `npm run start:prod`, node trong conda env riêng `/mnt/data8tb/minhkhoi/node-env`), `DATA_RAW_DIR`/`STATE_DIR` ở `/mnt/data8tb/minhkhoi/hcmc-traffic-rl/ingestion/`. `.env` chép tay, không commit.
+- [x] P1.1 kiểm tra đầu tiên trên sol1 (2026-10-30, 2 lượt live + 12.9k typical):
+  - Ghép: 85.6% quãng đường; 1091/1828 cạnh có số đo (hẻm 880/1460); trung vị 0.71 cạnh hẻm thiết kế được đi thật.
+  - `congestion`: 0% ở hẻm, 2.1% ở đường thường. Mapbox không có phân loại ùn tắc cho Q4, chỉ có tốc độ.
+  - Tốc độ thay đổi theo thời gian: cùng hình học, trung vị 33% đoạn đổi >2% giữa hai lượt; thời gian tuyến lượt sau/lượt đầu 0.84–0.96.
+  - Typical: hồ sơ ngày rõ ràng (06h 0.86 → 17h 1.07 so với trung vị tuyến, biên độ khoảng 24%), thứ Hai và thứ Ba gần như trùng nhau, tức là hồ sơ lịch sử cố định theo ngày thường.
+  - Còn phải kiểm: live có khác typical cùng giờ không (thông tin realtime thật hay chỉ là hồ sơ lịch sử), và tách theo hẻm / đường thường.
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.
