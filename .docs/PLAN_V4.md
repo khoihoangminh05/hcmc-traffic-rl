@@ -116,6 +116,10 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
   - Tốc độ thay đổi theo thời gian: cùng hình học, trung vị 33% đoạn đổi >2% giữa hai lượt; thời gian tuyến lượt sau/lượt đầu 0.84–0.96.
   - Typical: hồ sơ ngày rõ ràng (06h 0.86 → 17h 1.07 so với trung vị tuyến, biên độ khoảng 24%), thứ Hai và thứ Ba gần như trùng nhau, tức là hồ sơ lịch sử cố định theo ngày thường.
   - Còn phải kiểm: live có khác typical cùng giờ không (thông tin realtime thật hay chỉ là hồ sơ lịch sử), và tách theo hẻm / đường thường.
+- [x] P2.2 (2026-10-30) mô phỏng meso GPU `ml-core/routing2/` (graph, demand, meso_gpu, policies, bench_meso). Hàng đợi không gian kiểu MATSim, đơn vị xe máy, vận tốc theo mật độ lúc vào cạnh, sức chứa ra/đỗ theo loại đường (prior, chờ hiệu chỉnh), đèn 2 pha, giải kẹt sau 180 s (tối đa 1 xe vượt sức chứa mỗi cạnh, có đếm). Baseline: ShortestPath, AppReroute (đo được: thời gian cạnh hiện tại), Mixed. Test `python -u -m routing2.test_meso` → MESO_TESTS_OK.
+  - CPU, B=8, 30 phút mô phỏng: khoảng 200 giây mô phỏng / giây thực, khoảng 6k quyết định/s. Mới có 3 cạnh có đèn trong WCC (4 đèn snap được).
+  - Quét nhu cầu (B=4, 30 phút): 1000 chuyến/giờ tự do; 2000 vừa (AppReroute nhanh hơn ShortestPath khoảng 6%); từ 3000 trở lên tắc nặng. Mức nhu cầu thật sẽ hiệu chỉnh theo hồ sơ tốc độ Mapbox.
+  - Chưa làm: đo trên GPU sol1 (cổng ≥1e4 quyết định/s), SUMO xe máy (P2.1), hiệu chỉnh (P2.3), so meso với SUMO (R² ≥ 0.8).
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.
