@@ -226,6 +226,7 @@ export class MapboxPollerService implements OnModuleInit {
       ],
     );
 
+    if (!this.redis.enabled) return;
     try {
       const key = `travel:${sample.odId}`;
       await this.redis.connect();

@@ -151,6 +151,7 @@ export class CameraCrawlerService implements OnModuleInit {
     dir: string,
     at: string,
   ): Promise<void> {
+    if (!this.redis.enabled) return;
     try {
       await this.redis.connect();
       await this.redis.client.publish(
