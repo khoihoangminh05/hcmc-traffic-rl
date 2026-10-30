@@ -93,7 +93,13 @@ Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_MAPPO.md](./SO
 
 ---
 
-## Next proposed work (MAPPO)
+## V4 — làm lại cho TR-C / T-ITS (từ 2026-10-30)
+
+Kế hoạch và trạng thái: [PLAN_V4.md](./PLAN_V4.md). MAPPO micro v3v đóng băng ở tag `v3v-paper-baseline`, làm phụ lục.
+
+---
+
+## Next proposed work (MAPPO, legacy v3v)
 
 1. **Done — MAPPO env/train/docs** (`quan4_mappo.yaml`).  
 2. **Now — sol1:** [SOL1_MAPPO.md](./SOL1_MAPPO.md) full train + `--ippo` ablation → paste `summary.json`.  
@@ -124,3 +130,4 @@ Guides: [RESEARCH_ONE_PAPER.md](./RESEARCH_ONE_PAPER.md) · [SOL1_MAPPO.md](./SO
 | 2026-10-05 | Evening poll + L4 cam_secondary + L5 `quan4_v5_final` + limitations |
 | 2026-10-06 | Locked **2 conference papers**: RESEARCH_TWO_PAPERS.md (A=data twin, B=routing) |
 | 2026-10-09 | **Supersede → one paper UAKP**: RESEARCH_ONE_PAPER + uakp_env/train + quan4_uakp; binary v5 = legacy |
+| 2026-10-30 | **V4:** đích TR-C/T-ITS (+A\* phụ), chỉ dữ liệu miễn phí; P0 + Mapbox driving-traffic probes (100 tuyến) + match_probe; via 8 điểm/tuyến + chế độ typical `depart_at`; live 15 phút × 14 ngày. Xem PLAN_V4.md |

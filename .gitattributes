@@ -1,0 +1,8 @@
+# The repo is edited from Windows (CRLF) and WSL / sol1 (LF). Store LF in git
+# so line-ending churn never shows up as a change.
+* text=auto
+*.sh text eol=lf
+*.pt binary
+*.tar.gz binary
+*.jpg binary
+*.png binary

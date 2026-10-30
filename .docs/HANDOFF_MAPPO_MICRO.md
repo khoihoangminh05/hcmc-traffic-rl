@@ -74,7 +74,7 @@ Một lần train khoảng 20 tiếng (khoảng 900–1300 vòng, mỗi vòng 40
 ## 2. Dữ liệu
 
 - Đồ thị: `ml-core/artifacts/out/quan4/wcc/alley_graph_wcc.json`. 886 nút, 1828 cạnh có hướng, lấy từ OSM Quận 4. SCC lớn nhất 882 nút; có đúng 1 nút cụt `7560016898` (out-degree 0) và 1 cạnh dẫn vào nó.
-- Mật độ/vận tốc: `artifacts/out/quan4/wcc/alley_density_l4_cam_wcc.json` (100% cạnh có số đo, từ camera), cộng 3 file theo giờ cao điểm sáng/chiều/tối.
+- Mật độ/vận tốc: 3 file theo giờ cao điểm `alley_density_peak_{morning,afternoon,evening}_paper_a_merged_wcc.json`. **Sửa 30/10/2026:** mọi cạnh có giá trị, nhưng chỉ 379/1828 cạnh (21%) là `observed` (Mapbox profile `driving`, đoạn trung vị 18 m, không có traffic realtime); 1081 `interpolated`, 368 `prior`; `uncertainty` = 0.03 ở mọi cạnh. File camera `alley_density_l4_cam_wcc.json` chỉ khác file buổi tối ở 34 cạnh, và **không được dùng khi train** vì `density_by_peak` ghi đè nó ở mỗi `reset`. Không được viết rằng MARL chạy trên mật độ đo bằng camera.
 - Đèn: `sumo-env/quan4_osm_signals.json`. 19 đèn OSM, 4 snap được, 3 có trong mạng SUMO (stub). Chu kỳ 60s, đỏ 30s.
 - Mạng SUMO: `sumo-env/networks/quan4_alleys.net.xml` (dựng từ toạ độ thật, có tlLogic). Đã khớp thời gian đỏ với TraCI.
 - Script lấy đèn: `ml-core/data_fusion/fetch_osm_signals.py`; dựng mạng SUMO: `export_sumo.write_geo_signal_net`.
