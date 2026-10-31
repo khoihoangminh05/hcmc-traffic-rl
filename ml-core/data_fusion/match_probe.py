@@ -191,12 +191,20 @@ def match_sample(
 
 
 def iter_samples(probe_dir: Path, pattern: str = "probe_*.jsonl") -> list[dict[str, Any]]:
+    """All samples, first one kept per (route, departAt or timestamp): a re-run typical job
+    re-requests slots it already has."""
     rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
     for path in sorted(probe_dir.glob(pattern)):
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+            if not line:
+                continue
+            x = json.loads(line)
+            key = (x["routeId"], x.get("departAt") or x["timestamp"])
+            if key not in seen:
+                seen.add(key)
+                rows.append(x)
     return rows
 
 

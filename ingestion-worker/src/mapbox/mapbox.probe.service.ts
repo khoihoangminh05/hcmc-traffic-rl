@@ -36,11 +36,16 @@ import { ProbeCursor, ProbeRoute, ProbeSample, QuotaCursor, TypicalJob } from '.
  * - MAPBOX_PROBE_HOURS=6-20            (Vietnam local hours, start inclusive, end exclusive)
  * - MAPBOX_PROBE_MONTHLY_CAP=95000     (stop before the 100k free tier runs out)
  */
+/** 401/403: the token is wrong or revoked. Retrying only burns requests. */
+class MapboxAuthError extends Error {}
+
 @Injectable()
 export class MapboxProbeService implements OnModuleInit {
   private readonly logger = new Logger(MapboxProbeService.name);
   private liveRunning = false;
   private typicalRunning = false;
+  /** Set on 401/403; both modes stay paused until the worker restarts with a new token. */
+  private authFailed = false;
   private token = '';
   private routes: ProbeRoute[] = [];
   private quota: QuotaCursor = { monthKey: '', count: 0 };
@@ -146,7 +151,7 @@ export class MapboxProbeService implements OnModuleInit {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async scheduledProbe(): Promise<void> {
-    if (this.liveRunning || !this.token || this.routes.length === 0) return;
+    if (this.authFailed || this.liveRunning || !this.token || this.routes.length === 0) return;
     const now = new Date();
     const h = this.vnHour(now);
     if (h < this.hourStart || h >= this.hourEnd) return;
@@ -195,6 +200,11 @@ export class MapboxProbeService implements OnModuleInit {
         ok += 1;
         consecutiveErrors = 0;
       } catch (err) {
+        if (err instanceof MapboxAuthError) {
+          this.pauseOnAuth(err);
+          await this.cursors.write('mapbox_probe', state);
+          return ok;
+        }
         consecutiveErrors += 1;
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(`Probe skip ${route.routeId}: ${msg}`);
@@ -244,12 +254,18 @@ export class MapboxProbeService implements OnModuleInit {
     return job.days * Math.floor(((job.hourEnd - job.hourStart) * 60) / job.stepMin);
   }
 
-  async typicalStatus(): Promise<{ job: TypicalJob | null; planned: number; running: boolean }> {
+  async typicalStatus(): Promise<{
+    job: TypicalJob | null;
+    planned: number;
+    running: boolean;
+    authFailed: boolean;
+  }> {
     const job = await this.cursors.read<TypicalJob | null>('mapbox_typical', null);
     return {
       job,
       planned: job ? this.nSlots(job) * this.routes.length : 0,
       running: this.typicalRunning,
+      authFailed: this.authFailed,
     };
   }
 
@@ -302,7 +318,7 @@ export class MapboxProbeService implements OnModuleInit {
   /** Resumes an unfinished typical job after a restart. */
   @Cron(CronExpression.EVERY_MINUTE)
   async resumeTypical(): Promise<void> {
-    if (this.typicalRunning || !this.token || this.routes.length === 0) return;
+    if (this.authFailed || this.typicalRunning || !this.token || this.routes.length === 0) return;
     const job = await this.cursors.read<TypicalJob | null>('mapbox_typical', null);
     if (job && !job.doneIso) {
       void this.runTypical();
@@ -338,6 +354,12 @@ export class MapboxProbeService implements OnModuleInit {
           await this.persist('mapbox_typical', file, sample);
           consecutiveErrors = 0;
         } catch (err) {
+          if (err instanceof MapboxAuthError) {
+            this.pauseOnAuth(err);
+            await this.cursors.write('mapbox_typical', job);
+            return;
+          }
+          job.failed = (job.failed ?? 0) + 1;
           consecutiveErrors += 1;
           const msg = err instanceof Error ? err.message : String(err);
           this.logger.warn(`Typical skip ${route.routeId} @${slot.local}: ${msg}`);
@@ -377,6 +399,16 @@ export class MapboxProbeService implements OnModuleInit {
 
   // ------------------------------------------------------------------ shared
 
+  private pauseOnAuth(err: Error): void {
+    if (!this.authFailed) {
+      this.logger.error(
+        `${err.message}. Live and typical probes PAUSED; cursors not advanced. ` +
+          'Put a valid MAPBOX_ACCESS_TOKEN in .env and restart the worker.',
+      );
+    }
+    this.authFailed = true;
+  }
+
   private async fetchProbe(route: ProbeRoute, departAt?: string): Promise<ProbeSample> {
     const n = route.coordinates.length;
     const coords = route.coordinates.join(';');
@@ -407,6 +439,10 @@ export class MapboxProbeService implements OnModuleInit {
     const res = await fetch(url);
     if (res.status === 429) {
       throw new Error(`Mapbox HTTP 429 rate limit for ${route.routeId}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      const detail = (await res.text()).slice(0, 200);
+      throw new MapboxAuthError(`Mapbox HTTP ${res.status} (token): ${detail}`);
     }
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 200);

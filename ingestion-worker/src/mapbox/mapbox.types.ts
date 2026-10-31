@@ -77,6 +77,8 @@ export interface TypicalJob {
   slotIndex: number;
   routeIndex: number;
   sent: number;
+  /** Requests that failed with a non-auth error (sample missing). */
+  failed?: number;
   skippedPast: number;
   createdIso: string;
   doneIso: string | null;

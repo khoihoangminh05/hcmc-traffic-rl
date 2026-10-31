@@ -3,7 +3,7 @@
 #   bash scripts/probe_sol1.sh start     # build + start the worker in tmux (no-op if running)
 #   bash scripts/probe_sol1.sh status    # is it running, last log lines, quota, typical job, data size
 #   bash scripts/probe_sol1.sh check     # match live + typical to edges, live-vs-typical diagnostics
-#   bash scripts/probe_sol1.sh typical START_DATE [DAYS] [STEP_MIN]   # queue a typical job
+#   bash scripts/probe_sol1.sh typical START_DATE [DAYS] [STEP_MIN] [restart]   # queue a typical job
 #   bash scripts/probe_sol1.sh stop      # stop the worker (cursors keep the resume point)
 # Every command also writes its output to $D/reports/<command>_<UTC time>.txt.
 set -eo pipefail
@@ -39,6 +39,7 @@ do_status() {
   if running; then echo "worker: RUNNING (tmux probe)"; else echo "worker: NOT running -> bash scripts/probe_sol1.sh start"; fi
   echo "== last log lines"; grep -v -E 'Redis error|DEBUG' "$D/worker.log" | tail -n 8 || true
   echo "== errors in log"; grep -cE 'Probe skip|Typical skip|HTTP 4|HTTP 5' "$D/worker.log" || true
+  echo "== last error"; grep -E 'Probe skip|Typical skip|PAUSED' "$D/worker.log" | tail -n 1 | cut -c1-220 || true
   echo "== sweeps done"; grep -c 'Probe sweep' "$D/worker.log" || true
   echo "== quota"; cat "$D/state/mapbox_quota.json" 2>/dev/null || echo none; echo
   echo "== typical job"; curl -s --max-time 5 "$URL/mapbox/probe/typical" || echo "(worker not answering)"; echo
@@ -60,7 +61,8 @@ do_check() {
 
 do_typical() {
   [ -n "$2" ] || { echo "usage: typical YYYY-MM-DD [days=7] [stepMin=15]"; exit 1; }
-  curl -s -X POST "$URL/mapbox/probe/typical?start=$2&days=${3:-7}&stepMin=${4:-15}"; echo
+  local r=0; [ "$5" = restart ] && r=1
+  curl -s -X POST "$URL/mapbox/probe/typical?start=$2&days=${3:-7}&stepMin=${4:-15}&restart=$r"; echo
 }
 
 do_stop() {
