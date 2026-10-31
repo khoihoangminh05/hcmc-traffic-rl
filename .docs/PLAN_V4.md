@@ -122,6 +122,11 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
   - Quét nhu cầu (B=4, 30 phút): 1000 chuyến/giờ tự do; 2000 vừa (AppReroute nhanh hơn ShortestPath khoảng 6%); từ 3000 trở lên tắc nặng. Mức nhu cầu thật sẽ hiệu chỉnh theo hồ sơ tốc độ Mapbox.
   - GPU sol1 (2026-10-31, RTX 4090, 30 phút mô phỏng, 3000 chuyến/giờ): B=1024 chạy 41.8 s, khoảng 44k giây mô phỏng / giây thực, **khoảng 981k quyết định/s (qua cổng 1e4)**, 1.1 GB. Lần chạy này sol1 chưa có file đèn (artifacts không đồng bộ), nên test đèn hỏng; đã thêm dự phòng `sumo-env/quan4_osm_signals.json`.
   - Quét trên GPU (64 env): 1000 chuyến/giờ không gỡ kẹt; 2000 có khoảng 46 lần gỡ kẹt mỗi env và AppReroute **chậm hơn** ShortestPath (342 so với 314 s; thông tin trễ 60 s gây dao động); từ 3000 trở lên khoảng 380 lần gỡ kẹt mỗi env, tức là chế độ kẹt cứng. Kết quả local 4 env ngược lại, nên 4 env là quá ít.
+  - P2.1 (2026-10-31) mạng SUMO mới `routing2/sumo_net.py` (netconvert từ plain XML: 1828 cạnh, 8057 kết nối, 3 đèn; id cạnh = alley_id; hẻm cấm ô tô; xe máy sublane). Mạng cũ `quan4_alleys.net.xml` viết tay **không có kết nối** (incLanes=""), xe không qua được giao lộ.
+  - `routing2/sumo_check.py`: cùng chuyến, cùng tuyến free-flow, meso FixedRoute so với SUMO. Local (1 seed, 15 phút):
+    - R² thời gian chuyến lần lượt 0.997 / 0.992 / 0.984 / 0.805 / 0.612 ở 500 / 1000 / 1500 / 3000 / 5000 chuyến/giờ.
+    - R² **độ trễ** (thời gian chuyến trừ free-flow) chỉ −0.31 / 0.16 / 0.16 ở 1000 / 3000 / 5000. Meso tính trễ cao hơn SUMO khoảng 30–50% (16 so với 11, 70 so với 49, 87 so với 69 s).
+    - Kết luận: cổng R² ≥ 0.8 trên thời gian chuyến qua ở nhu cầu thấp–vừa, nhưng chỉ vì phần free-flow giống nhau. Mô hình tắc nghẽn của meso **chưa khớp**. Bước tiếp: hiệu chỉnh cap / k_jam / speed_floor của meso theo SUMO (P2.3), và đặt cổng trên R² độ trễ.
   - Chưa làm:, SUMO xe máy (P2.1), hiệu chỉnh (P2.3), so meso với SUMO (R² ≥ 0.8).
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.

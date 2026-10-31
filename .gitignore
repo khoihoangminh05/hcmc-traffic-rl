@@ -44,3 +44,6 @@ hcmc_train_bundle.tar.gz
 *.tar.gz
 ml-core/cache/
 artifacts/
+
+# v4 SUMO net is rebuilt by python -m routing2.sumo_net
+sumo-env/networks/v4/
