@@ -3,8 +3,9 @@
 B independent episodes x N vehicles run as tensors. The model is a spatial
 queue (MATSim QSim style) with motorbike-unit parameters:
 
-- A vehicle entering link e at time t is ready to leave at
-  t + length / v, with v = v_free * max(floor, 1 - occupancy / storage) taken at entry.
+- A vehicle entering link e at time t is ready to leave at t + length / v, with
+  v = speed_factor * v_free * max(floor, 1 - max(0, d - k_crit) / (1 - k_crit)) and
+  d = occupancy / storage taken at entry (k_crit = 0: linear from an empty link).
 - A ready vehicle at the head of e leaves when (a) it has chosen its next link,
   (b) the light at the downstream node is green for e's phase group,
   (c) e's outflow budget (cap * dt per step, carried up to max(1, cap * dt))
@@ -14,9 +15,16 @@ queue (MATSim QSim style) with motorbike-unit parameters:
   sub-step, and only while that link holds at most one vehicle over its storage
   (gridlock release, counted as forced).
   A vehicle blocked at (d) does not block others turning elsewhere (motorbikes filter).
+- A minor approach at an unsignalized node (graph.minor) has its outflow capacity
+  capped by gap acceptance (Siegloch): exp(-q * (tc - tf / 2)) / tf, q the smoothed
+  flow leaving the node's other approaches.
 - A vehicle that reaches its destination node leaves the network at once.
 - Entry time is max(ready time, step start), so sub-second link times do not
   round up. A vehicle can cross up to `hops_per_step` links per step.
+
+`env_params` gives per-env values of the SimConfig fields in params.ENV_PARAMS
+([B] tensors), so a calibration can run parameter candidates as envs. Without it
+every env uses cfg.
 
 Routing is external: when a vehicle at a node has no next link, the simulator
 asks `policy.decide(sim, idx, node)` for all such vehicles at once.
@@ -34,7 +42,7 @@ import torch
 
 from .demand import Demand
 from .graph import MesoGraph
-from .params import SimConfig
+from .params import ENV_PARAMS, SimConfig
 
 NOT_DEPARTED, WAITING, ON_LINK, ARRIVED, STUCK = 0, 1, 2, 3, 4
 
@@ -63,7 +71,14 @@ def group_rank(group: torch.Tensor, order: torch.Tensor) -> torch.Tensor:
 
 
 class MesoSim:
-    def __init__(self, g: MesoGraph, demand: Demand, zones: torch.Tensor, cfg: SimConfig):
+    def __init__(
+        self,
+        g: MesoGraph,
+        demand: Demand,
+        zones: torch.Tensor,
+        cfg: SimConfig,
+        env_params: dict[str, torch.Tensor] | None = None,
+    ):
         self.g = g
         self.cfg = cfg
         self.zones = zones
@@ -77,6 +92,14 @@ class MesoSim:
         self.dest_node = zones[self.dest_zone]
         self.ctrl = demand.ctrl.reshape(-1)
         self.env_of = torch.arange(self.B * self.N, device=self.dev) // self.N
+        extra = set(env_params or {}) - set(ENV_PARAMS)
+        if extra:
+            raise ValueError(f"not per-env parameters: {sorted(extra)}")
+        self.p = {
+            k: (env_params[k].to(self.dev).float() if env_params and k in env_params
+                else torch.full((self.B,), float(getattr(cfg, k)), device=self.dev))
+            for k in ENV_PARAMS
+        }
         self.reset()
 
     def reset(self) -> None:
@@ -97,9 +120,22 @@ class MesoSim:
         self.n_decisions = 0
         self.n_forced = 0
         self.max_occ_ratio = torch.zeros(BE, device=d)
-        self._cap_dt = (self.g.cap * self.cfg.dt).repeat(self.B)
+        g, p, B = self.g, self.p, self.B
+        self._cap = (g.cap.unsqueeze(0) * p["cap_scale"].unsqueeze(1)).reshape(-1)
+        self._cap_dt = self._cap * self.cfg.dt
         self._budget_max = torch.clamp(self._cap_dt, min=1.0)
-        self._storage = self.g.storage.repeat(self.B)
+        sto = g.storage.unsqueeze(0) * p["storage_scale"].unsqueeze(1)
+        self._storage = torch.clamp(sto, min=self.cfg.min_storage).reshape(-1)
+        self._vf = (g.v_free.unsqueeze(0) * p["speed_factor"].unsqueeze(1)).reshape(-1)
+        # gap acceptance on minor approaches: flat (b, e) indices and their node slot
+        mb, me = torch.nonzero((p["gap_tc_s"] > 0).unsqueeze(1) & g.minor.unsqueeze(0), as_tuple=True)
+        self._minor_flat = mb * self.E + me
+        self._minor_node = mb * g.n_nodes + g.dst[me]
+        self._minor_b = mb
+        self._is_minor = torch.zeros(B * self.E, dtype=torch.bool, device=d)
+        self._is_minor[self._minor_flat] = True
+        self.q_major = torch.zeros(B * g.n_nodes, device=d)
+        self._major_out = torch.zeros(B * g.n_nodes, device=d)
 
     # ------------------------------------------------------------ observables
 
@@ -109,16 +145,33 @@ class MesoSim:
     def link_tt_now(self) -> torch.Tensor:
         """[B, E] travel time a probe would report now: running + queue + mean red wait."""
         g, cfg = self.g, self.cfg
-        dens = self.occupancy() / g.storage
-        v = g.v_free * torch.clamp(1.0 - dens, min=cfg.speed_floor)
+        dens = (self.occ / self._storage).view(self.B, self.E)
+        v = self._vf.view(self.B, self.E) * self._slow(dens, self.p["k_crit"].unsqueeze(1),
+                                                       self.p["speed_floor"].unsqueeze(1))
         tt = g.length / v
         on = self.status == ON_LINK
         waiting = on & (self.t_ready <= self.t)
         q = torch.zeros(self.B * self.E, device=self.dev)
         flat = self.env_of[waiting] * self.E + self.link[waiting]
         q.index_add_(0, flat, torch.ones_like(flat, dtype=q.dtype))
-        tt = tt + q.view(self.B, self.E) / g.cap
+        tt = tt + q.view(self.B, self.E) / self._cap_now().view(self.B, self.E)
         return tt + self.mean_red_wait()
+
+    @staticmethod
+    def _slow(dens: torch.Tensor, kc: torch.Tensor, floor: torch.Tensor) -> torch.Tensor:
+        return torch.maximum(1.0 - torch.clamp(dens - kc, min=0.0) / (1.0 - kc), floor)
+
+    def _cap_now(self) -> torch.Tensor:
+        """[B*E] outflow capacity (veh/s) with gap acceptance on minor approaches."""
+        if self._minor_flat.numel() == 0:
+            return self._cap
+        tc = self.p["gap_tc_s"][self._minor_b]
+        tf = self.p["gap_tf_s"][self._minor_b]
+        q = self.q_major[self._minor_node]
+        c = torch.exp(-q * torch.clamp(tc - 0.5 * tf, min=0.0)) / tf
+        cap = self._cap.clone()
+        cap[self._minor_flat] = torch.minimum(cap[self._minor_flat], c)
+        return cap
 
     def mean_red_wait(self) -> torch.Tensor:
         """[E] expected red wait for a random arrival on signalized approaches."""
@@ -129,7 +182,8 @@ class MesoSim:
         return torch.where(self.g.sig_group >= 0, w, 0.0)
 
     def free_tt(self) -> torch.Tensor:
-        return self.g.length / self.g.v_free + self.mean_red_wait()
+        """[E] free-flow link time with cfg.speed_factor (per-env factors are not used)."""
+        return self.g.length / (self.g.v_free * self.cfg.speed_factor) + self.mean_red_wait()
 
     def _green(self, e: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         g, cfg = self.g, self.cfg
@@ -143,12 +197,20 @@ class MesoSim:
     def step(self, policy: Policy) -> None:
         cfg = self.cfg
         t0, t1 = self.t, self.t + cfg.dt
-        self.budget = torch.minimum(self.budget + self._cap_dt, self._budget_max)
+        if self._minor_flat.numel():
+            cap_dt = self._cap_now() * cfg.dt
+            self.budget = torch.minimum(self.budget + cap_dt, torch.clamp(cap_dt, min=1.0))
+        else:
+            self.budget = torch.minimum(self.budget + self._cap_dt, self._budget_max)
         dep = (self.status == NOT_DEPARTED) & (self.dep_t < t1)
         self.status[dep] = WAITING
         for _ in range(cfg.hops_per_step):
             if not self._substep(policy, t0, t1):
                 break
+        if self._minor_flat.numel():
+            a = min(1.0, cfg.dt / cfg.major_flow_tau_s)
+            self.q_major += a * (self._major_out / cfg.dt - self.q_major)
+            self._major_out.zero_()
         self.t = t1
         self.max_occ_ratio = torch.maximum(self.max_occ_ratio, self.occ / self._storage)
 
@@ -215,12 +277,18 @@ class MesoSim:
         one = torch.ones(int(lm.sum()), device=self.dev)
         self.occ.index_add_(0, src[ok][lm], -one)
         self.budget.index_add_(0, src[ok][lm], -one)
+        if self._minor_flat.numel():
+            s_left = src[ok][lm]
+            major = ~self._is_minor[s_left]
+            node = b[ok][lm] * g.n_nodes + g.dst[e[m][lm]]
+            self._major_out.index_add_(0, node[major], one[major])
         self.occ.index_add_(0, tg, torch.ones(len(tg), device=self.dev))
         self.entered.index_add_(0, tg, torch.ones(len(tg), device=self.dev))
 
         t_ent = torch.clamp(t_rdy[ok], min=t0)
         dens = torch.clamp(self.occ[tg] / self._storage[tg], max=1.0)
-        v = g.v_free[ne_m] * torch.clamp(1.0 - dens, min=self.cfg.speed_floor)
+        bm = b[ok]
+        v = self._vf[tg] * self._slow(dens, self.p["k_crit"][bm], self.p["speed_floor"][bm])
         L = g.length[ne_m]
         self.t_enter[m] = t_ent
         self.t_ready[m] = t_ent + L / v

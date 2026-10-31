@@ -171,6 +171,41 @@ def test_signal_mean_wait() -> None:
     assert 4.0 < extra < 11.0, res
 
 
+def test_env_params_match_cfg() -> None:
+    """Per-env parameters in one batch give the same result as separate runs with cfg."""
+    g, zones, d2 = _setup(seeds=(5, 5), tph=3000.0)
+    _, _, d1 = _setup(seeds=(5,), tph=3000.0)
+    alt = dict(speed_factor=0.9, k_crit=0.4, speed_floor=0.3, storage_scale=2.0, cap_scale=1.5,
+               gap_tc_s=3.0, gap_tf_s=1.5)
+    ep = {k: torch.tensor([float(getattr(CFG, k)), v]) for k, v in alt.items()}
+    r2 = MesoSim(g, d2, zones, CFG, env_params=ep).run(ShortestPath(), 600.0)
+    r_base = MesoSim(g, d1, zones, CFG).run(ShortestPath(), 600.0)
+    r_alt = MesoSim(g, d1, zones, replace(CFG, **alt)).run(ShortestPath(), 600.0)
+    assert math.isclose(r2["ttt_s"][0], r_base["ttt_s"][0], rel_tol=1e-5), (r2["ttt_s"], r_base["ttt_s"])
+    assert math.isclose(r2["ttt_s"][1], r_alt["ttt_s"][0], rel_tol=1e-5), (r2["ttt_s"], r_alt["ttt_s"])
+    assert r_alt["ttt_s"] != r_base["ttt_s"]
+
+
+def test_gap_acceptance() -> None:
+    """Minor approaches lose capacity as the major flow grows, never above their own cap;
+    yielding only adds delay."""
+    cfg = replace(CFG, gap_tc_s=3.0, gap_tf_s=2.0)
+    g, zones, d = _setup(cfg, seeds=(3,), tph=3000.0)
+    assert 0 < int(g.minor.sum()) < g.n_edges
+    assert not bool((g.minor & (g.sig_group >= 0)).any()), "signalized approaches do not yield"
+    sim = MesoSim(g, d, zones, cfg)
+    cap0 = sim._cap_now()
+    assert torch.allclose(cap0[sim._minor_flat], torch.minimum(sim._cap[sim._minor_flat],
+                                                               torch.tensor(0.5)))
+    r = sim.run(ShortestPath(), 600.0)
+    assert float(sim.q_major.max()) > 0
+    cap1 = sim._cap_now()
+    assert bool((cap1 <= sim._cap + 1e-6).all())
+    assert bool((cap1[sim._minor_flat] < cap0[sim._minor_flat] - 1e-6).any())
+    base = MesoSim(g, d, zones, CFG).run(ShortestPath(), 600.0)
+    assert r["ttt_s"][0] >= base["ttt_s"][0] * 0.999, (r["ttt_s"], base["ttt_s"])
+
+
 def main() -> None:
     torch.manual_seed(0)
     for name, fn in list(globals().items()):

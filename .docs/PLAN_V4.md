@@ -127,7 +127,35 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
     - R² thời gian chuyến lần lượt 0.997 / 0.992 / 0.984 / 0.805 / 0.612 ở 500 / 1000 / 1500 / 3000 / 5000 chuyến/giờ.
     - R² **độ trễ** (thời gian chuyến trừ free-flow) chỉ −0.31 / 0.16 / 0.16 ở 1000 / 3000 / 5000. Meso tính trễ cao hơn SUMO khoảng 30–50% (16 so với 11, 70 so với 49, 87 so với 69 s).
     - Kết luận: cổng R² ≥ 0.8 trên thời gian chuyến qua ở nhu cầu thấp–vừa, nhưng chỉ vì phần free-flow giống nhau. Mô hình tắc nghẽn của meso **chưa khớp**. Bước tiếp: hiệu chỉnh cap / k_jam / speed_floor của meso theo SUMO (P2.3), và đặt cổng trên R² độ trễ.
-  - Chưa làm:, SUMO xe máy (P2.1), hiệu chỉnh (P2.3), so meso với SUMO (R² ≥ 0.8).
+  - sol1 (2026-10-31, 4 seed 61000–61003, 30 phút, libsumo), meso mặc định so với SUMO:
+
+    | Chuyến/giờ | R² thời gian chuyến | R² độ trễ | Trễ SUMO (s) | Trễ meso (s) | Meso gỡ kẹt |
+    |---|---|---|---|---|---|
+    | 500 | 0.989 | −1.82 | 9.3 | 14.9 | 0 |
+    | 1000 | 0.978 | −1.18 | 11.9 | 18.8 | 0 |
+    | 1500 | 0.946 | −0.34 | 17.6 | 24.1 | 0 |
+    | 2000 | −0.84 | −2.01 | 58.8 | 119.6 | 237 |
+    | 3000 | −0.77 | −1.01 | 165.5 | 214.9 | 1421 |
+    | 4000 | −0.53 | −0.75 | 197.6 | 259.2 | 3016 |
+
+    SUMO 0 teleport ở mọi mức. **Cổng P2 trượt.**
+  - Chẩn đoán (local, tách từng thành phần của meso ở 500 / 2000 chuyến/giờ):
+    - Gần như toàn bộ trễ meso đến từ **giảm tốc tuyến tính theo mật độ ngay từ cạnh trống**. Tắt nó đi thì trễ giảm từ 14.6 xuống 0.2 s (500 chuyến/giờ) và từ 117 xuống 4.5 s (2000 chuyến/giờ), gỡ kẹt từ 219 về 0.
+    - Đèn (3 cạnh) và sức chứa ra không đóng góp gì.
+    - SUMO lúc vắng: thời gian chuyến ≈ 1.057 × free-flow (R² 0.999). Xe máy sigma 0.5 chạy dưới giới hạn khoảng 5%, không phải tắc.
+    - SUMO 2000 chuyến/giờ: 74% time loss nằm trên hẻm, 16% trong giao lộ; top 5 cạnh giữ 36%. Đó là các điểm nghẽn hành lang và chỗ hẻm nhập đường lớn (nhường đường), meso chưa có cơ chế này.
+    - SUMO tự so với chính nó (2 seed RNG tài xế, local 10 phút) chỉ đạt R² độ trễ từng chuyến khoảng 0.75–0.85. Đây là **trần**, nên cổng phải so với trần chứ không phải 0.8 tuyệt đối.
+  - P2.3 (2026-10-31) thêm vào meso, mặc định **tắt** (hành vi cũ giữ nguyên, test cũ qua):
+    - `speed_factor`;
+    - `k_crit`: chưa giảm tốc khi mật độ dưới ngưỡng;
+    - `storage_scale`, `cap_scale`;
+    - nhường đường ở giao lộ không đèn: cạnh ưu tiên thấp bị giới hạn sức chứa theo chấp nhận khe Siegloch exp(−q(tc − tf/2))/tf, với q là lưu lượng đã làm mượt của các nhánh chính.
+    - Mọi tham số chạy được theo từng env, nên mỗi ứng viên là một env trên GPU.
+    - `sumo_check --sumo-seeds A B` ghi `sumo_trips_*.json` và trần SUMO-vs-SUMO.
+    - `routing2.calib_meso` tìm ngẫu nhiên trong hộp rồi thu hẹp. Mục tiêu: 1 − R² độ trễ trên các chuyến SUMO giao được; chuyến meso chưa tới bị tính trễ tới hết horizon.
+    - Chấm điểm trên seed test không dùng khi fit.
+    - Smoke local (10 phút, 24 ứng viên × 3 vòng), R² độ trễ trên seed test: 1000 chuyến/giờ từ −0.58 lên 0.70 (trần 0.85); 2000 chuyến/giờ từ −0.26 lên 0.25 (trần 0.84).
+  - **Cổng P2 mới**: R² độ trễ trên seed test ≥ 0.8 × trần SUMO-vs-SUMO ở mọi mức nhu cầu không kẹt cứng. Thời gian chuyến R² ≥ 0.8 vẫn báo kèm.
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.

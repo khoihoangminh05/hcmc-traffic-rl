@@ -34,7 +34,6 @@ from .graph import DEFAULT_GRAPH, REPO_SIGNALS
 from .params import DEFAULT_CLASS, ROAD_CLASS
 
 WIDTH_PER_LANE = {"alley": 2.5, "service": 3.0, "residential": 4.0, "tertiary": 3.2, "secondary": 3.5}
-PRIORITY = {"alley": 1, "service": 2, "residential": 3, "tertiary": 4, "secondary": 5}
 ALLOW_ALLEY = "motorcycle moped bicycle pedestrian"
 ALLOW_ROAD = "motorcycle moped bicycle pedestrian passenger bus delivery truck"
 
@@ -93,7 +92,7 @@ def write_plain(graph_path: Path, out_dir: Path, signals_path: Path | None = Non
             shape = " ".join(f"{x - x0:.2f},{y - y0:.2f}" for x, y in _edge_polyline(a, u, v, geo))
             f.write(
                 f"  <edge id={quoteattr(aid)} from={quoteattr(u)} to={quoteattr(v)} "
-                f'priority="{PRIORITY.get(cls, 2)}" numLanes="{lanes}" speed="{p.v_free:.2f}" '
+                f'priority="{p.priority}" numLanes="{lanes}" speed="{p.v_free:.2f}" '
                 f'width="{width:.2f}" allow="{allow}" shape="{shape}"/>\n'
             )
         f.write("</edges>\n")

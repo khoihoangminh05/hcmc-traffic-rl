@@ -7,6 +7,10 @@ from the snapped OSM file the SUMO net and v3v use: the sidecar
 A signalized node gets a two-phase program: links arriving roughly north-south
 (bearing 45–135° mod 180) are red for the first `red_s` of each cycle, the
 others for the second part. v3v held every approach red at the same time.
+
+An approach is `minor` when its class priority is below the highest incoming
+priority at its downstream node and that node has no signal (SUMO priority
+junction). With `cfg.signals` off, signal nodes become priority junctions too.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ class MesoGraph:
     cap: torch.Tensor  # [E] veh/s
     storage: torch.Tensor  # [E] vehicles (float)
     is_alley: torch.Tensor  # [E] bool
+    priority: torch.Tensor  # [E] long, class junction priority
+    minor: torch.Tensor  # [E] bool: yields at its unsignalized dst (a higher-priority approach exists)
     rev: torch.Tensor  # [E] long, reverse edge or -1
     out_edges: torch.Tensor  # [n, Dmax] long, -1 padded
     sig_group: torch.Tensor  # [E] long: -1 no signal at dst, else phase group 0/1
@@ -70,7 +76,7 @@ def load_graph(
     node_ids = sorted({str(e["u"]) for e in rows} | {str(e["v"]) for e in rows})
     nid = {n: i for i, n in enumerate(node_ids)}
 
-    src, dst, length, vf, cap, sto, alley, eids = [], [], [], [], [], [], [], []
+    src, dst, length, vf, cap, sto, alley, eids, prio = [], [], [], [], [], [], [], [], []
     for e in rows:
         a = alleys[e["alley_id"]]
         cls = a.get("road_class") or DEFAULT_CLASS
@@ -84,6 +90,7 @@ def load_graph(
         cap.append(p.cap * lanes)
         sto.append(max(cfg.min_storage, L * p.k_jam * lanes))
         alley.append(cls == "alley")
+        prio.append(p.priority)
         eids.append(e["alley_id"])
 
     n, E = len(node_ids), len(rows)
@@ -104,6 +111,7 @@ def load_graph(
 
     sig_group = torch.full((E,), -1, dtype=torch.long)
     sig_offset = torch.zeros(E)
+    sig_dst: list[int] = []
     if cfg.signals:
         sp = signals_path or Path(path).with_name("osm_signals_snapped.json")
         if not sp.exists():
@@ -121,6 +129,13 @@ def load_graph(
                     ang = math.degrees(math.atan2(dy, dx)) % 180.0
                     sig_group[k] = 0 if 45.0 <= ang < 135.0 else 1
                     sig_offset[k] = offs[d]
+                    sig_dst.append(d)
+
+    top = [0] * n
+    for k in range(E):
+        top[dst[k]] = max(top[dst[k]], prio[k])
+    signalized = set(sig_dst)
+    minor = [prio[k] < top[dst[k]] and dst[k] not in signalized for k in range(E)]
 
     g = nx.DiGraph(list(zip(src, dst)))
     scc = sorted(max(nx.strongly_connected_components(g), key=len))
@@ -137,6 +152,8 @@ def load_graph(
         cap=torch.tensor(cap),
         storage=torch.tensor(sto),
         is_alley=torch.tensor(alley),
+        priority=torch.tensor(prio),
+        minor=torch.tensor(minor),
         rev=torch.tensor(rev),
         out_edges=out_edges,
         sig_group=sig_group,

@@ -11,6 +11,11 @@ time minus the route's free-flow time): at low demand trip time is mostly
 length / speed in both models, so the delay R^2 is the real test of congestion, mean trip time and arrived
 share in each, SUMO teleports. Never overwrites: the file name has a UTC stamp.
 
+With two or more `--sumo-seeds`, SUMO runs again with another driver RNG seed and
+`r2_delay_sumo_vs_sumo` is SUMO's own repeatability: the ceiling a meso model can
+reach on per-trip delay. Every SUMO arrival is also written to
+`sumo_trips_<stamp>.json`, the target `routing2.calib_meso` fits to.
+
     python -u -m routing2.sumo_check --tph 500 1000 1500 2000 --seeds 61000 61001 \
         --horizon 1800 --out-dir artifacts/out/quan4/routing2
 """
@@ -60,7 +65,9 @@ def write_routes(path: Path, edge_ids: list[str], routes: torch.Tensor, dep_t: t
     return kept
 
 
-def run_sumo(net: Path, rou: Path, horizon: float, step: float, lateral: float, teleport: float) -> dict:
+def run_sumo(
+    net: Path, rou: Path, horizon: float, step: float, lateral: float, teleport: float, seed: int = 23423
+) -> dict:
     try:
         import libsumo  # type: ignore[import-not-found]
     except ImportError:  # no libsumo wheel for this Python (e.g. 3.13 on Windows): slower TraCI
@@ -70,7 +77,7 @@ def run_sumo(net: Path, rou: Path, horizon: float, step: float, lateral: float, 
         sumo_binary("sumo"), "-n", str(net), "-r", str(rou),
         "--step-length", str(step), "--lateral-resolution", str(lateral),
         "--time-to-teleport", str(teleport), "--no-step-log", "true", "--no-warnings", "true",
-        "--end", str(horizon),
+        "--end", str(horizon), "--seed", str(seed),
     ])
     arrived: dict[int, float] = {}
     try:
@@ -109,6 +116,7 @@ def main() -> None:
     ap.add_argument("--step", type=float, default=0.5)
     ap.add_argument("--lateral", type=float, default=0.8)
     ap.add_argument("--teleport", type=float, default=180.0)
+    ap.add_argument("--sumo-seeds", type=int, nargs="+", default=[23423], help="SUMO driver RNG seeds")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/out/quan4/routing2"))
     args = ap.parse_args()
@@ -121,6 +129,7 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     report = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
               "net": str(net), "levels": []}
+    trips = {"args": report["args"], "graph": str(DEFAULT_GRAPH), "levels": []}
 
     for tph in args.tph:
         d = make_demand(g, zones, args.seeds, tph, cfg.horizon_s, 1.0)
@@ -134,6 +143,7 @@ def main() -> None:
         ff = torch.where(routes >= 0, ff_edge[routes.clamp(min=0)], 0.0).sum(1)
         ref, est, s_all, m_all = [], [], [], []
         dref, dest = [], []
+        d_s0, d_s1 = [], []
         teleports = 0
         n_s_arr = 0
         for b, seed in enumerate(args.seeds):
@@ -141,8 +151,24 @@ def main() -> None:
             rou = work / f"tph{int(tph)}_seed{seed}.rou.xml"
             kept = write_routes(rou, g.edge_ids, routes[lo:hi], meso.dep_t[lo:hi])
             t0 = time.perf_counter()
-            res = run_sumo(net, rou, cfg.horizon_s, args.step, args.lateral, args.teleport)
-            wall = time.perf_counter() - t0
+            runs = [run_sumo(net, rou, cfg.horizon_s, args.step, args.lateral, args.teleport, ss)
+                    for ss in args.sumo_seeds]
+            wall = (time.perf_counter() - t0) / len(runs)
+            res = runs[0]
+            trips["levels"].append({
+                "tph": tph, "seed": seed, "kept": kept,
+                "dep": [round(float(meso.dep_t[lo + i]), 3) for i in kept],
+                "ff": [round(float(ff[lo + i]), 3) for i in kept],
+                "sumo_arrive": {str(ss): [r["arrived"].get(i) for i in kept]
+                                for ss, r in zip(args.sumo_seeds, runs)},
+            })
+            if len(runs) > 1:
+                for i in kept:
+                    a0, a1 = runs[0]["arrived"].get(i), runs[1]["arrived"].get(i)
+                    if a0 is not None and a1 is not None:
+                        base = float(meso.dep_t[lo + i]) + float(ff[lo + i])
+                        d_s0.append(a0 - base)
+                        d_s1.append(a1 - base)
             teleports += res["teleports_last_step"]
             n_s_arr += len(res["arrived"])
             for i in kept:
@@ -161,11 +187,13 @@ def main() -> None:
         det, pear = r2(ref, est)
         det_all, pear_all = r2(s_all, m_all)
         det_d, pear_d = r2(dref, dest)
+        det_ss, _ = r2(d_s0, d_s1)
         row = {
             "tph": tph, "trips": len(s_all),
             "both_arrived": len(ref),
             "r2_trip_tt_both_arrived": round(det, 4), "pearson2_both_arrived": round(pear, 4),
             "r2_delay_both_arrived": round(det_d, 4), "pearson2_delay": round(pear_d, 4),
+            "r2_delay_sumo_vs_sumo": round(det_ss, 4),
             "mean_delay_sumo_s": round(sum(dref) / max(len(dref), 1), 1),
             "mean_delay_meso_s": round(sum(dest) / max(len(dest), 1), 1),
             "r2_trip_tt_all_capped": round(det_all, 4), "pearson2_all_capped": round(pear_all, 4),
@@ -182,7 +210,9 @@ def main() -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.out_dir / f"sumo_check_{stamp}.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"[check] wrote {out}", flush=True)
+    tout = args.out_dir / f"sumo_trips_{stamp}.json"
+    tout.write_text(json.dumps(trips), encoding="utf-8")
+    print(f"[check] wrote {out} and {tout}", flush=True)
 
 
 if __name__ == "__main__":
