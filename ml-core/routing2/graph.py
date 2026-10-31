@@ -1,7 +1,9 @@
 """Alley graph as tensors for the meso simulator.
 
 Edges are the directed rows of `edge_list` in the WCC graph JSON. Signals come
-from the snapped OSM file the SUMO net and v3v use (`osm_signals_snapped.json`).
+from the snapped OSM file the SUMO net and v3v use: the sidecar
+`osm_signals_snapped.json` next to the graph, else the tracked copy
+`sumo-env/quan4_osm_signals.json` (artifacts/ is gitignored, so sol1 may lack the sidecar).
 A signalized node gets a two-phase program: links arriving roughly north-south
 (bearing 45–135° mod 180) are red for the first `red_s` of each cycle, the
 others for the second part. v3v held every approach red at the same time.
@@ -20,6 +22,7 @@ import torch
 from .params import DEFAULT_CLASS, ROAD_CLASS, SimConfig
 
 DEFAULT_GRAPH = Path("artifacts/out/quan4/wcc/alley_graph_wcc.json")
+REPO_SIGNALS = Path(__file__).resolve().parents[2] / "sumo-env" / "quan4_osm_signals.json"
 LAT0 = 10.76
 M_PER_DEG_LAT = 110_574.0
 M_PER_DEG_LON = 111_320.0 * math.cos(math.radians(LAT0))
@@ -103,6 +106,8 @@ def load_graph(
     sig_offset = torch.zeros(E)
     if cfg.signals:
         sp = signals_path or Path(path).with_name("osm_signals_snapped.json")
+        if not sp.exists():
+            sp = REPO_SIGNALS
         if sp.exists():
             offs = {}
             for r in json.loads(sp.read_text(encoding="utf-8")).get("signals") or []:

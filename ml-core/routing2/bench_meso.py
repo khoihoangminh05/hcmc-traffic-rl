@@ -12,6 +12,7 @@ runs both baselines alone at a few demand levels, to see congestion appear.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics as st
 import time
@@ -67,9 +68,12 @@ def main() -> None:
     cfg = replace(SimConfig(), horizon_s=args.horizon)
     g = load_graph(DEFAULT_GRAPH, cfg, device=dev)
     zones = pick_zones(g, args.zones, seed=0)
-    print(f"[bench] device={dev} nodes={g.n_nodes} edges={g.n_edges} zones={args.zones} "
-          f"horizon={cfg.horizon_s}s dt={cfg.dt}", flush=True)
-    out = {"device": dev, "horizon_s": cfg.horizon_s, "speed": [], "sweep": []}
+    sha = hashlib.sha256(DEFAULT_GRAPH.read_bytes()).hexdigest()[:12]
+    n_sig = int((g.sig_group >= 0).sum())
+    print(f"[bench] device={dev} nodes={g.n_nodes} edges={g.n_edges} graph_sha={sha} "
+          f"signal_edges={n_sig} zones={args.zones} horizon={cfg.horizon_s}s dt={cfg.dt}", flush=True)
+    out = {"device": dev, "horizon_s": cfg.horizon_s, "graph_sha": sha, "signal_edges": n_sig,
+           "speed": [], "sweep": []}
 
     for B in args.batches:
         seeds = list(range(1000, 1000 + B))

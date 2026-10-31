@@ -119,7 +119,9 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
 - [x] P2.2 (2026-10-30) mô phỏng meso GPU `ml-core/routing2/` (graph, demand, meso_gpu, policies, bench_meso). Hàng đợi không gian kiểu MATSim, đơn vị xe máy, vận tốc theo mật độ lúc vào cạnh, sức chứa ra/đỗ theo loại đường (prior, chờ hiệu chỉnh), đèn 2 pha, giải kẹt sau 180 s (tối đa 1 xe vượt sức chứa mỗi cạnh, có đếm). Baseline: ShortestPath, AppReroute (đo được: thời gian cạnh hiện tại), Mixed. Test `python -u -m routing2.test_meso` → MESO_TESTS_OK.
   - CPU, B=8, 30 phút mô phỏng: khoảng 200 giây mô phỏng / giây thực, khoảng 6k quyết định/s. Mới có 3 cạnh có đèn trong WCC (4 đèn snap được).
   - Quét nhu cầu (B=4, 30 phút): 1000 chuyến/giờ tự do; 2000 vừa (AppReroute nhanh hơn ShortestPath khoảng 6%); từ 3000 trở lên tắc nặng. Mức nhu cầu thật sẽ hiệu chỉnh theo hồ sơ tốc độ Mapbox.
-  - Chưa làm: đo trên GPU sol1 (cổng ≥1e4 quyết định/s), SUMO xe máy (P2.1), hiệu chỉnh (P2.3), so meso với SUMO (R² ≥ 0.8).
+  - GPU sol1 (2026-10-31, RTX 4090, 30 phút mô phỏng, 3000 chuyến/giờ): B=1024 chạy 41.8 s, khoảng 44k giây mô phỏng / giây thực, **khoảng 981k quyết định/s (qua cổng 1e4)**, 1.1 GB. Lần chạy này sol1 chưa có file đèn (artifacts không đồng bộ), nên test đèn hỏng; đã thêm dự phòng `sumo-env/quan4_osm_signals.json`.
+  - Quét trên GPU (64 env): 1000 chuyến/giờ không gỡ kẹt; 2000 có khoảng 46 lần gỡ kẹt mỗi env và AppReroute **chậm hơn** ShortestPath (342 so với 314 s; thông tin trễ 60 s gây dao động); từ 3000 trở lên khoảng 380 lần gỡ kẹt mỗi env, tức là chế độ kẹt cứng. Kết quả local 4 env ngược lại, nên 4 env là quá ít.
+  - Chưa làm:, SUMO xe máy (P2.1), hiệu chỉnh (P2.3), so meso với SUMO (R² ≥ 0.8).
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.
