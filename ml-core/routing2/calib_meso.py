@@ -53,7 +53,7 @@ BOX = {
     "storage_scale": (0.5, 6.0, True),
     "cap_scale": (0.5, 6.0, True),
     "alley_cap_scale": (0.5, 6.0, True),
-    "gap_tc_s": (0.0, 6.0, False),
+    "gap_tc_s": (0.0, 10.0, False),
     # follow-up time: field values are 2-3 s (cars), motorbikes somewhat less
     "gap_tf_s": (1.5, 3.5, False),
 }

@@ -35,17 +35,23 @@ class Demand:
 
 
 def pick_zones(g: MesoGraph, n_zones: int, seed: int = 0) -> torch.Tensor:
-    """Farthest-point sampling over SCC nodes (deterministic for a seed)."""
+    """Farthest-point sampling over SCC nodes (deterministic for a seed).
+
+    Distances in float64 on centred coordinates: node_xy is ~1e7 m, where float32
+    cdist (matmul form) is off by kilometres. Before 2026-11-01 this picked 3
+    distinct nodes out of 32 zones; every routing2 result before then used that.
+    """
     gen = torch.Generator().manual_seed(seed)
     cand = g.scc_nodes.cpu()
-    xy = g.node_xy.cpu()[cand]
+    xy = g.node_xy.cpu()[cand].double()
+    xy = xy - xy.mean(0)
     first = int(torch.randint(len(cand), (1,), generator=gen))
     chosen = [first]
-    d = torch.cdist(xy, xy[first : first + 1]).squeeze(1)
+    d = (xy - xy[first]).norm(dim=1)
     for _ in range(n_zones - 1):
         k = int(torch.argmax(d))
         chosen.append(k)
-        d = torch.minimum(d, torch.cdist(xy, xy[k : k + 1]).squeeze(1))
+        d = torch.minimum(d, (xy - xy[k]).norm(dim=1))
     return cand[torch.tensor(chosen)].to(g.src.device)
 
 

@@ -172,6 +172,18 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
     - 30% trễ của SUMO nằm ở **nhánh phụ** (hẻm nhập đường tertiary), lưu lượng thấp (30–110 xe) nhưng chờ 40–50 s/xe. Meso trong hộp v2 (tc ≤ 6 s) chỉ ra khoảng 1 s/xe. Cần tc khoảng 10 s mới tới mức đó.
     - Tham số toàn cục không gỡ được cả hai cùng lúc: chỉnh cho hành lang thì mất trễ ở nhánh phụ, và ngược lại. Bước tiếp: nhận dạng trực tiếp từ dữ liệu SUMO theo từng loại (hàm tốc độ theo mật độ trên hẻm, chấp nhận khe ở nhánh phụ) thay vì tìm hộp đen.
     - Mean delay của SUMO local (1.27.1) ở 2000 chuyến/giờ là 27 s, sol1 khoảng 50 s trên cùng seed fit. Cần ghim phiên bản SUMO cho tham chiếu.
+  - **Lỗi nghiêm trọng (phát hiện 2026-11-01): `pick_zones` chỉ chọn 3 nút khác nhau cho 32 vùng** (30/32 vùng là cùng một nút). `torch.cdist` float32 trên tọa độ cỡ 1e7 m sai tới 2.8 km. Hệ quả: gần như mọi chuyến đi về cùng một điểm, nên "75% chuyến qua một hành lang" và hiện tượng meso kẹt từ 2000 chuyến/giờ là **giả**. Mọi kết quả routing2 trước ngày này (quét nhu cầu P2.2, bench, sumo_check, hiệu chỉnh v1 và v2) chạy trên nhu cầu sai. Giữ lại để báo cáo, không dùng. Đã sửa (float64, tọa độ trừ tâm) và thêm test `test_zones_distinct_and_spread`.
+  - Sau khi sửa (local, SUMO 1.28.0, seed 61000–61001, 30 phút), meso mặc định so với SUMO:
+
+    | Chuyến/giờ | R² thời gian chuyến | Trễ SUMO / meso (s) | Tổng trễ lệch | R² ô | Trần R² ô | Meso gỡ kẹt |
+    |---|---|---|---|---|---|---|
+    | 1000 | 0.995 | 12.7 / 17.9 | 47% | 0.08 | 0.98 | 0 |
+    | 2000 | 0.992 | 15.1 / 20.4 | 41% | 0.11 | 0.98 | 0 |
+    | 3000 | 0.986 | 19.4 / 22.7 | 20% | 0.13 | 0.92 | 0 |
+    | 5000 | 0.848 | 46.9 / 29.1 | 40% | 0.03 | 0.84 | 0 |
+
+    - Không còn kẹt ở mức nào. Lệch còn lại là vị trí trễ: ở 5000 chuyến/giờ, SUMO dồn trễ vào vài ngã nhập hẻm → tertiary (top 20 cạnh chiếm 59% trễ, có nhánh phụ chờ khoảng 120 s/xe, và cả đường tertiary đi vào các nút đó). Meso rải đều trễ lên hẻm (top 20 cạnh chỉ 8%).
+    - Hiệu chỉnh nhỏ local (24 × 3, tc tới 10 s): R² ô 0.27 (2000) và 0.03 (5000), vẫn trượt. Tham số toàn cục không tái tạo được trễ phụ thuộc hình học từng nút. Hướng tiếp: hàm trễ theo từng cạnh/nút fit từ SUMO trên nhiều mức nhu cầu và nhiều bộ tuyến, kiểm định trên bộ tuyến giữ lại; SUMO làm tầng fine-tune và đánh giá cuối.
   - **Cổng P2 v2**: trên seed test, ở mỗi mức nhu cầu, R² ô trễ theo cạnh ≥ 0.8 × trần SUMO-vs-SUMO **và** tổng trễ lệch ≤ 15%. R² thời gian chuyến và R² trễ từng chuyến vẫn báo kèm.
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.

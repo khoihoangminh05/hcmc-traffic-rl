@@ -27,6 +27,16 @@ def _setup(cfg: SimConfig = CFG, seeds=(1, 2), tph: float = 1200.0, pen: float =
     return g, zones, d
 
 
+def test_zones_distinct_and_spread() -> None:
+    g = load_graph(DEFAULT_GRAPH, CFG)
+    for n in (16, 32):
+        z = pick_zones(g, n, seed=0)
+        assert len(set(z.tolist())) == n, z.tolist()
+    xy = g.node_xy[z].double()
+    dmin = torch.cdist(xy - xy.mean(0), xy - xy.mean(0)) + torch.eye(len(z), dtype=torch.float64) * 1e9
+    assert float(dmin.min()) > 50.0, float(dmin.min())
+
+
 def test_group_rank() -> None:
     grp = torch.tensor([3, 1, 3, 1, 3])
     order = torch.tensor([5.0, 2.0, 1.0, 2.0, 3.0])
@@ -109,8 +119,12 @@ def test_capacity_respected() -> None:
 
     o = int(g.scc_nodes[0])
     n = 200
+    # nearest zone (other than the origin), so some vehicles arrive within T
+    dz = (g.node_xy[zones].double() - g.node_xy[o].double()).norm(dim=1)
+    dz[zones == o] = float("inf")
+    near = int(torch.argmin(dz))
     d = Demand(
-        torch.zeros(1, n), torch.full((1, n), o), torch.full((1, n), 2),
+        torch.zeros(1, n), torch.full((1, n), o), torch.full((1, n), near),
         torch.ones(1, n, dtype=torch.bool), [0],
     )
     sim = MesoSim(g, d, zones, cfg)
