@@ -24,7 +24,8 @@ queue (MATSim QSim style) with motorbike-unit parameters:
 
 `env_params` gives per-env values of the SimConfig fields in params.ENV_PARAMS
 ([B] tensors), so a calibration can run parameter candidates as envs. Without it
-every env uses cfg. `record_hops` > 0 keeps, per vehicle, the time it left
+every env uses cfg. `edge_cap_mult` [E] scales each link's outflow capacity
+(gap-acceptance capacity included). `record_hops` > 0 keeps, per vehicle, the time it left
 each of its first `record_hops` links (`hop_exit`), for per-link comparisons.
 
 Routing is external: when a vehicle at a node has no next link, the simulator
@@ -80,6 +81,7 @@ class MesoSim:
         cfg: SimConfig,
         env_params: dict[str, torch.Tensor] | None = None,
         record_hops: int = 0,
+        edge_cap_mult: torch.Tensor | None = None,
     ):
         self.g = g
         self.cfg = cfg
@@ -103,6 +105,10 @@ class MesoSim:
             for k in ENV_PARAMS
         }
         self.record_hops = record_hops
+        # [E] per-link outflow capacity factor identified from SUMO (routing2.calib_meso
+        # stage 2); applies on top of the class cap and of gap acceptance. None = all 1.
+        self.edge_cap_mult = (torch.ones(self.E, device=self.dev) if edge_cap_mult is None
+                              else edge_cap_mult.to(self.dev).float())
         self.reset()
 
     def reset(self) -> None:
@@ -130,7 +136,7 @@ class MesoSim:
         g, p, B = self.g, self.p, self.B
         scale = p["cap_scale"].unsqueeze(1) * torch.where(
             g.is_alley.unsqueeze(0), p["alley_cap_scale"].unsqueeze(1), 1.0)
-        self._cap = (g.cap.unsqueeze(0) * scale).reshape(-1)
+        self._cap = (g.cap.unsqueeze(0) * scale * self.edge_cap_mult.unsqueeze(0)).reshape(-1)
         self._cap_dt = self._cap * self.cfg.dt
         self._budget_max = torch.clamp(self._cap_dt, min=1.0)
         sto = g.storage.unsqueeze(0) * p["storage_scale"].unsqueeze(1)
@@ -178,6 +184,7 @@ class MesoSim:
         tf = self.p["gap_tf_s"][self._minor_b]
         q = self.q_major[self._minor_node]
         c = torch.exp(-q * torch.clamp(tc - 0.5 * tf, min=0.0)) / tf
+        c = c * self.edge_cap_mult[self._minor_flat % self.E]
         cap = self._cap.clone()
         cap[self._minor_flat] = torch.minimum(cap[self._minor_flat], c)
         return cap

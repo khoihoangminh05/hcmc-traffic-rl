@@ -81,6 +81,47 @@ def choose_exit(
     return best_exit(sim.g, node, sim.link[idx], sim.dest_zone[idx], b, bd, edge_cost, dist)
 
 
+def noisy_routes(
+    g, free_tt: torch.Tensor, zones: torch.Tensor, orig: torch.Tensor, dest_zone: torch.Tensor,
+    noise: torch.Tensor,
+) -> torch.Tensor:
+    """Shortest routes on free_tt * noise[b] per env b (noise [B, E]); [B*N, L] padded with -1.
+
+    A different noise draw per env stands for a different routing pattern (drivers'
+    perceived costs), so link flows differ from the free-flow routes.
+    """
+    B = noise.shape[0]
+    cost = free_tt.unsqueeze(0) * noise
+    dist = bellman_ford(g.src, g.dst, cost, zones, g.n_nodes)
+    M = orig.numel()
+    b = torch.arange(M, device=orig.device) // (M // B)
+    node = orig.clone()
+    cur = torch.full_like(orig, -1)
+    target = zones[dest_zone]
+    steps = []
+    for _ in range(g.n_nodes):
+        active = node != target
+        if not bool(active.any()):
+            break
+        e = best_exit(g, node, cur, dest_zone, b, b, cost, dist)
+        e = torch.where(active, e, torch.full_like(e, -1))
+        steps.append(e)
+        moved = e >= 0
+        node = torch.where(moved, g.dst[e.clamp(min=0)], node)
+        cur = torch.where(moved, e, cur)
+        if not bool(moved.any()):
+            break
+    return torch.stack(steps, 1) if steps else torch.full((M, 1), -1, device=orig.device)
+
+
+def route_noise(n_edges: int, sigma: float, route_seed: int, tph: float, seed: int) -> torch.Tensor:
+    """[E] lognormal cost factors for one (route set, level, demand seed); ones if sigma = 0."""
+    if sigma <= 0:
+        return torch.ones(n_edges)
+    gen = torch.Generator().manual_seed(route_seed * 1_000_003 + int(tph) * 101 + seed)
+    return torch.exp(sigma * torch.randn(n_edges, generator=gen))
+
+
 def free_flow_routes(
     g, free_tt: torch.Tensor, zones: torch.Tensor, orig: torch.Tensor, dest_zone: torch.Tensor
 ) -> torch.Tensor:

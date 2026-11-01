@@ -37,7 +37,7 @@ from .edge_metrics import cell_delay, cell_mask, cell_scores
 from .graph import DEFAULT_GRAPH, load_graph
 from .meso_gpu import ARRIVED, MesoSim
 from .params import SimConfig
-from .policies import FixedRoute, free_flow_routes
+from .policies import FixedRoute, free_flow_routes, noisy_routes, route_noise
 from .sumo_net import build_net, sumo_binary
 
 MOTO_VTYPE = (
@@ -171,6 +171,9 @@ def main() -> None:
     ap.add_argument("--lateral", type=float, default=0.8)
     ap.add_argument("--teleport", type=float, default=180.0)
     ap.add_argument("--sumo-seeds", type=int, nargs="+", default=[23423], help="SUMO driver RNG seeds")
+    ap.add_argument("--route-sigma", type=float, default=0.0,
+                    help="lognormal noise on link costs per demand seed (0 = free-flow routes)")
+    ap.add_argument("--route-seed", type=int, default=0, help="route set id for the noise draw")
     ap.add_argument("--bin", type=float, default=300.0, help="time bin of the link-delay cells (s)")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/out/quan4/routing2"))
@@ -180,7 +183,7 @@ def main() -> None:
     g = load_graph(DEFAULT_GRAPH, cfg)
     zones = pick_zones(g, args.zones, seed=0)
     net = build_net(DEFAULT_GRAPH, args.net_dir)
-    work = args.out_dir / "sumo_check_work"
+    work = args.out_dir / "sumo_check_work" / f"rs{args.route_seed}_sig{args.route_sigma:g}"
     work.mkdir(parents=True, exist_ok=True)
     report = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
               "net": str(net), "levels": []}
@@ -189,7 +192,12 @@ def main() -> None:
     for tph in args.tph:
         d = make_demand(g, zones, args.seeds, tph, cfg.horizon_s, 1.0)
         sim = MesoSim(g, d, zones, cfg)
-        routes = free_flow_routes(g, sim.free_tt(), zones, sim.orig, sim.dest_zone)
+        if args.route_sigma > 0:
+            noise = torch.stack([route_noise(g.n_edges, args.route_sigma, args.route_seed, tph, s)
+                                 for s in args.seeds])
+            routes = noisy_routes(g, sim.free_tt(), zones, sim.orig, sim.dest_zone, noise)
+        else:
+            routes = free_flow_routes(g, sim.free_tt(), zones, sim.orig, sim.dest_zone)
         meso = MesoSim(g, d, zones, cfg, record_hops=routes.shape[1])
         meso.run(FixedRoute(routes))
         m_arr = (meso.status == ARRIVED)
@@ -219,6 +227,7 @@ def main() -> None:
                 "tph": tph, "seed": seed, "kept": kept,
                 "dep": [round(float(meso.dep_t[lo + i]), 3) for i in kept],
                 "ff": [round(float(ff[lo + i]), 3) for i in kept],
+                "routes": [[e for e in routes[lo + i].tolist() if e >= 0] for i in kept],
                 "sumo_arrive": {str(ss): [r["arrived"].get(i) for i in kept]
                                 for ss, r in zip(args.sumo_seeds, runs)},
                 "sumo_exits": {str(ss): [[round(x, 2) for x in r["exits"].get(i, [])] for i in kept]
