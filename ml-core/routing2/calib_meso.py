@@ -5,12 +5,16 @@ free-flow routes are rebuilt from its args and checked against its free-flow
 times, so meso and SUMO drive the same trips on the same routes.
 
 Every parameter candidate runs as an env (MesoSim env_params) for each fit seed,
-one batch per demand level. Objective: mean over levels of 1 - R^2 of per-trip
-delay (trip time minus route free-flow time) against SUMO, over the trips SUMO
-delivers before the horizon; a meso trip that has not arrived ends at the horizon,
-so jamming where SUMO flows is penalised. (Capping both sides instead lets the
-late departures dominate the variance.) Search: uniform in the box (log-uniform for the scales), then
-rounds that shrink the box around the best candidate.
+one batch per demand level. Objective (v2, 2026-11-01): mean over levels of
+(1 - R^2 of link-delay cells) + |total delay error| / SUMO total delay, cells as in
+routing2.edge_metrics (delay summed per link and 5-min entry bin). v1 fitted R^2 of
+per-trip delay; per-trip delay is mostly driver noise (SUMO vs SUMO 0.64-0.86), and
+the v1 optimum switched congestion off (R^2 near 0 beats congestion in the wrong
+place), so v1 is not used. Search: uniform in the box (log-uniform for the scales),
+then rounds that shrink the box around the best candidate.
+
+P2 gate, per level on the test seeds: R^2 cell >= 0.8 x SUMO-vs-SUMO R^2 cell and
+total delay within 15% of SUMO.
 
 The best candidate and the defaults are then scored on the test seeds, which the
 fit never sees, with the sumo_check metrics, next to SUMO's own repeatability
@@ -35,6 +39,7 @@ from pathlib import Path
 import torch
 
 from .demand import make_demand, pick_zones
+from .edge_metrics import cell_delay, cell_mask, cell_scores
 from .graph import DEFAULT_GRAPH, load_graph
 from .meso_gpu import ARRIVED, MesoSim
 from .params import ENV_PARAMS, SimConfig
@@ -47,9 +52,14 @@ BOX = {
     "speed_floor": (0.05, 1.0, False),
     "storage_scale": (0.5, 6.0, True),
     "cap_scale": (0.5, 6.0, True),
+    "alley_cap_scale": (0.5, 6.0, True),
     "gap_tc_s": (0.0, 6.0, False),
-    "gap_tf_s": (0.5, 3.0, False),
+    # follow-up time: field values are 2-3 s (cars), motorbikes somewhat less
+    "gap_tf_s": (1.5, 3.5, False),
 }
+BIN_S = 300.0
+GATE_CEIL_FRAC = 0.8
+GATE_TOTAL_ERR = 0.15
 assert set(BOX) == set(ENV_PARAMS)
 
 
@@ -81,7 +91,7 @@ class Level:
         self.routes = routes.view(len(seeds), self.N, -1)
         sumo_seeds = sorted({k for s in seeds for k in recs[s]["sumo_arrive"]}, key=int)
         H = cfg.horizon_s
-        idx, dep, ffk, s_end, s_end2 = [], [], [], [], []
+        idx, dep, ffk, s_end, s_end2, s_ex, s_ex2 = [], [], [], [], [], [], []
         for j, s in enumerate(seeds):
             r = recs[s]
             k = torch.tensor(r["kept"], dtype=torch.long)
@@ -92,6 +102,11 @@ class Level:
             idx.append(j * self.N + k)
             dep.append(torch.tensor(r["dep"]))
             ffk.append(want)
+            if "sumo_exits" not in r:
+                raise SystemExit("trips file has no sumo_exits: rerun routing2.sumo_check (2026-11-01+)")
+            s_ex += r["sumo_exits"][sumo_seeds[0]]
+            if len(sumo_seeds) > 1:
+                s_ex2 += r["sumo_exits"][sumo_seeds[1]]
             arr = r["sumo_arrive"]
             s_end.append(torch.tensor([H if a is None else a for a in arr[sumo_seeds[0]]]))
             if len(sumo_seeds) > 1:
@@ -102,30 +117,47 @@ class Level:
         self.s_end = torch.cat(s_end).to(dev)
         self.s_end2 = torch.cat(s_end2).to(dev) if s_end2 else None
         self.H = H
+        flat = self.routes.reshape(len(seeds) * self.N, -1)
+        self.R = flat[self.idx]
+        self.L = self.R.shape[1]
+        self.E = g.n_edges
+        self.ff_edge = g.length / g.v_free
+        self.nb = max(1, math.ceil(H / BIN_S))
+        self.mask = cell_mask(self.R, self.E, self.nb)
+        self.c_ref = self._cells(self._ex(s_ex, dev))
+        self.c_ref2 = self._cells(self._ex(s_ex2, dev)) if s_ex2 else None
 
-    def run(self, g, zones, cfg, cands: dict) -> torch.Tensor:
-        """Meso end times [C, K] for C candidates on this level's trips."""
+    def _ex(self, rows: list[list[float]], dev: str) -> torch.Tensor:
+        x = torch.full((len(rows), self.L), math.inf)
+        for i, r in enumerate(rows):
+            if r:
+                x[i, : min(self.L, len(r))] = torch.tensor(r[: self.L])
+        return x.to(dev)
+
+    def _cells(self, exits: torch.Tensor) -> torch.Tensor:
+        return cell_delay(self.R, self.dep, exits, self.ff_edge, self.H, BIN_S, self.E)
+
+    def run(self, g, zones, cfg, cands: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Meso end times [C, K] and link-delay cells [C, cells] for C candidates."""
         C = next(iter(cands.values())).numel()
         S = len(self.seeds)
         d = make_demand(g, zones, self.seeds * C, self.tph, cfg.horizon_s, 1.0)
         ep = {k: v.repeat_interleave(S) for k, v in cands.items()}
-        sim = MesoSim(g, d, zones, cfg, env_params=ep)
+        sim = MesoSim(g, d, zones, cfg, env_params=ep, record_hops=self.L)
         routes = self.routes.repeat(C, 1, 1).view(C * S * self.N, -1)
         sim.run(FixedRoute(routes))
         end = torch.where(sim.status == ARRIVED, sim.arrive_t, torch.full_like(sim.arrive_t, self.H))
         end = torch.clamp(end, max=self.H).view(C, S * self.N)
-        return end[:, self.idx]
+        ex = sim.hop_exit.view(C, S * self.N, self.L)[:, self.idx]
+        return end[:, self.idx], self._cells(ex)
 
-    def loss(self, m_end: torch.Tensor) -> torch.Tensor:
-        """1 - R^2 of delay on SUMO-delivered trips (meso capped at the horizon), per candidate."""
-        a = self.s_end < self.H - 1e-6
-        ref = (self.s_end - self.dep - self.ff)[a]
-        est = (m_end - self.dep - self.ff)[:, a]
-        ss_tot = ((ref - ref.mean()) ** 2).sum().clamp(min=1e-9)
-        return ((est - ref) ** 2).sum(1) / ss_tot
+    def loss(self, cells: torch.Tensor) -> torch.Tensor:
+        """(1 - R^2 of link-delay cells) + relative total-delay error, per candidate."""
+        sc = cell_scores(self.c_ref, cells, self.mask)
+        return (1.0 - sc["r2_cell"]) + sc["rel_err_total"]
 
-    def metrics(self, m_end: torch.Tensor) -> dict:
-        """sumo_check-style metrics for one candidate (m_end [K])."""
+    def metrics(self, m_end: torch.Tensor, cells: torch.Tensor) -> dict:
+        """sumo_check-style metrics and the P2 gate for one candidate (m_end [K], cells [cells])."""
         H = self.H
         s_arr = self.s_end < H - 1e-6
         m_arr = m_end < H - 1e-6
@@ -152,6 +184,17 @@ class Level:
             b2 = s_arr & (self.s_end2 < H - 1e-6)
             row["r2_delay_sumo_vs_sumo"] = round(r2(ref[b2], ref2[b2]), 4)
             row["r2_delay_sumo_arrived_sumo_vs_sumo"] = round(r2(ref[s_arr], ref2[s_arr]), 4)
+        sc = cell_scores(self.c_ref, cells, self.mask)
+        row["r2_cell_delay"] = round(float(sc["r2_cell"]), 4)
+        row["rel_err_total_delay"] = round(float(sc["rel_err_total"]), 4)
+        row["total_delay_sumo_h"] = round(float(sc["total_delay_ref_s"]) / 3600, 2)
+        row["total_delay_meso_h"] = round(float(sc["total_delay_est_s"]) / 3600, 2)
+        if self.c_ref2 is not None:
+            ss = cell_scores(self.c_ref, self.c_ref2, self.mask)
+            row["r2_cell_delay_sumo_vs_sumo"] = round(float(ss["r2_cell"]), 4)
+            row["rel_err_total_delay_sumo_vs_sumo"] = round(float(ss["rel_err_total"]), 4)
+            row["gate_pass"] = bool(row["r2_cell_delay"] >= GATE_CEIL_FRAC * row["r2_cell_delay_sumo_vs_sumo"]
+                                    and row["rel_err_total_delay"] <= GATE_TOTAL_ERR)
         return row
 
 
@@ -161,7 +204,7 @@ def evaluate(levels, g, zones, cfg, cands: dict, chunk: int) -> torch.Tensor:
     for lv in levels:
         for a in range(0, C, chunk):
             sub = {k: v[a:a + chunk] for k, v in cands.items()}
-            tot[a:a + chunk] += lv.loss(lv.run(g, zones, cfg, sub)).cpu()
+            tot[a:a + chunk] += lv.loss(lv.run(g, zones, cfg, sub)[1]).cpu()
     return tot / len(levels)
 
 
@@ -214,7 +257,7 @@ def main() -> None:
             default_loss = float(loss[0])
         history.append({"round": rnd, "best_loss": round(best_loss, 4),
                         "median_loss": round(float(loss.median()), 4)})
-        print(f"[calib] round={rnd} best_loss={best_loss:.4f} (mean 1 - R2 delay) "
+        print(f"[calib] round={rnd} best_loss={best_loss:.4f} (mean 1 - R2 cell + total err) "
               f"default_loss={default_loss:.4f} best={best} wall={time.perf_counter() - t0:.0f}s",
               flush=True)
 
@@ -227,12 +270,19 @@ def main() -> None:
         pair = {k: torch.tensor([default[k], best[k]]) for k in ENV_PARAMS}
         for t in tphs:
             lv = Level(g, zones, cfg, t, by_tph[t], test, dev)
-            m = lv.run(g, zones, cfg, pair)
+            m, cells = lv.run(g, zones, cfg, pair)
             for j, name in enumerate(("default", "best")):
-                row = lv.metrics(m[j])
+                row = lv.metrics(m[j], cells[j])
                 out["test"].setdefault(name, []).append(row)
                 print(f"[test] {name} {row}", flush=True)
 
+    if out["test"].get("best"):
+        out["gate_pass_all"] = all(r.get("gate_pass", False) for r in out["test"]["best"])
+        for r in out["test"]["best"]:
+            print(f"[gate] tph {r['tph']:g}: R2 cell {r['r2_cell_delay']} vs ceiling "
+                  f"{r.get('r2_cell_delay_sumo_vs_sumo')} | total delay err {r['rel_err_total_delay']} "
+                  f"| pass {r.get('gate_pass')}", flush=True)
+        print(f"[gate] P2 {'PASS' if out['gate_pass_all'] else 'FAIL'}", flush=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     path = args.out_dir / f"calib_meso_{stamp}.json"

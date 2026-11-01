@@ -35,6 +35,9 @@ import { ProbeCursor, ProbeRoute, ProbeSample, QuotaCursor, TypicalJob } from '.
  * - MAPBOX_TYPICAL_DELAY_MS=300        (gap between typical calls; API limit 300/min)
  * - MAPBOX_PROBE_HOURS=6-20            (Vietnam local hours, start inclusive, end exclusive)
  * - MAPBOX_PROBE_MONTHLY_CAP=95000     (stop before the 100k free tier runs out)
+ * - MAPBOX_PROBE_UNTIL=                (ISO time, e.g. 2026-11-07T22:00:00+07:00; no live
+ *                                       sweep starts after it. Empty = no end. Typical jobs
+ *                                       are not affected.)
  */
 /** 401/403: the token is wrong or revoked. Retrying only burns requests. */
 class MapboxAuthError extends Error {}
@@ -56,6 +59,9 @@ export class MapboxProbeService implements OnModuleInit {
   private readonly hourStart: number;
   private readonly hourEnd: number;
   private readonly monthlyCap: number;
+  /** Epoch ms after which no live sweep starts (NaN = no end). */
+  private readonly untilMs: number;
+  private untilLogged = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -76,6 +82,11 @@ export class MapboxProbeService implements OnModuleInit {
     this.hourStart = Number.isFinite(h0) ? h0 : 6;
     this.hourEnd = Number.isFinite(h1) ? h1 : 20;
     this.monthlyCap = Number(this.config.get<string>('MAPBOX_PROBE_MONTHLY_CAP', '95000'));
+    const until = this.config.get<string>('MAPBOX_PROBE_UNTIL', '').trim();
+    this.untilMs = until ? Date.parse(until) : NaN;
+    if (until && !Number.isFinite(this.untilMs)) {
+      throw new Error(`MAPBOX_PROBE_UNTIL is not an ISO time: ${until}`);
+    }
   }
 
   async onModuleInit(): Promise<void> {
@@ -90,7 +101,10 @@ export class MapboxProbeService implements OnModuleInit {
       this.logger.log(
         `Mapbox probes ready: ${this.routes.length} routes | profile=${this.profile} | ` +
           `hours ${this.hourStart}-${this.hourEnd} VN | sweep≥${this.intervalMs}ms | ` +
-          `month ${this.quota.monthKey || '-'} used ${this.quota.count}/${this.monthlyCap}`,
+          `month ${this.quota.monthKey || '-'} used ${this.quota.count}/${this.monthlyCap}` +
+          (Number.isFinite(this.untilMs)
+            ? ` | live until ${new Date(this.untilMs).toISOString()}`
+            : ''),
       );
     }
   }
@@ -153,6 +167,13 @@ export class MapboxProbeService implements OnModuleInit {
   async scheduledProbe(): Promise<void> {
     if (this.authFailed || this.liveRunning || !this.token || this.routes.length === 0) return;
     const now = new Date();
+    if (Number.isFinite(this.untilMs) && now.getTime() >= this.untilMs) {
+      if (!this.untilLogged) {
+        this.logger.log(`Live probes finished: MAPBOX_PROBE_UNTIL reached`);
+        this.untilLogged = true;
+      }
+      return;
+    }
     const h = this.vnHour(now);
     if (h < this.hourStart || h >= this.hourEnd) return;
 

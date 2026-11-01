@@ -52,6 +52,8 @@ class SimConfig:
     k_crit: float = 0.0
     storage_scale: float = 1.0
     cap_scale: float = 1.0
+    # Extra outflow-capacity factor on alley links only (on top of cap_scale).
+    alley_cap_scale: float = 1.0
     # Unsignalized junctions: an approach whose priority is below the node's highest
     # incoming priority yields. Its capacity is capped by Siegloch's gap acceptance,
     # exp(-q_major * (tc - tf / 2)) / tf, with q_major the smoothed flow (veh/s) that
@@ -62,4 +64,5 @@ class SimConfig:
 
 
 # SimConfig fields that MesoSim accepts per env (calibration runs candidates as envs).
-ENV_PARAMS = ("speed_factor", "k_crit", "speed_floor", "storage_scale", "cap_scale", "gap_tc_s", "gap_tf_s")
+ENV_PARAMS = ("speed_factor", "k_crit", "speed_floor", "storage_scale", "cap_scale", "alley_cap_scale",
+              "gap_tc_s", "gap_tf_s")

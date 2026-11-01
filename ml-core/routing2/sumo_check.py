@@ -33,6 +33,7 @@ from pathlib import Path
 import torch
 
 from .demand import make_demand, pick_zones
+from .edge_metrics import cell_delay, cell_mask, cell_scores
 from .graph import DEFAULT_GRAPH, load_graph
 from .meso_gpu import ARRIVED, MesoSim
 from .params import SimConfig
@@ -65,8 +66,24 @@ def write_routes(path: Path, edge_ids: list[str], routes: torch.Tensor, dep_t: t
     return kept
 
 
+def read_exits(path: Path) -> dict[int, list[float]]:
+    """Per vehicle, the time it left each edge of its route (vehroute exitTimes)."""
+    import xml.etree.ElementTree as ET
+
+    out: dict[int, list[float]] = {}
+    for _, el in ET.iterparse(path, events=("end",)):
+        if el.tag != "vehicle":
+            continue
+        r = el.find("route")
+        ex = (r.get("exitTimes") or "").split() if r is not None else []
+        out[int(el.get("id")[1:])] = [float(x) for x in ex if float(x) >= 0]
+        el.clear()
+    return out
+
+
 def run_sumo(
-    net: Path, rou: Path, horizon: float, step: float, lateral: float, teleport: float, seed: int = 23423
+    net: Path, rou: Path, horizon: float, step: float, lateral: float, teleport: float,
+    seed: int = 23423, vehroute: Path | None = None,
 ) -> dict:
     try:
         import libsumo  # type: ignore[import-not-found]
@@ -78,7 +95,10 @@ def run_sumo(
         "--step-length", str(step), "--lateral-resolution", str(lateral),
         "--time-to-teleport", str(teleport), "--no-step-log", "true", "--no-warnings", "true",
         "--end", str(horizon), "--seed", str(seed),
-    ])
+    ] + ([] if vehroute is None else [
+        "--vehroute-output", str(vehroute), "--vehroute-output.exit-times", "true",
+        "--vehroute-output.write-unfinished", "true",
+    ]))
     arrived: dict[int, float] = {}
     try:
         while libsumo.simulation.getTime() < horizon - 1e-9:
@@ -89,7 +109,10 @@ def run_sumo(
         teleports = libsumo.simulation.getStartingTeleportNumber()
     finally:
         libsumo.close()
-    return {"arrived": arrived, "teleports_last_step": teleports}
+    res = {"arrived": arrived, "teleports_last_step": teleports}
+    if vehroute is not None:
+        res["exits"] = read_exits(vehroute)
+    return res
 
 
 def r2(ref: list[float], est: list[float]) -> tuple[float, float]:
@@ -107,6 +130,37 @@ def r2(ref: list[float], est: list[float]) -> tuple[float, float]:
     return det, pear
 
 
+def exits_tensor(rows: list[list[float]], L: int) -> torch.Tensor:
+    x = torch.full((len(rows), L), math.inf)
+    for i, r in enumerate(rows):
+        if r:
+            x[i, : min(L, len(r))] = torch.tensor(r[:L])
+    return x
+
+
+def cell_row(g, routes, meso, k_rows, s_ex, H: float, bin_s: float) -> dict:
+    """Link-delay cell scores of meso against the first SUMO seed, and SUMO's own ceiling."""
+    k = torch.tensor(k_rows, dtype=torch.long)
+    R = routes[k].cpu()
+    dep = meso.dep_t[k].cpu()
+    ff_edge = (g.length / g.v_free).cpu()
+    L = R.shape[1]
+    nb = max(1, math.ceil(H / bin_s))
+    mask = cell_mask(R, g.n_edges, nb)
+    ref = cell_delay(R, dep, exits_tensor(s_ex[0], L), ff_edge, H, bin_s, g.n_edges)
+    est = cell_delay(R, dep, meso.hop_exit[k].cpu(), ff_edge, H, bin_s, g.n_edges)
+    sc = cell_scores(ref, est, mask)
+    row = {"r2_cell_delay": round(float(sc["r2_cell"]), 4),
+           "rel_err_total_delay": round(float(sc["rel_err_total"]), 4),
+           "total_delay_sumo_h": round(float(sc["total_delay_ref_s"]) / 3600, 2),
+           "total_delay_meso_h": round(float(sc["total_delay_est_s"]) / 3600, 2)}
+    if len(s_ex) > 1:
+        ss = cell_scores(ref, cell_delay(R, dep, exits_tensor(s_ex[1], L), ff_edge, H, bin_s, g.n_edges), mask)
+        row["r2_cell_delay_sumo_vs_sumo"] = round(float(ss["r2_cell"]), 4)
+        row["rel_err_total_delay_sumo_vs_sumo"] = round(float(ss["rel_err_total"]), 4)
+    return row
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tph", type=float, nargs="+", default=[500.0, 1000.0, 1500.0, 2000.0])
@@ -117,6 +171,7 @@ def main() -> None:
     ap.add_argument("--lateral", type=float, default=0.8)
     ap.add_argument("--teleport", type=float, default=180.0)
     ap.add_argument("--sumo-seeds", type=int, nargs="+", default=[23423], help="SUMO driver RNG seeds")
+    ap.add_argument("--bin", type=float, default=300.0, help="time bin of the link-delay cells (s)")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/out/quan4/routing2"))
     args = ap.parse_args()
@@ -135,7 +190,7 @@ def main() -> None:
         d = make_demand(g, zones, args.seeds, tph, cfg.horizon_s, 1.0)
         sim = MesoSim(g, d, zones, cfg)
         routes = free_flow_routes(g, sim.free_tt(), zones, sim.orig, sim.dest_zone)
-        meso = MesoSim(g, d, zones, cfg)
+        meso = MesoSim(g, d, zones, cfg, record_hops=routes.shape[1])
         meso.run(FixedRoute(routes))
         m_arr = (meso.status == ARRIVED)
         m_tt = meso.arrive_t - meso.dep_t
@@ -146,13 +201,18 @@ def main() -> None:
         d_s0, d_s1 = [], []
         teleports = 0
         n_s_arr = 0
+        k_rows, s_ex = [], [[] for _ in args.sumo_seeds]
         for b, seed in enumerate(args.seeds):
             lo, hi = b * sim.N, (b + 1) * sim.N
             rou = work / f"tph{int(tph)}_seed{seed}.rou.xml"
             kept = write_routes(rou, g.edge_ids, routes[lo:hi], meso.dep_t[lo:hi])
             t0 = time.perf_counter()
-            runs = [run_sumo(net, rou, cfg.horizon_s, args.step, args.lateral, args.teleport, ss)
+            runs = [run_sumo(net, rou, cfg.horizon_s, args.step, args.lateral, args.teleport, ss,
+                             work / f"tph{int(tph)}_seed{seed}_s{ss}.vehroute.xml")
                     for ss in args.sumo_seeds]
+            k_rows += [lo + i for i in kept]
+            for j, r in enumerate(runs):
+                s_ex[j] += [r["exits"].get(i, []) for i in kept]
             wall = (time.perf_counter() - t0) / len(runs)
             res = runs[0]
             trips["levels"].append({
@@ -161,6 +221,8 @@ def main() -> None:
                 "ff": [round(float(ff[lo + i]), 3) for i in kept],
                 "sumo_arrive": {str(ss): [r["arrived"].get(i) for i in kept]
                                 for ss, r in zip(args.sumo_seeds, runs)},
+                "sumo_exits": {str(ss): [[round(x, 2) for x in r["exits"].get(i, [])] for i in kept]
+                               for ss, r in zip(args.sumo_seeds, runs)},
             })
             if len(runs) > 1:
                 for i in kept:
@@ -204,6 +266,7 @@ def main() -> None:
             "sumo_teleports": teleports,
             "meso_forced_moves": meso.n_forced,
         }
+        row.update(cell_row(g, routes, meso, k_rows, s_ex, cfg.horizon_s, args.bin))
         report["levels"].append(row)
         print(f"[check] {row}", flush=True)
 

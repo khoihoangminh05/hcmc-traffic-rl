@@ -24,7 +24,8 @@ queue (MATSim QSim style) with motorbike-unit parameters:
 
 `env_params` gives per-env values of the SimConfig fields in params.ENV_PARAMS
 ([B] tensors), so a calibration can run parameter candidates as envs. Without it
-every env uses cfg.
+every env uses cfg. `record_hops` > 0 keeps, per vehicle, the time it left
+each of its first `record_hops` links (`hop_exit`), for per-link comparisons.
 
 Routing is external: when a vehicle at a node has no next link, the simulator
 asks `policy.decide(sim, idx, node)` for all such vehicles at once.
@@ -78,6 +79,7 @@ class MesoSim:
         zones: torch.Tensor,
         cfg: SimConfig,
         env_params: dict[str, torch.Tensor] | None = None,
+        record_hops: int = 0,
     ):
         self.g = g
         self.cfg = cfg
@@ -100,6 +102,7 @@ class MesoSim:
                 else torch.full((self.B,), float(getattr(cfg, k)), device=self.dev))
             for k in ENV_PARAMS
         }
+        self.record_hops = record_hops
         self.reset()
 
     def reset(self) -> None:
@@ -120,8 +123,14 @@ class MesoSim:
         self.n_decisions = 0
         self.n_forced = 0
         self.max_occ_ratio = torch.zeros(BE, device=d)
+        # hop_exit[v, j]: time vehicle v left the j-th link of its trip (inf: not yet)
+        self.hop_exit = (torch.full((BN, self.record_hops), math.inf, device=d)
+                         if self.record_hops > 0 else None)
+        self.hop_n = torch.zeros(BN, dtype=torch.long, device=d)
         g, p, B = self.g, self.p, self.B
-        self._cap = (g.cap.unsqueeze(0) * p["cap_scale"].unsqueeze(1)).reshape(-1)
+        scale = p["cap_scale"].unsqueeze(1) * torch.where(
+            g.is_alley.unsqueeze(0), p["alley_cap_scale"].unsqueeze(1), 1.0)
+        self._cap = (g.cap.unsqueeze(0) * scale).reshape(-1)
         self._cap_dt = self._cap * self.cfg.dt
         self._budget_max = torch.clamp(self._cap_dt, min=1.0)
         sto = g.storage.unsqueeze(0) * p["storage_scale"].unsqueeze(1)
@@ -225,6 +234,7 @@ class MesoSim:
             ai = arr.nonzero().squeeze(1)
             st[ai] = ARRIVED
             self.arrive_t[ai] = self.t_ready[ai]
+            self._record_exit(ai, self.t_ready[ai])
             self.occ.index_add_(0, self.env_of[ai] * E + e[ai], -torch.ones(len(ai), device=self.dev))
             self.link[ai] = -1
             ready = ready & ~arr
@@ -286,6 +296,8 @@ class MesoSim:
         self.entered.index_add_(0, tg, torch.ones(len(tg), device=self.dev))
 
         t_ent = torch.clamp(t_rdy[ok], min=t0)
+        if self.hop_exit is not None and bool(lm.any()):
+            self._record_exit(m[lm], t_ent[lm])
         dens = torch.clamp(self.occ[tg] / self._storage[tg], max=1.0)
         bm = b[ok]
         v = self._vf[tg] * self._slow(dens, self.p["k_crit"][bm], self.p["speed_floor"][bm])
@@ -298,6 +310,14 @@ class MesoSim:
         self.dist_m[m] += L
         self.alley_m[m] += L * g.is_alley[ne_m]
         return True
+
+    def _record_exit(self, v: torch.Tensor, t: torch.Tensor) -> None:
+        if self.hop_exit is None:
+            return
+        h = self.hop_n[v]
+        ok = h < self.hop_exit.shape[1]
+        self.hop_exit[v[ok], h[ok]] = t[ok]
+        self.hop_n[v] += 1
 
     def run(self, policy: Policy, horizon_s: float | None = None) -> dict:
         T = self.cfg.horizon_s if horizon_s is None else horizon_s

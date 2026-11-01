@@ -102,7 +102,7 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
 - Đánh giá cuối luôn chạy trên SUMO, seed test sạch, so sánh cặp.
 - Cập nhật `.docs/PROGRESS.md`, bàn giao mới `.docs/HANDOFF_V4.md`, sửa mục 2 của bàn giao cũ (số liệu thật của D2/D3).
 
-## Trạng thái (cập nhật 30/10/2026)
+## Trạng thái (cập nhật 01/11/2026)
 
 - [x] P0: `.gitattributes` (hết 138 file "modified" giả do CRLF).
 - [x] P1.1 thiết kế tuyến dò: `ml-core/data_fusion/design_probe_routes.py` → `ingestion-worker/config/probe_routes.quan4.json`. 100 tuyến, trung vị 1247 m, phủ 1563/1828 cạnh (hẻm 1359/1460) **nếu** Mapbox đi đúng tuyến thiết kế. Khoảng 86.8k request/31 ngày ở 28 lượt/ngày.
@@ -116,6 +116,7 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
   - Tốc độ thay đổi theo thời gian: cùng hình học, trung vị 33% đoạn đổi >2% giữa hai lượt; thời gian tuyến lượt sau/lượt đầu 0.84–0.96.
   - Typical: hồ sơ ngày rõ ràng (06h 0.86 → 17h 1.07 so với trung vị tuyến, biên độ khoảng 24%), thứ Hai và thứ Ba gần như trùng nhau, tức là hồ sơ lịch sử cố định theo ngày thường.
   - Còn phải kiểm: live có khác typical cùng giờ không (thông tin realtime thật hay chỉ là hồ sơ lịch sử), và tách theo hẻm / đường thường.
+- [x] P1.1 kết thúc cào (chốt 2026-11-01): live 10 phút, 5–22 giờ, từ 30/10 tới **tối 07/11** (`MAPBOX_PROBE_UNTIL=2026-11-07T22:00:00+07:00`, worker tự dừng live); typical đủ 02–08/11 (07–08 xếp ngày 01/11). Dự kiến khoảng 70k/95k request tháng 11.
 - [!] Sự cố dữ liệu (ghi để báo cáo trung thực): token Mapbox trả 401 "Invalid Token" từ 2026-10-30 21:42 (giờ VN). Mất toàn bộ live ngày 31/10 và typical từ slot 2026-11-05T06:00 trở đi (job vẫn đếm slot là xong). Poller không phân biệt lỗi token. Sửa: 401/403 thì tạm dừng cả hai chế độ, không tiến cursor; `match_probe` khử trùng lặp theo (route, departAt/timestamp); xếp lại typical 05–08/11; kéo live tới tối 07/11.
 - [x] P2.2 (2026-10-30) mô phỏng meso GPU `ml-core/routing2/` (graph, demand, meso_gpu, policies, bench_meso). Hàng đợi không gian kiểu MATSim, đơn vị xe máy, vận tốc theo mật độ lúc vào cạnh, sức chứa ra/đỗ theo loại đường (prior, chờ hiệu chỉnh), đèn 2 pha, giải kẹt sau 180 s (tối đa 1 xe vượt sức chứa mỗi cạnh, có đếm). Baseline: ShortestPath, AppReroute (đo được: thời gian cạnh hiện tại), Mixed. Test `python -u -m routing2.test_meso` → MESO_TESTS_OK.
   - CPU, B=8, 30 phút mô phỏng: khoảng 200 giây mô phỏng / giây thực, khoảng 6k quyết định/s. Mới có 3 cạnh có đèn trong WCC (4 đèn snap được).
@@ -155,7 +156,13 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
     - `routing2.calib_meso` tìm ngẫu nhiên trong hộp rồi thu hẹp. Mục tiêu: 1 − R² độ trễ trên các chuyến SUMO giao được; chuyến meso chưa tới bị tính trễ tới hết horizon.
     - Chấm điểm trên seed test không dùng khi fit.
     - Smoke local (10 phút, 24 ứng viên × 3 vòng), R² độ trễ trên seed test: 1000 chuyến/giờ từ −0.58 lên 0.70 (trần 0.85); 2000 chuyến/giờ từ −0.26 lên 0.25 (trần 0.84).
-  - **Cổng P2 mới**: R² độ trễ trên seed test ≥ 0.8 × trần SUMO-vs-SUMO ở mọi mức nhu cầu không kẹt cứng. Thời gian chuyến R² ≥ 0.8 vẫn báo kèm.
+  - ~~Cổng P2 (31/10): R² độ trễ từng chuyến ≥ 0.8 × trần~~, thay bằng cổng v2 bên dưới.
+  - Hiệu chỉnh v1 trên sol1 (2026-10-31, `calib_meso_20261031T175951Z.json`, 128 ứng viên × 4 vòng, 1,5 giờ GPU, fit 61000–61001, test 61002–61003): **trượt ở mọi mức**. R² độ trễ từng chuyến của best trên test lần lượt 0.55 / 0.17 / −0.09 / −0.23 / −0.20 ở 500 / 1000 / 1500 / 2000 / 3000 chuyến/giờ (trần 0.86 / 0.64 / 0.75 / 0.66 / 0.95).
+    - Best là meso **gần như không tắc**: trễ 13 s so với SUMO 54 s ở 2000 chuyến/giờ, 17 s so với 107 s ở 3000; meso giao 89% chuyến, SUMO 70%. cap ×2.4, storage ×2.6, tf 0.67 s (phi thực tế).
+    - Nguyên nhân: mục tiêu R² từng chuyến phạt tắc sai chỗ (R² âm sâu) nặng hơn không tắc (R² ≈ 0), và trễ từng chuyến chủ yếu là nhiễu tài xế. Kết quả v1 không dùng.
+  - Hiệu chỉnh v2 (2026-11-01): mục tiêu và cổng trên **ô trễ theo cạnh** (`routing2/edge_metrics.py`): trễ cộng dồn theo (cạnh, khung vào 5 phút), lấy từ exitTimes của SUMO vehroute và `hop_exit` của meso, cùng tổng trễ. Loss = (1 − R² ô) + |sai số tổng trễ| / tổng trễ SUMO. Thêm `alley_cap_scale` (sức chứa ra riêng cho hẻm, vì 74% time loss của SUMO nằm trên hẻm); tf trong [1.5, 3.5] s.
+    - Local (1500 chuyến/giờ, 10 phút): trần SUMO-vs-SUMO R² ô 0.92–0.99, sai số tổng trễ 2–3%, cao hơn hẳn trần từng chuyến (0.78–0.93). Smoke 8 ứng viên × 2 vòng: R² ô từ −0.01 lên 0.25, sai số tổng trễ từ 43% xuống 13%.
+  - **Cổng P2 v2**: trên seed test, ở mỗi mức nhu cầu, R² ô trễ theo cạnh ≥ 0.8 × trần SUMO-vs-SUMO **và** tổng trễ lệch ≤ 15%. R² thời gian chuyến và R² trễ từng chuyến vẫn báo kèm.
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.

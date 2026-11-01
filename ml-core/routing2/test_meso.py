@@ -206,6 +206,28 @@ def test_gap_acceptance() -> None:
     assert r["ttt_s"][0] >= base["ttt_s"][0] * 0.999, (r["ttt_s"], base["ttt_s"])
 
 
+def test_cell_delay_sums_to_trip_delay() -> None:
+    """Hop exits recorded by meso: cell delays of arrived trips add up to their trip delays."""
+    from .edge_metrics import cell_delay
+    from .policies import FixedRoute, free_flow_routes
+
+    g, zones, d = _setup(tph=600.0)
+    sim0 = MesoSim(g, d, zones, CFG)
+    routes = free_flow_routes(g, sim0.free_tt(), zones, sim0.orig, sim0.dest_zone)
+    sim = MesoSim(g, d, zones, CFG, record_hops=routes.shape[1])
+    sim.run(FixedRoute(routes))
+    arr = sim.status == ARRIVED
+    assert int(arr.sum()) > 50
+    ff_edge = g.length / g.v_free
+    ff = torch.where(routes >= 0, ff_edge[routes.clamp(min=0)], 0.0).sum(1)
+    k = arr.nonzero().squeeze(1)
+    cells = cell_delay(routes[k], sim.dep_t[k], sim.hop_exit[k], ff_edge, CFG.horizon_s, 300.0, g.n_edges)
+    want = float((sim.arrive_t[k] - sim.dep_t[k] - ff[k]).sum())
+    assert abs(float(cells.sum()) - want) < 1e-3 * max(1.0, abs(want)), (float(cells.sum()), want)
+    n_hops = (routes[k] >= 0).sum(1)
+    assert torch.equal(sim.hop_n[k], n_hops)
+
+
 def main() -> None:
     torch.manual_seed(0)
     for name, fn in list(globals().items()):
