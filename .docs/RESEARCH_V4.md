@@ -172,3 +172,22 @@ Luận điểm người dùng đã đồng ý: app đã đưa xe máy vào hẻm
 1. `data_fusion.google_route_probe`: Google có báo kẹt trong hẻm không.
 2. Trong SUMO: app đủ thông tin so với app mù hẻm (giờ hẻm giữ theo hồ sơ lịch sử). Nếu chênh lớn, thông tin là đòn bẩy lớn hơn điều phối, và A + B thành một luận điểm: đội xe vừa dẫn đường vừa lấp chỗ mù.
 
+
+## 12. Luận điểm gộp đề xuất (2026-11-02, người dùng gợi ý; chưa kiểm chứng)
+
+**Đội xe vừa là cảm biến vừa là cơ cấu chấp hành**: nhà cung cấp dẫn đường điều phối người dùng trong mạng hẻm khi trạng thái tắc chỉ quan sát được một phần. Mức thông tin là **biến thí nghiệm**, nên bài không khẳng định gì về dữ liệu của Google; script Google tạm gác vì cần billing.
+
+Cấu phần:
+- **Niềm tin chung theo cạnh**: prior là hồ sơ theo giờ của Mapbox; cập nhật từ báo cáo của đội xe; gồm trung bình, độ bất định, tuổi quan sát. Lan truyền chéo sang cạnh lân cận bằng mô hình học.
+- **Ý định**: số xe trong đội định vào mỗi cạnh trong Δ giây tới. Đây là thứ app biết mà bản đồ tốc độ không có.
+- **Hành động**: chọn cạnh kế tiếp. **Không dừng trên đường**, vì chờ giữa hẻm gây chắn và tạo chính cái tắc. "Chờ xem" được hiện thực bằng: giữ lối đi chưa cam kết (giá trị quyền chọn ở nút rẽ), và tùy chọn hoãn xuất phát.
+- **Phá đối xứng**: chính sách chung xác định sẽ làm mọi xe cùng chờ hoặc cùng đi. Cần chính sách ngẫu nhiên hoặc nhiễu riêng từng xe để có xe đi thử.
+
+Tài liệu gần nhất (mới đọc trích đoạn): Vasserman và cộng sự, IJCAI 2015; Li & Duan, arXiv 2404.15599 (định tuyến cận thị thăm dò thiếu, PoA > 2); arXiv 2501.03055; bài toán đường đi ngắn nhất trực tuyến với Thompson sampling. Phần lớn là mạng nhỏ hoặc trừu tượng, cần kiểm chứng thêm.
+
+Rủi ro:
+1. Trong SUMO, nếu không có nguồn bất định ẩn thì không có gì để thăm dò. Phải thêm **sự cố ẩn trong hẻm** (xe đỗ, chợ, đám), mà tần suất thật thì dữ liệu miễn phí không đo được, nên phải quét.
+2. Thompson sampling trên niềm tin chung có thể đạt gần hết lợi ích mà không cần học. Nó phải là baseline, không được bỏ.
+3. Người bị chọn đi thử chịu thiệt, nên phải báo cáo công bằng và mức tuân thủ.
+
+Thí nghiệm cổng C, trước khi xây kiến trúc: trong SUMO có sự cố ẩn, quét mức thông tin (không live, chỉ đường lớn, chỉ đội xe với tỉ lệ p, đủ) với app và Thompson. Nếu đủ thông tin không hơn hẳn không live thì hướng này không có đất.
