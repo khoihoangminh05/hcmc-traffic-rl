@@ -121,3 +121,30 @@ Train trên phân phối kịch bản (nhu cầu, bề rộng hẻm, tuân thủ
 
 ## 8. Tài liệu chưa đọc toàn văn nhưng phải đọc trước khi viết bài
 URB (2505.17734); Psarou (2510.11410) và bản tiếp theo; Kaddoura & Kickhöfer 2014; Fosgerau & Small; Yun và cộng sự TR-C 2024; Cabannes và cộng sự (Berkeley); Nair và cộng sự porous flow (TR-B 2011); GAT-MF (KDD 2023); Swamy (Stackelberg); Larsson & Patriksson (side constraints).
+
+---
+
+## 9. Tự đánh giá phương pháp nghiên cứu (2026-11-02)
+
+**Phần khảo sát ở trên chỉ là scoping review nhanh** (khoảng 15 lượt tìm web, phần lớn đọc trích đoạn). Nó đủ để định hướng, **không đủ** để viết Related Work hay khẳng định "chưa ai làm". Còn thiếu:
+
+1. **Tổng quan có hệ thống** (theo tinh thần PRISMA): giao thức viết trước (cơ sở dữ liệu Scopus / Web of Science / Google Scholar / arXiv; chuỗi tìm kiếm; khoảng năm; tiêu chí nhận và loại), lần ngược và lần xuôi trích dẫn từ 5–10 bài lõi, bảng trích xuất (bài toán, mạng, mô phỏng, quan sát, reward, baseline, kết quả, giới hạn). Ghi số bài ở từng bước để đưa vào bài.
+2. **Đọc toàn văn** khoảng 30–40 bài lõi, và tự kiểm lại mọi khẳng định "chưa có ai" bằng truy vấn ngược ("alley", "narrow street", "ngõ", "hẻm", "informal street network" + "routing").
+3. **Kiểm chứng bài toán trước khi làm phương pháp** (mục 7): nếu khoảng UE–SO nhỏ thì luận điểm định tuyến hợp tác yếu.
+4. **Giao thức thí nghiệm viết trước khi chạy**: kịch bản, baseline, chỉ số, seed, kiểm định thống kê, ablation, tiêu chí dừng. Giống quy tắc 50000/60000 đã có.
+5. **Mối đe dọa tính hợp lệ** liệt kê từ đầu: nhu cầu chưa biết, bề rộng hẻm giả định, SUMO không phải thực tế, ngưỡng sức chịu môi trường lấy từ nghiên cứu phương Tây.
+
+## 10. Hướng chốt
+
+**Tên làm việc**: định tuyến tối ưu hệ thống có ràng buộc sức chịu của hẻm, bằng MARL phi tập trung với chia công chi phí biên tính theo hàng đợi.
+
+**Đóng góp chính (bài TR-C), theo thứ tự ưu tiên**
+1. *Bài toán*: SO có ràng buộc lưu lượng đi tắt trên hẻm. Lần đầu đặt ngoại ứng lên dân hẻm vào chính bộ định tuyến, thay vì đo và chặn sau.
+2. *Phương pháp*: reward = thời gian của mình + trễ gây ra (quy theo hàng đợi, O(N), không chạy lại mô phỏng) + giá hẻm (nhân tử Lagrange, cập nhật theo vi phạm đo được). Kiểm chứng độ khớp với chi phí biên tính bằng chạy lại, trên mẫu nhỏ.
+3. *Thực nghiệm*: twin hẻm Q4 trong SUMO, trên dải kịch bản (nhu cầu, tỉ lệ tham gia p, tuân thủ, ngưỡng hẻm), so với UE (duaIterate), SO xấp xỉ, app, greedy chi phí biên, MAPPO ích kỷ. Kết quả chính: đường cong đánh đổi giữa tổng thời gian đi và lưu lượng đi tắt.
+
+**Không đặt làm đóng góp chính**: attention theo xung đột (để là lựa chọn kiến trúc, đánh giá bằng ablation; nếu thắng rõ và chuyển giao được sang quận khác thì tách thành bài A\*); fusion tốc độ (là đầu vào, trình bày như phương pháp dữ liệu).
+
+**Cổng quyết định**
+- G-A (thí nghiệm 1, mục 7): khoảng UE–SO trên Q4 ở nhu cầu tắc. Nếu < 3% ở mọi mức, đổi luận điểm sang "phân tích ngoại ứng đi tắt và định giá trong mạng hẻm" (vẫn TR-C), MARL thành phụ.
+- G-B: greedy chi phí biên (không học) đã đạt bao nhiêu phần của khoảng đó. Nếu đạt gần hết, đóng góp của MARL phải nằm ở tỉ lệ tham gia thấp, thông tin không đầy đủ và ràng buộc hẻm, chứ không phải ở con số trung bình.
