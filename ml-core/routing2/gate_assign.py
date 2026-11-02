@@ -198,8 +198,8 @@ def main() -> None:
     zones = pick_zones(g, args.zones, seed=0)
     net = build_net(DEFAULT_GRAPH, args.net_dir).resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    root = (args.out_dir / f"gate_{stamp}").resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root = (args.out_dir / f"gate_{stamp}_{os.getpid()}").resolve()
+    root.mkdir(parents=True, exist_ok=False)
     alley = {e: bool(a) for e, a in zip(g.edge_ids, g.is_alley.tolist())}
     length = {e: float(x) / 1000.0 for e, x in zip(g.edge_ids, g.length.tolist())}
     jobs = []

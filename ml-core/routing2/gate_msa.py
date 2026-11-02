@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import subprocess
 import time
@@ -311,6 +312,7 @@ def main() -> None:
     ap.add_argument("--vtype-extra", nargs="+", default=[""],
                     help='extra vType attributes per scenario, e.g. "" \'jmTimegapMinor="0.5" impatience="0.5"\'')
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--tag", default="run")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/out/quan4/routing2"))
     args = ap.parse_args()
@@ -320,8 +322,9 @@ def main() -> None:
     zones = pick_zones(g, args.zones, seed=0)
     net = str(build_net(DEFAULT_GRAPH, args.net_dir).resolve())
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    root = (args.out_dir / f"gate_msa_{stamp}").resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    # pid and exist_ok=False: two runs started in the same second must not share a directory
+    root = (args.out_dir / f"gate_msa_{args.tag}_{stamp}_{os.getpid()}").resolve()
+    root.mkdir(parents=True, exist_ok=False)
     ff = {e: float(x) for e, x in zip(g.edge_ids, (g.length / g.v_free).tolist())}
     alley = {e: bool(a) for e, a in zip(g.edge_ids, g.is_alley.tolist())}
     length = {e: float(x) / 1000.0 for e, x in zip(g.edge_ids, g.length.tolist())}
