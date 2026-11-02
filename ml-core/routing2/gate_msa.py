@@ -1,4 +1,4 @@
-"""Part 1 gate with our own MSA assignment loop in SUMO (batch).
+"""Part 1 gate with our own iterative assignment loop in SUMO (batch).
 
 Why not duaIterate --marginal-cost: its slope is a finite difference between two iterations.
 Locally (6000 trips/h) it gave a "system optimum" 17-23% WORSE than user equilibrium, which
@@ -10,13 +10,21 @@ Loop, for mode ue or so:
      ue: mean travel time tt;
      so: tt + q * d(tt)/dq (marginal travel time, Peeta & Mahmassani style), with the slope
      from a per-link non-negative fit tt - ff = a q + b q^2 over all (q, tt) points seen so
-     far, capped at `--mc-cap-s`.
-  3. duarouter gives each trip its best route on those costs; with probability 1/(k+1)
-     (at most 1/2) the trip switches to it.
+     far, capped at `--mc-cap-s`;
+     so_x: so + the merge externality. A vehicle on a major approach delays the vehicles that
+     yield on the node's minor approaches, which a link's own slope cannot see. For each minor
+     link m, fit tt_m - ff_m = c_m Q^2 with Q the flow entering the node's major approaches in
+     the interval; each major approach j then also pays the sum over its minor links of
+     q_m * 2 c_m Q (capped together with the own-link term).
+  3. duarouter gives each trip its best route on those costs. Swap rule: pswap (default): the
+     trip switches with probability min(0.5, kappa * (c_cur - c_new) / c_cur), so most of the
+     flow moves where the saving is large (Mehrabani et al. 2022 report far lower TTT than MSA
+     on their test nets); msa: probability 1/(k+1), at most 1/2.
 
-Reported: TTT per iteration; relative gap (ue convergence); and, to avoid selection bias, the
-final and the best-iteration route sets replayed on fresh SUMO seeds. Any route set that beats
-UE on fresh seeds is a valid lower bound on the UE-SO gap, whatever the quality of the slope.
+Reported: TTT per iteration; relative gap (convergence); and, to avoid selection bias, three
+route sets replayed on the same fresh SUMO seeds: free-flow (iteration 0), final, best iteration.
+UE is the final iterate of mode ue. Any route set that beats UE on fresh seeds is a feasible
+solution, hence a valid lower bound on the UE-SO gap, whatever the quality of the slope.
 
 `--vtype-extra` adds attributes to the motorbike vType (e.g. jmTimegapMinor, impatience): how
 hard alleys yield at merges is unknown, so the gate sweeps it.
@@ -165,8 +173,10 @@ def run_one(job: dict) -> dict:
     t0 = time.perf_counter()
     routes = best_routes(wd, net, trips, None, job["seed"])
     dep = {v: d for v, d in dep.items() if v in routes}
+    routes_ff = dict(routes)
     cost: dict[tuple[str, float], float] = {}
     pts: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    cross: dict[str, list[tuple[float, float]]] = defaultdict(list)
     hist, gaps = [], []
     best_ttt, best_routes_set = math.inf, dict(routes)
     for k in range(job["iters"]):
@@ -181,32 +191,57 @@ def run_one(job: dict) -> dict:
         for (e, _b), (tt, q) in obs.items():
             if e in ff and q > 0:
                 pts[e].append((q, tt))
-        slopes = fit_slopes(pts, ff) if mode == "so" else {}
+        slopes = fit_slopes(pts, ff) if mode != "ue" else {}
+        ext: dict[tuple[str, float], float] = defaultdict(float)
+        if mode == "so_x":
+            bins = {b for (_e, b) in obs}
+            for m, majors in job["majors_of"].items():
+                for b in bins:
+                    Q = sum(obs[(j, b)][1] for j in majors if (j, b) in obs)
+                    if (m, b) in obs and Q > 0:
+                        cross[m].append((Q, obs[(m, b)][0] - ff[m]))
+                pm = cross.get(m)
+                if not pm or len(pm) < 8:
+                    continue
+                c = max(0.0, sum(Q * Q * d for Q, d in pm) / max(sum(Q**4 for Q, _ in pm), 1e-9))
+                for b in bins:
+                    if (m, b) not in obs:
+                        continue
+                    Q = sum(obs[(j, b)][1] for j in majors if (j, b) in obs)
+                    e_m = obs[(m, b)][1] * 2.0 * c * Q
+                    for j in majors:
+                        ext[(j, b)] += e_m
         w = 1.0 / (k + 1)
         for key, (tt, q) in obs.items():
             e = key[0]
             c = tt
-            if mode == "so" and e in slopes:
-                a, b = slopes[e]
-                c = tt + min(job["mc_cap_s"], q * (a + 2.0 * b * q))
+            if mode != "ue":
+                own = 0.0
+                if e in slopes:
+                    a, b = slopes[e]
+                    own = q * (a + 2.0 * b * q)
+                c = tt + min(job["mc_cap_s"], own + ext.get(key, 0.0))
             cost[key] = (1 - w) * cost.get(key, ff.get(e, tt)) + w * c
         wfile = wd / "weights.xml"
         write_weights(wfile, cost, end)
         new = best_routes(wd, net, trips, wfile, job["seed"] + k + 1)
-        p = min(0.5, 1.0 / (k + 1))
+        p_msa = min(0.5, 1.0 / (k + 1))
         num = den = 0.0
         for v, r in new.items():
             if v not in routes:
                 continue
             c_new = route_cost(r, dep[v], cost, ff)
-            num += max(0.0, route_cost(routes[v], dep[v], cost, ff) - c_new)
+            c_cur = route_cost(routes[v], dep[v], cost, ff)
+            save = max(0.0, c_cur - c_new)
+            num += save
             den += c_new
+            p = p_msa if job["swap"] == "msa" else min(0.5, job["kappa"] * save / max(c_cur, 1.0))
             if rng.random() < p:
                 routes[v] = r
         gaps.append(round(num / max(den, 1e-9), 4))
     # replay on fresh SUMO seeds (the search never saw them)
     fresh = {}
-    for name, rs in (("final", routes), ("best", best_routes_set)):
+    for name, rs in (("freeflow", routes_ff), ("final", routes), ("best", best_routes_set)):
         rou = wd / f"{name}.rou.xml"
         write_routes(rou, rs, dep, vt)
         vals = []
@@ -221,21 +256,42 @@ def run_one(job: dict) -> dict:
 
 
 def summary(rows: list[dict]) -> list[dict]:
+    """Per scenario and level, means over demand seeds. Gaps pair each seed's replays."""
     out = []
     for key in sorted({(r["vtype_extra"], r["tph"]) for r in rows}):
         sel = [r for r in rows if (r["vtype_extra"], r["tph"]) == key]
+        by = {(r["seed"], r["mode"]): r["fresh"] for r in sel}
+        gaps, gaps_so, gaps_sx, sxs, ffs, ues, sos, sobest = [], [], [], [], [], [], [], []
+        for s in sorted({r["seed"] for r in sel}):
+            ue = by.get((s, "ue"))
+            so = by.get((s, "so"))
+            sx = by.get((s, "so_x"))
+            if ue is None:
+                continue
+            u = ue["final"]["ttt_h_mean"]
+            f = ue["freeflow"]["ttt_h_mean"]
+            ues.append(u)
+            ffs.append(f)
+            cands = [f, u, ue["best"]["ttt_h_mean"]]
+            if so is not None:
+                sos.append(so["final"]["ttt_h_mean"])
+                sobest.append(so["best"]["ttt_h_mean"])
+                cands += [so["final"]["ttt_h_mean"], so["best"]["ttt_h_mean"]]
+                gaps_so.append(100 * (u - so["final"]["ttt_h_mean"]) / u)
+            if sx is not None:
+                sxs.append(sx["final"]["ttt_h_mean"])
+                cands += [sx["final"]["ttt_h_mean"], sx["best"]["ttt_h_mean"]]
+                gaps_sx.append(100 * (u - sx["final"]["ttt_h_mean"]) / u)
+            gaps.append(100 * (u - min(cands)) / u)
 
-        def m(mode, which):
-            v = [r["fresh"][which]["ttt_h_mean"] for r in sel if r["mode"] == mode]
-            return sum(v) / len(v) if v else math.nan
+        def mean(x):
+            return round(sum(x) / len(x), 2) if x else None
 
-        ff = [r["ttt_h_by_iter"][0] for r in sel if r["mode"] == "ue"]
-        ff = sum(ff) / len(ff) if ff else math.nan
-        ue, so_f, so_b = min(m("ue", "final"), m("ue", "best")), m("so", "final"), m("so", "best")
-        so = min(so_f, so_b)
-        out.append({"vtype_extra": key[0], "tph": key[1], "ttt_h_freeflow": round(ff, 2), "ttt_h_ue": round(ue, 2),
-                    "ttt_h_so_final": round(so_f, 2), "ttt_h_so_best": round(so_b, 2),
-                    "gap_ff_ue_pct": round(100 * (ff - ue) / ff, 2), "gap_ue_so_pct": round(100 * (ue - so) / ue, 2)})
+        out.append({"vtype_extra": key[0], "tph": key[1], "seeds": len(ues), "ttt_h_freeflow": mean(ffs),
+                    "ttt_h_ue": mean(ues), "ttt_h_so_final": mean(sos), "ttt_h_so_best": mean(sobest),
+                    "ttt_h_so_x_final": mean(sxs), "gap_ue_best_known_pct": mean(gaps),
+                    "gap_ue_so_final_pct": mean(gaps_so), "gap_ue_so_x_final_pct": mean(gaps_sx),
+                    "gap_by_seed": [round(g, 2) for g in gaps]})
     return out
 
 
@@ -243,13 +299,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tph", type=float, nargs="+", default=[4000.0, 6000.0, 8000.0])
     ap.add_argument("--seeds", type=int, nargs="+", default=[61000, 61001])
-    ap.add_argument("--modes", nargs="+", default=["ue", "so"], choices=["ue", "so"])
+    ap.add_argument("--modes", nargs="+", default=["ue", "so"], choices=["ue", "so", "so_x"])
     ap.add_argument("--iters", type=int, default=40)
     ap.add_argument("--horizon", type=float, default=3600.0)
     ap.add_argument("--drain", type=float, default=1800.0)
     ap.add_argument("--zones", type=int, default=32)
     ap.add_argument("--mc-cap-s", type=float, default=300.0)
-    ap.add_argument("--fresh-seeds", type=int, nargs="+", default=[71, 72, 73])
+    ap.add_argument("--fresh-seeds", type=int, nargs="+", default=[71, 72, 73, 74, 75])
+    ap.add_argument("--swap", default="pswap", choices=["pswap", "msa"])
+    ap.add_argument("--kappa", type=float, default=1.0)
     ap.add_argument("--vtype-extra", nargs="+", default=[""],
                     help='extra vType attributes per scenario, e.g. "" \'jmTimegapMinor="0.5" impatience="0.5"\'')
     ap.add_argument("--jobs", type=int, default=8)
@@ -267,6 +325,10 @@ def main() -> None:
     ff = {e: float(x) for e, x in zip(g.edge_ids, (g.length / g.v_free).tolist())}
     alley = {e: bool(a) for e, a in zip(g.edge_ids, g.is_alley.tolist())}
     length = {e: float(x) / 1000.0 for e, x in zip(g.edge_ids, g.length.tolist())}
+    majors_of: dict[str, list[str]] = {}
+    for m in g.minor.nonzero().squeeze(1).tolist():
+        at = (g.dst == g.dst[m]) & ~g.minor
+        majors_of[g.edge_ids[m]] = [g.edge_ids[j] for j in at.nonzero().squeeze(1).tolist()]
     jobs = []
     for vi, ex in enumerate(args.vtype_extra):
         for tph in args.tph:
@@ -278,7 +340,8 @@ def main() -> None:
                     jobs.append({"mode": mode, "tph": tph, "seed": s, "iters": args.iters, "horizon": args.horizon,
                                  "drain": args.drain, "dir": str(d / mode), "trips": str(d / "trips0.xml"), "net": net,
                                  "ff": ff, "alley": alley, "length": length, "mc_cap_s": args.mc_cap_s,
-                                 "fresh_seeds": args.fresh_seeds, "vtype_extra": ex})
+                                 "fresh_seeds": args.fresh_seeds, "vtype_extra": ex,
+                                 "swap": args.swap, "kappa": args.kappa, "majors_of": majors_of})
     print(f"[msa] {len(jobs)} runs -> {root} (jobs={args.jobs})", flush=True)
     rows = []
     with ProcessPoolExecutor(args.jobs) as ex:

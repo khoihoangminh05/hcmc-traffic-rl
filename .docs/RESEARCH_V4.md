@@ -125,6 +125,8 @@ Train trên phân phối kịch bản (nhu cầu, bề rộng hẻm, tuân thủ
 2. Lưu lượng đi tắt qua hẻm thay đổi bao nhiêu giữa UE và SO, và giữa có hoặc không có ràng buộc.
 3. Quy trễ theo hàng đợi khớp với chi phí biên tính bằng chạy lại tới đâu, trên một mẫu nhỏ xe.
 
+**Giả thuyết mới từ thí nghiệm thử (2026-11-02, 1 kịch bản, chờ kiểm chứng trên sol1):** trong mạng hẻm, xe trên đường lớn gây trễ cho xe chờ nhập từ hẻm, tức ngoại ứng **giữa các cạnh**. Chi phí biên theo cạnh (BPR, SB-DSO) không thấy phần này và cho SO tệ hơn UE; thêm ngoại ứng ngã nhập thì sửa được. Nếu đứng vững qua nhiều kịch bản, đây là đóng góp cơ chế của bài và là lý do chia công phải dựa vào xung đột ở nút. Số liệu ở `PLAN_V4.md`.
+
 ## 8. Tài liệu chưa đọc toàn văn nhưng phải đọc trước khi viết bài
 URB (2505.17734); Psarou (2510.11410) và bản tiếp theo; Kaddoura & Kickhöfer 2014; Fosgerau & Small; Yun và cộng sự TR-C 2024; Cabannes và cộng sự (Berkeley); Nair và cộng sự porous flow (TR-B 2011); GAT-MF (KDD 2023); Swamy (Stackelberg); Larsson & Patriksson (side constraints).
 
