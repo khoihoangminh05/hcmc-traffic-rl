@@ -1,3 +1,5 @@
+> **Từ 2026-11-02 kế hoạch chính là `PLAN_PAPER.md`.** File này giữ làm nhật ký kỹ thuật (số liệu, lỗi, quyết định) của V4.
+
 # Kế hoạch làm lại toàn bộ: twin hẻm Quận 4 + định tuyến hợp tác, đích TR-C / T-ITS (A\* phụ)
 
 ## Context
