@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -82,6 +83,21 @@ class SumoEnvConfig:
     # navigation app does from probe speeds. Fills Request.live_cost. 0 = off.
     live_every_s: float = 0.0
     live_alpha: float = 0.5
+    # "edge": SUMO's instantaneous edge estimate (length / last-step mean speed, jumps when one
+    # vehicle stops). "probe": completed traversals of controlled vehicles in the last
+    # `probe_window_s`, plus the elapsed time of vehicles still on the link when above that mean,
+    # which is what a navigation provider can measure from its own users.
+    live_source: str = "edge"
+    probe_window_s: float = 120.0
+    # Which links reports may come from: all, roads (no alley reports), a blind app on alleys.
+    live_mask: str = "all"
+    # Hidden alley incidents (parked vehicle, market, funeral): their rate is unknown, so it is
+    # swept. A link used by free-flow routes slows to incident_speed for incident_s; no policy
+    # is told, it can only see the effect through reports. Same schedule for every policy.
+    incident_rate_per_h: float = 0.0
+    incident_s: float = 600.0
+    incident_speed: float = 0.5
+    incident_seed: int = 0
 
 
 @dataclass
@@ -114,6 +130,8 @@ class Episode:
     arrived_ctrl: int = 0
     teleports: int = 0
     wall_s: float = 0.0
+    km: float = 0.0  # distance driven by controlled vehicles (completed links)
+    incidents: int = 0
     n_decisions: int = 0
 
 
@@ -159,7 +177,37 @@ class SumoRoutingEnv:
             D = nd
         return D.float()
 
-    def _refresh_live(self) -> None:
+    def _refresh_probe(self, t: float) -> None:
+        win = self.cfg.probe_window_s
+        while self._probes and self._probes[0][0] < t - win:
+            self._probes.popleft()
+        tot: dict[int, float] = {}
+        cnt: dict[int, int] = {}
+        for _, e, x in self._probes:
+            tot[e] = tot.get(e, 0.0) + x
+            cnt[e] = cnt.get(e, 0) + 1
+        for vid, e in self._on_edge.items():
+            t0 = self._t_enter.get(vid)
+            if t0 is None:
+                continue
+            x = t - t0
+            m = tot[e] / cnt[e] if e in cnt else float(self.ff_edge[e])
+            if x > m:
+                tot[e] = tot.get(e, 0.0) + x
+                cnt[e] = cnt.get(e, 0) + 1
+        a = self.cfg.live_alpha
+        now = self.live_tt + 0.1 * (self.ff_edge - self.live_tt)  # no report: drift back to free flow
+        for e, n in cnt.items():
+            if self.cfg.live_mask == "roads" and bool(self.g.is_alley[e]):
+                continue
+            now[e] = (1 - a) * self.live_tt[e] + a * max(tot[e] / n, 0.5 * float(self.ff_edge[e]))
+        self.live_tt = now
+        self.live_D = self._time_to_zones(self.live_tt)
+
+    def _refresh_live(self, t: float = 0.0) -> None:
+        if self.cfg.live_source == "probe":
+            self._refresh_probe(t)
+            return
         ed = self.sumo.edge
         now = self.live_tt.clone()
         for i, eid in enumerate(self.eid):
@@ -230,6 +278,23 @@ class SumoRoutingEnv:
 
     # ----------------------------------------------------------- episode
 
+    def _incident_schedule(self, rt: list[list[int]], dep: torch.Tensor) -> list[tuple[float, int]]:
+        """(start time, link), links drawn in proportion to free-flow use among alleys."""
+        cfg = self.cfg
+        if cfg.incident_rate_per_h <= 0:
+            return []
+        use = torch.zeros(self.g.n_edges)
+        for r in rt:
+            if r:
+                use[torch.tensor(r)] += 1.0
+        use = use * self.g.is_alley.cpu().float()
+        gen = torch.Generator().manual_seed(cfg.incident_seed)
+        last = float(dep.max())
+        n = max(1, round(cfg.incident_rate_per_h * last / 3600.0))
+        links = torch.multinomial(use, n, replacement=False, generator=gen).tolist()
+        starts = (torch.rand(n, generator=gen) * last).tolist()
+        return sorted(zip(starts, links))
+
     def _start(self, rou: Path) -> None:
         cfg = self.cfg
         self.sumo.start([
@@ -291,11 +356,24 @@ class SumoRoutingEnv:
         self.live_tt = self.ff_edge.clone()
         self.live_D = self.Dz.clone()
         next_live = 0.0
+        schedule = self._incident_schedule(rt, dep)
+        ending: list[tuple[float, int]] = []
+        ep.incidents = len(schedule)
+        self._probes: deque = deque()
+        self._on_edge = on_edge
+        self._t_enter: dict[str, float] = {}
         try:
             while ss.getTime() < cfg.horizon_s - 1e-9:
                 t = ss.getTime()
+                while schedule and schedule[0][0] <= t:
+                    _, e = schedule.pop(0)
+                    self.sumo.edge.setMaxSpeed(self.eid[e], cfg.incident_speed)
+                    ending.append((t + cfg.incident_s, e))
+                for item in [x for x in ending if x[0] <= t]:
+                    ending.remove(item)
+                    self.sumo.edge.setMaxSpeed(self.eid[item[1]], float(self.g.v_free[item[1]]))
                 if cfg.live_every_s > 0 and t >= next_live:
-                    self._refresh_live()
+                    self._refresh_live(t)
                     next_live = t + cfg.live_every_s
                 # departures of controlled trips due by the end of this step: decide at the origin
                 reqs: list[tuple[str, int, int, int]] = []  # vid, node, cur, zone
@@ -311,6 +389,11 @@ class SumoRoutingEnv:
                     e = self.e_of.get(road)
                     if e is None or e == on_edge[vid]:
                         continue
+                    old = on_edge[vid]
+                    ep.km += float(self.length[old]) / 1000.0
+                    if vid in self._t_enter:
+                        self._probes.append((t, old, t - self._t_enter[vid]))
+                    self._t_enter[vid] = t
                     on_edge[vid] = e
                     z = self._zone_of[vid]
                     n = int(self.dst[e])
@@ -322,7 +405,11 @@ class SumoRoutingEnv:
                 tn = ss.getTime()
                 for vid in ss.getArrivedIDList():
                     arrive[vid] = tn
-                    on_edge.pop(vid, None)
+                    if vid in on_edge:
+                        last = on_edge.pop(vid)
+                        ep.km += float(self.length[last]) / 1000.0
+                        if vid in self._t_enter:
+                            self._probes.append((tn, last, tn - self._t_enter.pop(vid)))
                 for vid in ss.getStartingTeleportIDList() if hasattr(ss, "getStartingTeleportIDList") else []:
                     ep.teleports += 1
         finally:

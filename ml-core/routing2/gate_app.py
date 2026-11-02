@@ -77,14 +77,16 @@ def run_one(job: dict) -> dict:
     zones = pick_zones(g, job["zones"], seed=0)
     env = SumoRoutingEnv(g, zones, SumoEnvConfig(
         net=Path(job["net"]), horizon_s=job["horizon"] + job["drain"], sumo_seed=job["sumo_seed"],
-        work_dir=Path(job["work"]) / f"w{os.getpid()}", live_every_s=job["live_every"]))
+        work_dir=Path(job["work"]) / f"w{os.getpid()}", live_every_s=job["live_every"],
+        live_source=job["live_source"], live_mask=job["live_mask"],
+        incident_rate_per_h=job["incident_rate"], incident_seed=job["seed"]))
     d = make_demand(g, zones, [job["seed"]], job["tph"], job["horizon"], 1.0)
     pol = {"ff": lambda: FreeFlow(), "app_cont": lambda: AppContinuous(),
-           "app_sticky": lambda: AppSticky(env, job["theta"])}[job["policy"]]()
+           "app_sticky": lambda: AppSticky(env, job["theta"])}[job["policy"].split("|")[0]]()
     ep = env.run(d, 0, pol, record=False)
     return {k: job[k] for k in ("policy", "tph", "seed", "sumo_seed")} | {
         "ttt_h": round(ep.ttt_s / 3600, 3), "trips": ep.n_trips, "arrived": ep.arrived,
-        "teleports": ep.teleports, "decisions": ep.n_decisions, "wall_s": round(ep.wall_s, 1)}
+        "teleports": ep.teleports, "decisions": ep.n_decisions, "km": round(ep.km, 1), "wall_s": round(ep.wall_s, 1)}
 
 
 def tail_mean(x: list[float], frac: float = 0.25) -> float:
@@ -102,6 +104,10 @@ def main() -> None:
     ap.add_argument("--drain", type=float, default=1800.0)
     ap.add_argument("--live-every", type=float, default=30.0)
     ap.add_argument("--theta", type=float, default=0.1)
+    ap.add_argument("--live-source", default="probe", choices=["edge", "probe"])
+    ap.add_argument("--live-mask", nargs="+", default=["all"], choices=["all", "roads"],
+                    help="each mask is its own set of runs for the app policies")
+    ap.add_argument("--incident-rate", type=float, default=0.0, help="hidden alley incidents per hour")
     ap.add_argument("--zones", type=int, default=32)
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--tag", default="run")
@@ -114,9 +120,13 @@ def main() -> None:
     name = f"gate_app_{args.tag}_{stamp}_{os.getpid()}"
     work = (args.out_dir / name).resolve()
     work.mkdir(parents=True, exist_ok=False)
-    jobs = [{"policy": p, "tph": t, "seed": s, "sumo_seed": ss, "horizon": args.horizon, "drain": args.drain,
-             "zones": args.zones, "net": net, "work": str(work), "theta": args.theta, "live_every": args.live_every}
-            for t in args.tph for s in args.seeds for p in args.policies for ss in args.sumo_seeds]
+    masks = {p: (["all"] if p == "ff" else args.live_mask) for p in args.policies}
+    jobs = [{"policy": p if mk == "all" else f"{p}|{mk}", "tph": t, "seed": s, "sumo_seed": ss, "horizon": args.horizon,
+             "drain": args.drain, "zones": args.zones, "net": net, "work": str(work), "theta": args.theta,
+             "live_every": args.live_every, "live_source": args.live_source, "live_mask": mk,
+             "incident_rate": args.incident_rate}
+            for t in args.tph for s in args.seeds for p in args.policies for mk in masks[p] for ss in args.sumo_seeds]
+    names = sorted({j["policy"] for j in jobs})
     print(f"[app] {len(jobs)} runs -> {work} (jobs={args.jobs})", flush=True)
     rows = []
     with ProcessPoolExecutor(args.jobs) as ex:
@@ -126,12 +136,14 @@ def main() -> None:
             print(f"[app] {json.dumps(r)}", flush=True)
     summ = []
     for t in args.tph:
-        for p in args.policies:
+        for p in names:
             v = [r["ttt_h"] for r in rows if r["tph"] == t and r["policy"] == p]
             m = sum(v) / len(v)
             sd = (sum((x - m) ** 2 for x in v) / max(1, len(v) - 1)) ** 0.5
             summ.append({"tph": t, "policy": p, "n": len(v), "ttt_h_mean": round(m, 2), "sd": round(sd, 2),
-                         "worst25_mean": round(tail_mean(v), 2), "max": max(v), "min": min(v)})
+                         "worst25_mean": round(tail_mean(v), 2), "max": max(v), "min": min(v),
+                         "km_mean": round(sum(r["km"] for r in rows if r["tph"] == t and r["policy"] == p) / len(v), 1),
+                         "teleports_mean": round(sum(r["teleports"] for r in rows if r["tph"] == t and r["policy"] == p) / len(v), 1)})
             print(f"[app] summary {json.dumps(summ[-1])}", flush=True)
     (work / "gate_app.json").write_text(json.dumps({"args": {k: str(v) for k, v in vars(args).items()},
                                                     "runs": rows, "summary": summ}, indent=2), encoding="utf-8")
