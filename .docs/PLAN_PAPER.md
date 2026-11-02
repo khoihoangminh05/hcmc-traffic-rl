@@ -45,6 +45,12 @@ Câu hỏi: trên mạng hẻm Q4, định tuyến hợp tác có đáng làm kh
 
 **Cổng A**: khoảng UE–SO ≥ 3% ở ít nhất một mức nhu cầu tắc thực tế. Không đạt → đổi luận điểm sang "phân tích ngoại ứng đi tắt và định giá trong mạng hẻm", MARL thành phụ.
 **Cổng B**: nếu greedy chi phí biên đạt ≥ 90% khoảng đó ở mọi kịch bản, đóng góp MARL phải chuyển sang kịch bản khó (p thấp, thông tin thiếu, có ràng buộc hẻm).
+**Mở rộng cổng A (ghi 2026-11-02, khi quét `gate1` đang chạy, trước khi xem kết quả quét).** Theo luận điểm của người dùng: mục tiêu là tránh ùn tắc diện rộng, không chỉ giảm trung bình. Đạt khi có ít nhất một tiêu chí, ở ít nhất một mức nhu cầu, với chênh lệch nhất quán giữa các seed cầu:
+- A1: trung bình TTT, UE so với nghiệm tốt nhất biết được, chênh ≥ 3% (tiêu chí gốc);
+- A2: đuôi, CVaR 25% xấu nhất của TTT trên các lần chạy lại, nghiệm điều phối (`so_x`) so với UE, chênh ≥ 5%;
+- A3: nghiệm điều phối so với app phản ứng thời gian thực (`routing2/sumo_env.py`, cùng nhu cầu, có thời gian xả), chênh ≥ 5% ở trung bình hoặc đuôi. Baseline thực tế là app, không phải UE.
+Minh bạch: A2 và A3 được thêm **sau** khi đã thấy thử nghiệm local 1 kịch bản (đuôi của đường ngắn nhất lớn, khoảng UE–SO nhỏ), nên có nguy cơ dời cột gôn; phải nói rõ trong bài nếu kết luận dựa vào chúng. `so_x` có thông tin hoàn hảo về nhu cầu, nên chỉ là cận cho thấy có đất, không phải kết quả của MARL.
+
 Đầu ra: `results_gate/` + một trang tóm tắt quyết định; hình đường cong TTT theo nhu cầu (UE, SO, app) làm Fig. 1.
 
 ## Phần 2. Tổng quan có hệ thống (song song với Phần 1)
