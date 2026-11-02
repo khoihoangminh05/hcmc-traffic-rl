@@ -4,7 +4,7 @@ Mục tiêu: một bài **Q1 rank cao** (đích chính Transportation Research P
 
 File này là **kế hoạch chính**. `PLAN_V4.md` thành nhật ký kỹ thuật (số liệu, lỗi, quyết định). `RESEARCH_V4.md` là nền khảo sát và hướng chốt.
 
-Luận điểm làm việc (sẽ được kiểm chứng ở Phần 1): *định tuyến tối ưu hệ thống có ràng buộc sức chịu của hẻm, bằng MARL phi tập trung với chia công chi phí biên theo hàng đợi, trên twin hẻm Q4 trong SUMO.*
+Luận điểm làm việc (sẽ được kiểm chứng ở Phần 1): *một nhà cung cấp dẫn đường (vai trò như Google Maps) điều phối người dùng của mình để giảm tổng thời gian đi của toàn hệ thống trong mạng hẻm xe máy, bằng MARL phi tập trung với chia công chi phí biên theo hàng đợi, trên twin hẻm Q4 trong SUMO.* Hẻm là tài nguyên để phân luồng; ràng buộc sức chịu của hẻm chỉ là núm chính sách tùy chọn (mặc định tắt).
 
 ## Nguyên tắc
 - Mỗi phần có **đầu ra** và **cổng đạt / không đạt**. Không sang phần phụ thuộc khi cổng chưa qua.
@@ -53,7 +53,7 @@ Câu hỏi: trên mạng hẻm Q4, định tuyến hợp tác có đáng làm kh
 2.3 **Đọc toàn văn 30–40 bài**, bảng trích xuất: bài toán, mạng, simulator, quan sát, reward, tỉ lệ tham gia, baseline, chỉ số, kết quả, giới hạn.
 2.4 **Kiểm khoảng trống**: mỗi câu "chưa có ai" phải qua một lượt tìm phản bác có ghi lại truy vấn.
 Đầu ra: `.docs/lit/` (giao thức, bảng trích xuất, sơ đồ sàng lọc), bản nháp Related Work + bảng định vị.
-Người dùng: quyền truy cập thư viện trường (Elsevier / IEEE) để lấy toàn văn bài trả phí.
+Người dùng có tài khoản trường (Elsevier / IEEE) để lấy toàn văn bài trả phí.
 
 ## Phần 3. Dữ liệu và twin (sau 07/11)
 3.1 Đóng băng bộ dữ liệu Mapbox (hash, thống kê độ phủ, lỗ hổng 31/10).

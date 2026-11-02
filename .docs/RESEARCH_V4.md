@@ -8,9 +8,9 @@ Chú thích độ tin cậy: [đọc] = đã xem tóm tắt hoặc nội dung ch
 
 ## 1. Câu hỏi nghiên cứu
 
-> Trong một mạng đô thị mà phần lớn đường là hẻm hẹp (xe máy, không làn, không đèn, nhập ra đường lớn bằng chen khe), một hệ thống chỉ biết những gì đo được nên điều phối một phần đội xe như thế nào để giảm tổng thời gian đi của **toàn hệ thống**, mà **không đẩy xe đi tắt vào hẻm quá sức chịu đựng của dân hẻm**?
+> Trong một mạng đô thị mà phần lớn đường là hẻm hẹp (xe máy, không làn, không đèn, nhập ra đường lớn bằng chen khe), **một nhà cung cấp dẫn đường (vai trò như Google Maps)**, chỉ biết những gì đo được, nên chỉ đường cho một phần người lái như thế nào để giảm tổng thời gian đi của **toàn hệ thống**?
 
-Ba chữ in đậm là chỗ bài báo khác các công trình định tuyến hiện có: mục tiêu là tổng hệ thống (không phải từng xe), có ràng buộc ngoại ứng lên hẻm, và chỉ dùng thông tin đo được.
+(Cập nhật 2026-11-02, theo người dùng: hẻm là **tài nguyên để phân luồng**, không phải thứ cần né. Ràng buộc sức chịu của hẻm chỉ là **núm chính sách tùy chọn**, mặc định tắt, dùng để vẽ đường cong đánh đổi trong phần thảo luận. Chỗ khác biệt của bài: mạng hẻm xe máy, mục tiêu toàn hệ thống với tỉ lệ người dùng p < 1, và chỉ dùng thông tin đo được.)
 
 ## 2. Khảo sát theo từng mạch
 
@@ -39,7 +39,7 @@ Ba chữ in đậm là chỗ bài báo khác các công trình định tuyến h
 
 ### 2.5 Hẻm và giao thông xe máy ở TP.HCM
 - Hẻm chứa khoảng **85% dân số** và khoảng **85% mạng đường** của TP.HCM; là không gian công cộng lớn nhất (buôn bán, sinh hoạt). Hẻm không có điều khiển giao thông, tắc giờ cao điểm, chèn không gian người đi bộ. ([Gibert-Flutre](https://www.researchgate.net/publication/322818097_Rethinking_metropolitan_production_from_its_underside_A_view_from_the_alleyways_of_Ho_Chi_Minh_City), [Wikipedia: Hẻm](https://en.wikipedia.org/wiki/H%E1%BA%BBm)) [snippet; số 85% cần nguồn gốc]
-- Mô phỏng xe máy: VISSIM dùng được nếu có bộ tham số riêng cho xe máy (HCMC, Hà Nội); có mô hình agent cho làn hỗn loạn và đi theo bầy. **Không có công trình nào mô hình mạng hẻm.** ([VISSIM HCMC](https://www.researchgate.net/publication/353345030_Application_of_VISSIM_microsimulation_model_for_the_motorcycle_traffic_in_Ho_Chi_Minh_City), [Hanoi corridor](https://www.researchgate.net/publication/373409699_Microscopic_Simulation_Model_for_Motorcycle_Dominated_Networks_A_Case_Study_of_a_VISSIM_Simulation_Model_for_a_Mixed_Traffic_Corridor))
+- Mô phỏng xe máy: VISSIM dùng được nếu có bộ tham số riêng cho xe máy (HCMC, Hà Nội); có mô hình agent cho làn hỗn loạn và đi theo bầy. Chưa thấy công trình nào mô hình tường minh mạng hẻm cho định tuyến tối ưu (xem G1 ở mục 3). ([VISSIM HCMC](https://www.researchgate.net/publication/353345030_Application_of_VISSIM_microsimulation_model_for_the_motorcycle_traffic_in_Ho_Chi_Minh_City), [Hanoi corridor](https://www.researchgate.net/publication/373409699_Microscopic_Simulation_Model_for_Motorcycle_Dominated_Networks_A_Case_Study_of_a_VISSIM_Simulation_Model_for_a_Mixed_Traffic_Corridor))
 - Vật lý dòng xe không làn: **porous flow** (Nair, Mahmassani; TR-B 2011): xe đi qua "lỗ rỗng" giữa các xe khác, có giản đồ cơ bản theo lớp xe. Giản đồ cơ bản 2D thực nghiệm cho dòng hỗn loạn **vẫn chưa được khám phá nhiều** (2026). ([TRID 1130198](https://trid.trb.org/View/1130198), [arXiv 2608.00602](https://arxiv.org/pdf/2608.00602))
 - Chen khe ở giao không đèn: xe máy chấp nhận khe nhỏ hơn ô tô (khoảng 2.46 s so với 3.21 s ở vòng xuyến); ở nước đang phát triển, quyền ưu tiên ít được tôn trọng. ([CEE 2026](https://reference-global.com/2/v2/download/article/10.2478/cee-2026-0002.pdf), [Sri Lanka](https://jsalt.sljol.info/articles/85)) [snippet]
 
@@ -47,22 +47,28 @@ Ba chữ in đậm là chỗ bài báo khác các công trình định tuyến h
 - **GAT-MF** (KDD 2023): đổi tương tác từng cặp thành tương tác với một mean-field có trọng số attention, cho hệ rất nhiều agent. ([Tsinghua PDF](https://fi.ee.tsinghua.edu.cn/public/publications/e589ec80-643d-11ee-84fe-0242ac120002.pdf))
 - **GAMFQ**: attention chọn hàng xóm có ảnh hưởng, rồi mean-field trên tập đó. ([arXiv 2304.12653](https://arxiv.org/abs/2304.12653v3))
 - **Đồ thị truyền tin thưa thích nghi**: mỗi agent chỉ chú ý tới vài agent quan trọng nhất, gần như không mất tối ưu. ([arXiv 2003.01040](https://arxiv.org/abs/2003.01040v1))
-- Chuyển giao zero-shot sang mạng mới (điều khiển đèn): IG-RL (GCN, Manhattan 3971 đèn), TransferLight, X-Light (transformer). **Chưa có bản tương ứng cho định tuyến.** ([IG-RL](https://arxiv.org/pdf/2003.05738v5), [TransferLight](https://arxiv.org/html/2412.09719v2), [X-Light](https://ijcai.org/proceedings/2024/0011.pdf))
+- Chuyển giao zero-shot sang mạng mới (điều khiển đèn): IG-RL (GCN, Manhattan 3971 đèn), TransferLight, X-Light (transformer). Với định tuyến: xem MA-GRL ở mục 3. ([IG-RL](https://arxiv.org/pdf/2003.05738v5), [TransferLight](https://arxiv.org/html/2412.09719v2), [X-Light](https://ijcai.org/proceedings/2024/0011.pdf))
 
 ### 2.7 Ước lượng trạng thái với dữ liệu thưa
-- Kriging bằng GNN và graph transformer cho cạnh không có cảm biến (RADGCN 2026, Kriformer, DGAE). Bất định thì có TA-ANP (neural process + MC dropout). **Chưa thấy công trình nào kết hợp kriging GNN với bất định đã hiệu chỉnh trên dữ liệu probe thưa.** ([Kriformer](https://www.arxiv.org/pdf/2409.14906), [tensor kriging](https://arxiv.org/pdf/2210.11780v1)) [snippet]
+- Kriging bằng GNN và graph transformer cho cạnh không có cảm biến (RADGCN 2026, Kriformer, DGAE). Bất định thì có TA-ANP (neural process + MC dropout). (Câu "chưa ai kết hợp" trước đây bị AGNP và 2309.06800 làm yếu, cần đọc toàn văn.) ([Kriformer](https://www.arxiv.org/pdf/2409.14906), [tensor kriging](https://arxiv.org/pdf/2210.11780v1)) [snippet]
 - Dữ liệu của ta (đo 2026-11-01): live của Mapbox ở Q4 **trùng hồ sơ lịch sử** (live/typical p10–p90 = 1.00). Có số đo trên 1098/1828 cạnh (hẻm 880/1460).
 
 ## 3. Khoảng trống nghiên cứu (có dẫn chứng)
 
-| # | Khoảng trống | Dẫn chứng | Ta có lợi thế gì |
+> **Bản sửa 2026-11-02 sau kiểm phản bác** (`lit/gap_checks.md`; chưa đọc toàn văn, chưa chạy Scopus / WoS). Bảng này thay cho bản đầu, vốn nói quá ở G1, G3, G4, G6.
+
+| # | Khoảng trống còn lại (phát biểu hẹp) | Cái đã có, làm yếu bản cũ | Độ chắc |
 |---|---|---|---|
-| G1 | **Chưa ai tối ưu định tuyến trên mạng hẻm xe máy.** Mô phỏng xe máy ở VN dừng ở hành lang và nút giao; MARL routing chạy trên mạng ô tô có làn | 2.5, 2.1 | Twin hẻm Q4 (1828 cạnh), SUMO xe máy sublane, dữ liệu probe |
-| G2 | **Ngoại ứng đi tắt chỉ được đo và chống lại sau khi xảy ra, chưa được đưa thành ràng buộc trong chính bộ định tuyến.** Ở HCMC hẻm là 85% mạng đường và là không gian sống, nên vấn đề nặng hơn nhiều so với Los Angeles | 2.4, 2.5 | Bài toán có ràng buộc tự nhiên: sức chịu môi trường của từng hẻm |
-| G3 | **MARL routing chưa thắng được người, và chia công bằng chi phí biên đang tính bằng chạy lại mô phỏng** (không mở rộng tới hàng nghìn xe) | 2.1 URB, 2.2 Psarou | Quy trễ theo hàng đợi (Kaddoura) tính được O(N) trong SUMO, không cần chạy lại |
-| G4 | **Tỉ lệ tham gia và tuân thủ một phần**: lý thuyết Stackelberg và persuasion phần lớn tĩnh hoặc mạng nhỏ; thực nghiệm động trên mạng thật hiếm | 2.3 | Môi trường SUMO động, có xe nền |
-| G5 | **Ra quyết định khi trạng thái hẻm phần lớn không quan sát được**, cần bất định đã hiệu chỉnh | 2.7 + số đo của ta | Probe thật: 40% cạnh hẻm không có số đo |
-| G6 | **Chính sách định tuyến chuyển giao được sang quận khác** (đã có cho đèn, chưa có cho định tuyến) | 2.6 | Policy kiểu pointer, không dùng id nút |
+| G1 | Chưa thấy định tuyến SO hoặc RL trên mạng **hẻm được mô hình tường minh** | AIMSUN mạng lớn cho xe máy ở Ninh Kiều (có chọn tuyến, tuân thủ); dẫn đường xe máy ở Jakarta dùng hẻm nhỏ nhưng không học, không mục tiêu hệ thống | Vừa; chưa tìm nguồn tiếng Việt |
+| G2 (phụ) | SO có thể đẩy thêm tải vào đường dân cư; cần **đo**, kể cả khi ràng buộc tắt | Kuncheria 2023: SO làm xấu tải đường dân cư ở Bay Area. Graf & Harks 2024: khung side-constraint tổng quát, nên không nói "đầu tiên" | Vừa, bằng chứng mỏng |
+| G3 | Chia công **đo được theo từng xe trong SUMO** (quy theo hàng đợi) cho MARL next-hop phi tập trung, **kiểm chứng với chi phí biên phản thực** | Xấp xỉ path marginal cost không chạy lại đã có lâu trong DTA (Qian 2012, TR-C 2018, TR-B 2020); Wang 2505.20889 reward giải tích (một agent trung tâm, tĩnh, 13 nút); Kaddoura quy trễ theo agent (dùng làm phí, không phải MARL); Psarou 2610.13439 là đối thủ đang chạy | Vừa, phải theo dõi đối thủ |
+| G4 | Đường cong lợi ích theo p cho policy next-hop trên **mạng dày hẻm với nền xe máy** | Google thử thật ở 10 thành phố Mỹ (Nature Cities 2026, dưới 2% chuyến); Yun 2024; Psarou 2026; SO-DTA partial control | Vừa |
+| G5 | Ra quyết định khi phần lớn trạng thái hẻm không quan sát được | AGNP và 2309.06800 đã kết hợp kriging với bất định, nên "chưa ai" ở §2.7 phải kiểm lại; RA-RouteNet mới thấy tiêu đề | Vừa |
+| ~~G6~~ | **Không còn là khoảng trống như đã viết.** MA-GRL (Sci. Rep. 2026): MAPPO + GAT theo từng xe, 100 xe, báo cáo 87% giữ hiệu quả zero-shot giữa ba thành phố. Bài A\* phải có góc khác: mạng khác hẳn cấu trúc, đội xe lớn hơn nhiều, p < 1 | MA-GRL mới đọc tóm tắt, chưa đánh giá chất lượng | — |
+
+Hệ quả: đóng góp không nên dựa vào câu "chưa ai dùng chi phí biên trong MARL". Điểm mới là **tổ hợp**: mạng hẻm xe máy + nhà cung cấp dẫn đường p < 1 + chia công đo được theo từng xe, kiểm chứng phản thực, ở quy mô hàng nghìn xe.
+
+Google (Arora và cộng sự, Nature Cities 2026) cho thấy vai trò "nhà cung cấp dẫn đường điều phối" là thực tế, và đồng thời đặt mức so sánh: khoảng 2% tốc độ với dưới 2% chuyến bị đổi tuyến. Công cụ cho Phần 1: SB-DSO cho SUMO (Mehrabani và cộng sự 2022, 10.52825/scp.v3i.119). Larsson & Patriksson 1999 đã xác nhận là nguồn cho mục 6.
 
 ## 4. Hiểu bài toán: ràng buộc vật lý, cái biết và chưa biết
 
@@ -91,8 +97,8 @@ Hệ quả: mọi kết luận phải đúng **trên một dải kịch bản** 
 
 ## 5. Hướng giải quyết đề xuất (giả thuyết, chờ duyệt)
 
-### H1. Bài toán: SO có ràng buộc ngoại ứng hẻm
-Cực tiểu tổng thời gian đi của **mọi** xe (đội xe + nền), với điều kiện lưu lượng đi tắt trên mỗi cạnh hẻm không vượt ngưỡng c_e (theo giờ). Đây là gán luồng có ràng buộc phụ trên cạnh (side constraints).
+### H1. Bài toán: nhà cung cấp dẫn đường tối ưu toàn hệ thống
+Cực tiểu tổng thời gian đi của **mọi** xe (người dùng app + nền). Hẻm được dùng tự do. Tùy chọn: thêm ràng buộc lưu lượng trên hẻm c_e (side constraint) như một núm chính sách.
 
 ### H2. Chia công không cần chạy lại: reward = thời gian của mình + trễ mình gây ra + giá hẻm
 - Trễ mình gây ra được quy theo hàng đợi trong SUMO (kiểu Kaddoura): một xe đứng trước trong hàng đợi chịu trách nhiệm cho phần trễ của các xe sau nó. Chi phí O(N), không phải O(N × số lần chạy lại) như Psarou. Đóng góp: phương pháp chia công kiểu này trong MARL quy mô lớn.
@@ -136,10 +142,10 @@ URB (2505.17734); Psarou (2510.11410) và bản tiếp theo; Kaddoura & Kickhöf
 
 ## 10. Hướng chốt
 
-**Tên làm việc**: định tuyến tối ưu hệ thống có ràng buộc sức chịu của hẻm, bằng MARL phi tập trung với chia công chi phí biên tính theo hàng đợi.
+**Tên làm việc** (cập nhật 2026-11-02): dẫn đường tối ưu toàn hệ thống trong mạng hẻm xe máy, bằng MARL phi tập trung với chia công chi phí biên tính theo hàng đợi. Ràng buộc hẻm là núm chính sách tùy chọn. (Các dòng về "giá hẻm" dưới đây áp dụng khi bật núm này.)
 
 **Đóng góp chính (bài TR-C), theo thứ tự ưu tiên**
-1. *Bài toán*: SO có ràng buộc lưu lượng đi tắt trên hẻm. Lần đầu đặt ngoại ứng lên dân hẻm vào chính bộ định tuyến, thay vì đo và chặn sau.
+1. *Bài toán*: nhà cung cấp dẫn đường với mục tiêu toàn hệ thống trên mạng hẻm xe máy (trễ dồn ở ngã nhập, không làn, tỉ lệ người dùng p < 1). Tùy chọn ràng buộc hẻm để thành phố đánh đổi.
 2. *Phương pháp*: reward = thời gian của mình + trễ gây ra (quy theo hàng đợi, O(N), không chạy lại mô phỏng) + giá hẻm (nhân tử Lagrange, cập nhật theo vi phạm đo được). Kiểm chứng độ khớp với chi phí biên tính bằng chạy lại, trên mẫu nhỏ.
 3. *Thực nghiệm*: twin hẻm Q4 trong SUMO, trên dải kịch bản (nhu cầu, tỉ lệ tham gia p, tuân thủ, ngưỡng hẻm), so với UE (duaIterate), SO xấp xỉ, app, greedy chi phí biên, MAPPO ích kỷ. Kết quả chính: đường cong đánh đổi giữa tổng thời gian đi và lưu lượng đi tắt.
 
