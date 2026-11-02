@@ -78,6 +78,10 @@ class SumoEnvConfig:
     teleport_s: float = 180.0
     sumo_seed: int = 1
     work_dir: Path = Path("artifacts/out/quan4/routing2/sumo_env_work")
+    # > 0: every this many seconds read all link times (EMA) and recompute time-to-zone, as a
+    # navigation app does from probe speeds. Fills Request.live_cost. 0 = off.
+    live_every_s: float = 0.0
+    live_alpha: float = 0.5
 
 
 @dataclass
@@ -90,6 +94,7 @@ class Request:
     cand: torch.Tensor  # [M, D] candidate exit links, -1 padded
     feat: torch.Tensor  # [M, D, N_FEAT]
     dest_zone: torch.Tensor  # [M]
+    live_cost: torch.Tensor | None = None  # [M, D] live link time + live time to the zone (inf = padding)
 
 
 class SumoPolicy(Protocol):
@@ -131,20 +136,56 @@ class SumoRoutingEnv:
         # Dz[z, e]: free-flow time from the end of link e to zone z over connected links
         Z = len(self.zones)
         E = g.n_edges
+        self.frm, self.to = frm, to
+        self._at = self.dst.unsqueeze(0) == self.zones.unsqueeze(1)
+        self.Dz = self._time_to_zones(self.ff_edge)
+        self.live_tt = self.ff_edge.clone()
+        self.live_D = self.Dz.clone()
+        self.Dmax = max(max((len(x) for x in self.succ), default=1), self.out_edges.shape[1])
+        self._path_cache: dict[tuple[int, int], list[int]] = {}
+
+    def _time_to_zones(self, cost: torch.Tensor) -> torch.Tensor:
+        """[Z, E] time from the end of each link to each zone over connected links."""
+        Z, E = len(self.zones), self.g.n_edges
         D = torch.full((Z, E), math.inf, dtype=torch.float64)
-        at = self.dst.unsqueeze(0) == self.zones.unsqueeze(1)
-        D[at] = 0.0
-        ff = self.ff_edge.double()
+        D[self._at] = 0.0
+        c = cost.double()
+        idx = self.frm.unsqueeze(0).expand(Z, -1)
         for _ in range(E):
-            via = ff[to].unsqueeze(0) + D[:, to]
-            nd = D.scatter_reduce(1, frm.unsqueeze(0).expand(Z, -1), via, reduce="amin", include_self=True)
-            nd[at] = 0.0
+            nd = D.scatter_reduce(1, idx, c[self.to].unsqueeze(0) + D[:, self.to], reduce="amin", include_self=True)
+            nd[self._at] = 0.0
             if torch.equal(nd, D):
                 break
             D = nd
-        self.Dz = D.float()
-        self.Dmax = max(max((len(x) for x in self.succ), default=1), self.out_edges.shape[1])
-        self._path_cache: dict[tuple[int, int], list[int]] = {}
+        return D.float()
+
+    def _refresh_live(self) -> None:
+        ed = self.sumo.edge
+        now = self.live_tt.clone()
+        for i, eid in enumerate(self.eid):
+            tt = ed.getTraveltime(eid)
+            ff = float(self.ff_edge[i])
+            now[i] = ff if not math.isfinite(tt) or tt <= 0 or tt > 1e5 else max(tt, 0.5 * ff)
+        a = self.cfg.live_alpha
+        self.live_tt = (1 - a) * self.live_tt + a * now
+        self.live_D = self._time_to_zones(self.live_tt)
+
+    def live_path(self, z: int, e: int) -> list[int]:
+        """Connected links after e towards zone z on the current live times."""
+        target = int(self.zones[z])
+        path, cur = [], e
+        for _ in range(self.g.n_edges):
+            if int(self.dst[cur]) == target:
+                break
+            cs = self.succ[cur]
+            if not cs:
+                break
+            nx = min(cs, key=lambda f: float(self.live_tt[f]) + float(self.live_D[z, f]))
+            if not math.isfinite(float(self.live_D[z, nx])):
+                break
+            path.append(nx)
+            cur = nx
+        return path
 
     # ----------------------------------------------------------- routes
 
@@ -247,9 +288,15 @@ class SumoRoutingEnv:
         last_dec: dict[str, int] = {}  # vid -> index of its last decision in ep.decisions
         arrive: dict[str, float] = {}
         pi = 0
+        self.live_tt = self.ff_edge.clone()
+        self.live_D = self.Dz.clone()
+        next_live = 0.0
         try:
             while ss.getTime() < cfg.horizon_s - 1e-9:
                 t = ss.getTime()
+                if cfg.live_every_s > 0 and t >= next_live:
+                    self._refresh_live()
+                    next_live = t + cfg.live_every_s
                 # departures of controlled trips due by the end of this step: decide at the origin
                 reqs: list[tuple[str, int, int, int]] = []  # vid, node, cur, zone
                 while pi < len(pending) and float(dep[pending[pi]]) < t + cfg.step_s:
@@ -322,8 +369,14 @@ class SumoRoutingEnv:
             c = cands[j]
             cand[j, : len(c)] = torch.tensor(c)
             feat[j, : len(c)] = torch.tensor(self._features(n, c, z))
+        live = None
+        if self.cfg.live_every_s > 0:
+            zs = torch.tensor([r[3] for r in reqs])
+            c0 = cand.clamp(min=0)
+            live = self.live_tt[c0] + self.live_D[zs.unsqueeze(1), c0]
+            live = torch.where(cand >= 0, live, torch.full_like(live, math.inf))
         req = Request([r[0] for r in reqs], t, torch.tensor([r[1] for r in reqs]), cand, feat,
-                      torch.tensor([r[3] for r in reqs]))
+                      torch.tensor([r[3] for r in reqs]), live)
         a = policy.act(req) if policy is not None else torch.zeros(M, dtype=torch.long)
         sv = self.sumo.vehicle
         for j, (vid, n, cur, z) in enumerate(reqs):

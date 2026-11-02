@@ -156,3 +156,19 @@ URB (2505.17734); Psarou (2510.11410) và bản tiếp theo; Kaddoura & Kickhöf
 **Cổng quyết định**
 - G-A (thí nghiệm 1, mục 7): khoảng UE–SO trên Q4 ở nhu cầu tắc. Nếu < 3% ở mọi mức, đổi luận điểm sang "phân tích ngoại ứng đi tắt và định giá trong mạng hẻm" (vẫn TR-C), MARL thành phụ.
 - G-B: greedy chi phí biên (không học) đã đạt bao nhiêu phần của khoảng đó. Nếu đạt gần hết, đóng góp của MARL phải nằm ở tỉ lệ tham gia thấp, thông tin không đầy đủ và ràng buộc hẻm, chứ không phải ở con số trung bình.
+
+## 11. Đánh giá lại luận điểm và ứng viên khoảng trống (2026-11-02, chưa chốt)
+
+Luận điểm người dùng đã đồng ý: app đã đưa xe máy vào hẻm nhưng mỗi xe tự chọn; điều phối phi tập trung có giảm các tình huống xấu nhất so với app không, và phụ thuộc tỉ lệ người dùng thế nào. Chưa có số liệu quét để kết luận.
+
+| Ứng viên | Bằng chứng hiện có | Đối thủ | Rủi ro |
+|---|---|---|---|
+| A. Điều phối để giảm đuôi / ùn tắc diện rộng (luận điểm hiện tại) | 1 kịch bản local | Google 2026, Psarou, MA-GRL | Khoảng UE–SO có thể nhỏ |
+| B. **Dẫn đường khi mù thông tin trong hẻm**: app không thấy kẹt hẻm theo thời gian thực; đội xe của chính app vừa đi vừa là cảm biến; giá trị thông tin theo tỉ lệ p | Dữ liệu của ta: Mapbox `congestion` 0% trên hẻm, live ≈ typical, 40% cạnh hẻm không có số đo. Chưa biết Google có giống vậy không | Mảng active sensing (D2FAS) và bandit đường đi, chưa thấy áp dụng cho hẻm hay tắc nghẽn hỗn hợp; mới tìm sơ bộ | Google có thể thấy đủ; chỉ khi đó mới mất điểm tựa |
+| C. Chi phí định tuyến có tính ngã nhập, không cần học | Thí nghiệm `so_x`, `theory_merge.md` | Lý thuyết có từ 1980s | Đóng góp mô tả, khó thành bài riêng |
+| D. Kết hợp điều khiển vùng (MFD) với dẫn đường | Có sẵn: Transp. Sci. 2023 và các bài trước | Mảng đông người | Lệch khỏi lợi thế của ta |
+
+Đề xuất: giữ A làm câu hỏi chính nhưng thử B bằng hai phép đo rẻ trước khi chốt:
+1. `data_fusion.google_route_probe`: Google có báo kẹt trong hẻm không.
+2. Trong SUMO: app đủ thông tin so với app mù hẻm (giờ hẻm giữ theo hồ sơ lịch sử). Nếu chênh lớn, thông tin là đòn bẩy lớn hơn điều phối, và A + B thành một luận điểm: đội xe vừa dẫn đường vừa lấp chỗ mù.
+
