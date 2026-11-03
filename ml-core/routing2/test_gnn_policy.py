@@ -15,7 +15,7 @@ from .gnn_policy import N_DYN_ACTOR, N_GLOBAL, N_LOCAL, RoutingNet, prep_local
 from .graph import DEFAULT_GRAPH, load_graph
 from .params import SimConfig
 from .sumo_env import N_FEAT, SumoEnvConfig, SumoRoutingEnv
-from .sumo_marl import _RLActor, _tick_groups, fleet_weights, gae, team_reward
+from .sumo_marl import _RLActor, _tick_groups, fleet_weights, gae, numpy_state, team_reward
 from .sumo_net import build_net
 
 H = 180.0
@@ -197,6 +197,15 @@ def test_team_reward_limits():
     assert math.isclose(float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 0.0)[0]), -10.0 / 60.0)  # rho 0 = selfish
     full = float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 1.0)[0])
     assert math.isclose(full, -(0.5 * 4 + 0.5 * 2) / 0.3 / 60.0)
+
+
+def test_weights_reach_workers_without_tensors():
+    a, b = _tiny(), _tiny()
+    st = numpy_state(a)
+    assert st and all(isinstance(v, np.ndarray) for v in st.values())
+    b.load_state_dict({k: torch.from_numpy(v) for k, v in st.items()})
+    x = torch.rand(1, 5, N_DYN_ACTOR)
+    assert torch.equal(a.encode_actor(x)[1], b.encode_actor(x)[1])
 
 
 def main() -> None:

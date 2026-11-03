@@ -122,7 +122,7 @@ def _worker_run(task: dict) -> dict:
     kind = task["policy"]
     actor = None
     if kind == "rl":
-        _W["net"].load_state_dict(task["state"])
+        _W["net"].load_state_dict({k: torch.from_numpy(v) for k, v in task["state"].items()})
         actor = _RLActor(_W["net"], H, task["pen"], torch.Generator().manual_seed(task["seed"]))
         pol = actor
     else:
@@ -211,6 +211,12 @@ def gae(r: np.ndarray, v: np.ndarray, veh: np.ndarray, t: np.ndarray, done: np.n
             last = r[i] + g[i] * boot - v[i]
         adv[i] = last
     return adv, adv + v
+
+
+def numpy_state(net: nn.Module) -> dict[str, np.ndarray]:
+    """Weights for the workers. Tensors would cross the pool as one open file each, per task, which
+    runs out of file descriptors at 24 workers."""
+    return {k: v.detach().cpu().numpy() for k, v in net.state_dict().items()}
 
 
 def _tick_groups(tick: np.ndarray) -> dict[int, np.ndarray]:
@@ -309,17 +315,15 @@ def main() -> None:
     pool = ctx.Pool(args.workers, initializer=_worker_init, initargs=(conf,))
     metrics = (run / "metrics.jsonl").open("a", encoding="utf-8")
 
-    def cpu_state():
-        return {k: v.detach().cpu() for k, v in net.state_dict().items()}
-
     def evaluate(u: int) -> dict:
         tasks = []
+        st = numpy_state(net)
         for tph in args.eval_tph:
             for s in range(args.eval_seeds):
                 for pen in args.eval_pen:
                     for pol in POLICIES:
                         tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol,
-                                      "record": False, "state": cpu_state(), "drain": args.eval_drain})
+                                      "record": False, "state": st, "drain": args.eval_drain})
         res = pool.map(_worker_run, tasks)
         out = {"update": u, "eval": {}}
         for pol in POLICIES:
@@ -342,7 +346,7 @@ def main() -> None:
     t_start = time.perf_counter()
     for u in range(1, args.updates + 1):
         t0 = time.perf_counter()
-        st = cpu_state()
+        st = numpy_state(net)
         tasks = []
         for _ in range(E):
             ep_seed += 1
