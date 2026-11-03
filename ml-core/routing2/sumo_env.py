@@ -121,6 +121,11 @@ class SumoEnvConfig:
     # one + detour_abs_s. Stops untrained policies from wandering; the shortest exit stays. None = off.
     max_detour: float | None = None
     detour_abs_s: float = 60.0
+    # > 0: every this many seconds, while recording, charge each slowed vehicle's delay to the
+    # vehicles that hold it up (see _attribute). Training only; uses the true state of all vehicles.
+    attribute_every_s: float = 0.0
+    attribute_ahead_m: float = 50.0
+    attribute_merge_m: float = 30.0
 
 
 @dataclass
@@ -159,6 +164,14 @@ class Episode:
     incidents: int = 0
     n_decisions: int = 0
     missed_decisions: int = 0  # micro: entered the next link before its decision came due
+    # Integrals over the episode of (trips in the system / trips) and the same for customers. With
+    # every trip finished they equal T_all and T_cust, so these are J written as a rate over time.
+    system_all_s: float = 0.0
+    system_cust_s: float = 0.0
+    delay_attributed_s: float = 0.0
+    delay_seen_s: float = 0.0
+    trip_tt: dict = field(default_factory=dict)  # trip index -> travel time, unfinished ones included
+    caused_s: dict = field(default_factory=dict)  # fleet vid -> delay charged to it, all vehicles
     metrics: dict = field(default_factory=dict)  # routing2.objectives.trip_metrics
 
 
@@ -188,6 +201,7 @@ class SumoRoutingEnv:
         self.live_D = self.Dz.clone()
         self.Dmax = max(max((len(x) for x in self.succ), default=1), self.out_edges.shape[1])
         self._path_cache: dict[tuple[int, int], list[int]] = {}
+        self._lane_len: dict[int, float] = {}
 
     def _time_to_zones(self, cost: torch.Tensor) -> torch.Tensor:
         """[Z, E] time from the end of each link to each zone over connected links."""
@@ -362,6 +376,48 @@ class SumoRoutingEnv:
                          float(self._intent_n[e]), float(self.live_D[z, e])])
         return rows
 
+    def _attribute(self, dt: float, ep: Episode) -> None:
+        """Split each slowed vehicle's delay of the last dt seconds among the vehicles holding it up.
+
+        Holding it up means ahead of it on its link within attribute_ahead_m, or, when it is near the
+        end of the link, near the end of another link into the same junction. Shares add up to the
+        delay, so nothing is counted twice. A delay with nobody to blame (a red light on an empty
+        road) goes uncharged. Only fleet vehicles keep their charge. c* ids are the fleet.
+        """
+        cfg, sv = self.cfg, self.sumo.vehicle
+        on: dict[int, list[tuple[float, str, float]]] = {}
+        for vid in sv.getIDList():
+            e = self.e_of.get(sv.getRoadID(vid))
+            if e is not None:
+                on.setdefault(e, []).append((sv.getLanePosition(vid), vid, sv.getSpeed(vid)))
+        lane_len = self._lane_len
+        near_node: dict[int, list[tuple[int, str]]] = {}
+        for e, rows in on.items():
+            if e not in lane_len:
+                lane_len[e] = self.sumo.lane.getLength(f"{self.eid[e]}_0")
+            rows.sort(reverse=True)  # front of the link first
+            for pos, vid, _ in rows:
+                if lane_len[e] - pos <= cfg.attribute_merge_m:
+                    near_node.setdefault(int(self.dst[e]), []).append((e, vid))
+        for e, rows in on.items():
+            vf = float(self.length[e]) / float(self.ff_edge[e])
+            node = int(self.dst[e])
+            for k, (pos, vid, v) in enumerate(rows):
+                if v >= 0.9 * vf:  # drivers run a little under the limit: not a delay
+                    continue
+                d = dt * (1.0 - v / vf)
+                ep.delay_seen_s += d
+                causes = [x[1] for x in rows[:k] if x[0] - pos <= cfg.attribute_ahead_m]
+                if lane_len[e] - pos <= cfg.attribute_merge_m:
+                    causes += [u for f, u in near_node.get(node, []) if f != e]
+                if not causes:
+                    continue
+                ep.delay_attributed_s += d
+                book = self._caused_cust if vid[0] == "c" else self._caused_other
+                for u in causes:
+                    if u[0] == "c":
+                        book[u] = book.get(u, 0.0) + d / len(causes)
+
     def _edge_state(self, truth: bool) -> dict[str, torch.Tensor]:
         """actor: [E, 2] congestion from reports, fleet load. true (training only): [E, 2] all
         vehicles per 10 m, speed / free-flow speed."""
@@ -453,6 +509,15 @@ class SumoRoutingEnv:
         self._fleet_n = [0] * self.g.n_edges
         order_gen = torch.Generator().manual_seed(cfg.sumo_seed)
         self._tick = -1
+        self._sys = (0.0, 0.0)
+        self._caused_cust: dict[str, float] = {}
+        self._caused_other: dict[str, float] = {}
+        next_attr = cfg.attribute_every_s
+        kept = [i for i in order if rt[i]]
+        n_kept, n_cust = max(1, len(kept)), max(1, ep.n_ctrl)
+        dep_idx, in_all, in_cust = 0, 0, 0
+        sys_all, sys_cust = 0.0, 0.0
+        at_end: dict[str, tuple[float, float]] = {}  # vid -> integrals when it arrived
         self._ff_orig: dict[str, float] = {}
         self._ff_done: dict[str, float] = {}
         try:
@@ -527,8 +592,27 @@ class SumoRoutingEnv:
                     self._decide(reqs, t, policy, ep, on_edge, last_dec, record)
                 self.sumo.simulationStep()
                 tn = ss.getTime()
+                # each trip counts from its planned departure, part of a step included
+                sys_all += in_all * cfg.step_s / n_kept
+                sys_cust += in_cust * cfg.step_s / n_cust
+                while dep_idx < len(kept) and float(dep[kept[dep_idx]]) < tn:
+                    i = kept[dep_idx]
+                    part = tn - float(dep[i])
+                    is_cust = bool(ctrl[i])
+                    sys_all += part / n_kept
+                    sys_cust += part * is_cust / n_cust
+                    in_all += 1
+                    in_cust += is_cust
+                    dep_idx += 1
+                self._sys = (sys_all, sys_cust)
+                if record and cfg.attribute_every_s > 0 and tn >= next_attr:
+                    self._attribute(cfg.attribute_every_s, ep)
+                    next_attr += cfg.attribute_every_s
                 for vid in ss.getArrivedIDList():
                     arrive[vid] = tn
+                    in_all -= 1
+                    in_cust -= vid[0] == "c"
+                    at_end[vid] = (sys_all, sys_cust)
                     self._clear_intent(vid)
                     self._due.pop(vid, None)
                     self._move_fleet(vid, None)
@@ -557,6 +641,7 @@ class SumoRoutingEnv:
             ff = float(self.ff_edge[torch.tensor(rt[i])].sum())
             # a trip that never entered the network still has its whole route to drive
             rows.append((d0, end, vid in arrive, rem_ff.get(vid, ff), ff, bool(ctrl[i])))
+            ep.trip_tt[i] = end - d0 + (0.0 if vid in arrive else rem_ff.get(vid, ff))
             ep.ttt_s += tt
             ep.arrived += vid in arrive
             if bool(ctrl[i]):
@@ -565,10 +650,23 @@ class SumoRoutingEnv:
         ep.metrics = trip_metrics(*zip(*rows), teleports=ep.teleports) if rows else {}
         # time from each decision to the vehicle's next one (or arrival / horizon)
         nxt: dict[str, float] = {}
+        nxt_cust, nxt_other = dict(self._caused_cust), dict(self._caused_other)
+        ep.system_all_s, ep.system_cust_s = sys_all, sys_cust
+        nxt_sys: dict[str, tuple[float, float]] = {}
         for d in reversed(ep.decisions):
-            end = nxt.get(d["vid"], arrive.get(d["vid"], H))
+            vid = d["vid"]
+            end = nxt.get(vid, arrive.get(vid, H))
             d["dt"] = end - d["t"]
-            nxt[d["vid"]] = d["t"]
+            nxt[vid] = d["t"]
+            # delay this vehicle caused between this decision and its next one
+            d["e_cust"] = nxt_cust.get(vid, 0.0) - d["cust0"]
+            d["e_other"] = nxt_other.get(vid, 0.0) - d["other0"]
+            nxt_cust[vid], nxt_other[vid] = d["cust0"], d["other0"]
+            end_sys = nxt_sys.get(vid, at_end.get(vid, (sys_all, sys_cust)))
+            d["sys_all"], d["sys_cust"] = end_sys[0] - d["sys0"][0], end_sys[1] - d["sys0"][1]
+            nxt_sys[vid] = d["sys0"]
+        for vid in set(self._caused_cust) | set(self._caused_other):
+            ep.caused_s[vid] = self._caused_cust.get(vid, 0.0) + self._caused_other.get(vid, 0.0)
         ep.wall_s = time.perf_counter() - t0
         return ep
 
@@ -642,4 +740,6 @@ class SumoRoutingEnv:
             ep.n_decisions += 1
             if record:
                 ep.decisions.append({"vid": vid, "t": t, "node": n, "cand": cands[j], "feat": feat[j, : len(cands[j])],
-                                     "dest_zone": z, "a": k, "tick": self._tick})
+                                     "dest_zone": z, "a": k, "tick": self._tick,
+                                     "cust0": self._caused_cust.get(vid, 0.0),
+                                     "other0": self._caused_other.get(vid, 0.0), "sys0": self._sys})

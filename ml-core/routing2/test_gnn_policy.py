@@ -15,7 +15,7 @@ from .gnn_policy import N_DYN_ACTOR, N_GLOBAL, N_LOCAL, RoutingNet, prep_local
 from .graph import DEFAULT_GRAPH, load_graph
 from .params import SimConfig
 from .sumo_env import N_FEAT, SumoEnvConfig, SumoRoutingEnv
-from .sumo_marl import _RLActor, _tick_groups
+from .sumo_marl import _RLActor, _tick_groups, fleet_weights, gae, team_reward
 from .sumo_net import build_net
 
 H = 180.0
@@ -142,6 +142,61 @@ def test_speed_of_one_gnn_pass_and_one_decision():
         dec = (time.perf_counter() - t0) / 200
     n = sum(p.numel() for p in net.parameters())
     print(f"  params={n} gnn pass={gnn * 1000:.1f} ms decision={dec * 1000:.2f} ms", flush=True)
+
+
+def test_reward_weights_follow_j():
+    assert fleet_weights(0.5, 1.0) == (1.0, 0.5)
+    assert fleet_weights(0.5, 0.5) == (0.75, 0.25) and fleet_weights(0.5, 0.25) == (0.625, 0.125)
+    assert fleet_weights(0.0, 0.5) == (1.0, 0.0)  # only customers matter
+
+
+def test_discount_depends_on_seconds():
+    r, v = np.array([0.0, 0.0], dtype=np.float32), np.array([0.0, 1.0], dtype=np.float32)
+    veh, t, done = np.array([0, 0]), np.array([0.0, 10.0]), np.array([False, True])
+    short = gae(r, v, veh, t, done, np.array([10.0, 5.0]), 0.99, 0.0)[0][0]
+    long_ = gae(r, v, veh, t, done, np.array([100.0, 5.0]), 0.99, 0.0)[0][0]
+    assert math.isclose(short, 0.99**10, rel_tol=1e-5) and math.isclose(long_, 0.99**100, rel_tol=1e-5)
+
+
+def test_delay_charges_add_up_on_the_real_map():
+    class App:
+        def act(self, req):
+            return req.live_cost.argmin(1)
+
+    env = _env(H + 900.0, max_detour=0.5, attribute_every_s=5.0)
+    ep = env.run(make_demand(_g, _z, [61000], 6000.0, H, 0.5), 0, App(), record=True)
+    charged = sum(ep.caused_s.values())
+    per_decision = sum(d["e_cust"] + d["e_other"] for d in ep.decisions)
+    assert ep.delay_seen_s > 0 and 0 < charged <= ep.delay_attributed_s <= ep.delay_seen_s + 1e-6
+    assert min(d["e_cust"] for d in ep.decisions) >= -1e-6
+    # every second charged lands on one of the vehicle's decisions (origin decisions start at 0)
+    assert math.isclose(per_decision, charged, rel_tol=1e-6), (per_decision, charged)
+    print(f"  delay seen={ep.delay_seen_s:.0f}s blamed={ep.delay_attributed_s:.0f}s on fleet={charged:.0f}s", flush=True)
+
+
+def test_system_rate_integrates_to_the_two_objectives():
+    """The shared reward term must be J itself, not an approximation of it."""
+    class App:
+        def act(self, req):
+            return req.live_cost.argmin(1)
+
+    env = _env(H + 900.0, max_detour=0.5)
+    ep = env.run(make_demand(_g, _z, [61000], 3000.0, H, 0.5), 0, App(), record=True)
+    m = ep.metrics
+    assert m["unfinished_all"] == 0
+    assert abs(ep.system_all_s - m["T_all_s"]) < 1.0, (ep.system_all_s, m["T_all_s"])
+    assert abs(ep.system_cust_s - m["T_cust_s"]) < 1.0, (ep.system_cust_s, m["T_cust_s"])
+    d = ep.decisions[0]
+    assert d["sys_all"] >= 0 and d["sys_cust"] >= 0
+    print(f"  integral {ep.system_all_s:.2f} vs T_all {m['T_all_s']:.2f}; "
+          f"{ep.system_cust_s:.2f} vs T_cust {m['T_cust_s']:.2f}", flush=True)
+
+
+def test_team_reward_limits():
+    dt, sa, sc = np.array([10.0]), np.array([4.0]), np.array([2.0])
+    assert math.isclose(float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 0.0)[0]), -10.0 / 60.0)  # rho 0 = selfish
+    full = float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 1.0)[0])
+    assert math.isclose(full, -(0.5 * 4 + 0.5 * 2) / 0.3 / 60.0)
 
 
 def main() -> None:

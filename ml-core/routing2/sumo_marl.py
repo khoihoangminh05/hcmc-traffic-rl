@@ -5,15 +5,20 @@ of its current one, one vehicle at a time (routing2.sumo_env, micro). The shared
 compression of the network built from fleet reports and scores each exit
 (routing2.gnn_policy). The critic is centralised: in training it also sees all vehicles.
 
-Reward of a decision = -(time to the vehicle's next decision) / 60, so a vehicle's
-return is minus its own remaining travel time ("selfish", v1). System-optimal
-rewards (marginal external cost) come next. Every controller is scored on the same
-two objectives (routing2.objectives): T_all, the mean time of all trips, and T_cust,
-the mean time of the customers. J = w T_all + (1 - w) T_cust, w = --w-all.
+Reward of a decision over the time to the vehicle's next decision (--reward team, the default):
+    r = -[(1 - rho) dt + rho I / mean rate] / 60
+I is the integral of the system rate w (trips in the system / trips) + (1 - w) (customers in the
+system / customers), whose integral over an episode is exactly J. So the shared term is J itself,
+with no estimate of who delayed whom; the central critic has to separate the credit. Dividing by the
+episode's mean rate puts I on the scale of dt. rho = 0 is a selfish vehicle.
+--reward attrib uses sumo_env._attribute instead (a check against reruns did not support it);
+--reward selfish is the vehicle's own time. Discounting is per second. Scores never use any of
+these: every controller is scored on T_all, T_cust and J (routing2.objectives), w = --w-all.
 
 Episodes run in worker processes (one libsumo per process), each with a CPU copy of
 the policy; PPO updates run on the GPU. Every `--eval-every` updates the greedy
-policy and the baselines (free-flow next hop, app = live link time + live time to go)
+policy and the baselines (free-flow next hop, app = live link time + live time to go, greedy = app +
+a queue cost per fleet vehicle on or committed to the link)
 play the fixed eval seeds 50000+, with `--eval-drain` extra seconds so that late trips can
 finish; `best.pt` keeps the best eval J.
 Final numbers come from held-out seeds 60000+ (not in this script).
@@ -40,8 +45,10 @@ import torch
 import torch.nn as nn
 
 from .gnn_policy import RoutingNet, prep_local
+from .sumo_env import FEAT_INTENT, FEAT_N
 
 REWARD_SCALE = 60.0
+POLICIES = ("rl", "ff", "app", "greedy")
 
 
 # ---------------------------------------------------------------- worker side
@@ -64,6 +71,7 @@ def _worker_init(conf: dict) -> None:
                                                  work_dir=work, live_every_s=conf["live_every"],
                                                  live_source="probe", micro=True,
                                                  max_detour=conf["max_detour"],
+                                                 attribute_every_s=5.0 if conf["reward"] == "attrib" else 0.0,
                                                  incident_rate_per_h=conf["incident_rate"],
                                                  school_rate_per_h=conf["school_rate"]))
     _W.update(g=g, zones=zones, env=env, conf=conf, net=RoutingNet.from_env(env, conf["hidden"], conf["layers"]))
@@ -93,12 +101,13 @@ class _RLActor:
 
 
 class _Score:
-    def __init__(self, live: bool):
-        self.live = live
+    def __init__(self, live: bool, queue_s: float = 0.0):
+        self.live, self.queue_s = live, queue_s
 
     def act(self, req):
         if self.live:
-            return req.live_cost.argmin(1)
+            load = req.feat[..., FEAT_N] + req.feat[..., FEAT_INTENT]
+            return (req.live_cost + self.queue_s * load).argmin(1)
         s = req.feat[..., 0] + req.feat[..., 3]
         return torch.where(req.cand >= 0, s, torch.full_like(s, math.inf)).argmin(1)
 
@@ -117,7 +126,8 @@ def _worker_run(task: dict) -> dict:
         actor = _RLActor(_W["net"], H, task["pen"], torch.Generator().manual_seed(task["seed"]))
         pol = actor
     else:
-        pol = _Score(live=(kind == "app"))
+        # greedy: about 2 s per queued vehicle, an alley exit passes about 0.5 vehicles/s
+        pol = _Score(live=kind in ("app", "greedy"), queue_s=2.0 if kind == "greedy" else 0.0)
     env.cfg.sumo_seed = task.get("sumo_seed", 1)
     env.cfg.horizon_s = H + task.get("drain", 0.0)
     env.cfg.incident_seed = task["seed"]  # same events for every policy on a seed
@@ -145,6 +155,11 @@ def _worker_run(task: dict) -> dict:
             a=np.array([dd["a"] for dd in ep.decisions], dtype=np.int64),
             t=np.array([dd["t"] for dd in ep.decisions], dtype=np.float32),
             dt=np.array([dd["dt"] for dd in ep.decisions], dtype=np.float32),
+            e_cust=np.array([dd["e_cust"] for dd in ep.decisions], dtype=np.float32),
+            e_other=np.array([dd["e_other"] for dd in ep.decisions], dtype=np.float32),
+            sys_all=np.array([dd["sys_all"] for dd in ep.decisions], dtype=np.float32),
+            sys_cust=np.array([dd["sys_cust"] for dd in ep.decisions], dtype=np.float32),
+            sys_mean=(ep.system_all_s / env.cfg.horizon_s, ep.system_cust_s / env.cfg.horizon_s),
             veh=np.array([vids.setdefault(dd["vid"], len(vids)) for dd in ep.decisions], dtype=np.int64),
             done=np.array([dd["t"] + dd["dt"] < H - 1e-6 for dd in ep.decisions], dtype=bool),
         )
@@ -155,27 +170,46 @@ def _worker_run(task: dict) -> dict:
 
 # ---------------------------------------------------------------- learner side
 
-def gae(r: np.ndarray, v: np.ndarray, veh: np.ndarray, t: np.ndarray, done: np.ndarray,
+def _episode_reward(r: dict, args) -> np.ndarray:
+    if args.reward == "selfish":
+        return -r["dt"] / REWARD_SCALE
+    if args.reward == "attrib":
+        a, b = fleet_weights(args.w_all, r["pen"])
+        return -(a * (r["dt"] + r["e_cust"]) + b * r["e_other"]) / REWARD_SCALE
+    return team_reward(r["dt"], r["sys_all"], r["sys_cust"], r["sys_mean"], args.w_all, args.rho)
+
+
+def team_reward(dt, sys_all, sys_cust, sys_mean, w: float, rho: float) -> np.ndarray:
+    """sys_mean: (mean of the all-trips rate, mean of the customers rate) over the episode."""
+    rate = max(w * sys_mean[0] + (1.0 - w) * sys_mean[1], 1e-6)
+    return -((1.0 - rho) * dt + rho * (w * sys_all + (1.0 - w) * sys_cust) / rate) / REWARD_SCALE
+
+
+def fleet_weights(w: float, p: float) -> tuple[float, float]:
+    """(a, b): weights in the reward that make a vehicle's sum follow J. See the module docstring."""
+    return w * p + 1.0 - w, w * p
+
+
+def gae(r: np.ndarray, v: np.ndarray, veh: np.ndarray, t: np.ndarray, done: np.ndarray, dt: np.ndarray,
         gamma: float, lam: float) -> tuple[np.ndarray, np.ndarray]:
-    """Per-vehicle GAE. A vehicle's last decision bootstraps with 0 if it arrived, else
-    with its own value (truncated at the horizon)."""
+    """Per-vehicle GAE; gamma is per second, so a long wait is discounted more than a short one. A
+    vehicle's last decision bootstraps with 0 if it arrived, else with its own value (cut at the horizon)."""
     adv = np.zeros_like(r)
     order = np.lexsort((t, veh))
-    vs, ts = veh[order], t[order]
+    vs = veh[order]
     nxt_same = np.zeros(len(order), dtype=bool)
     nxt_same[:-1] = vs[1:] == vs[:-1]
+    g = gamma ** dt
     last = 0.0
     for k in range(len(order) - 1, -1, -1):
         i = order[k]
         if nxt_same[k]:
             j = order[k + 1]
-            delta = r[i] + gamma * v[j] - v[i]
-            last = delta + gamma * lam * last
+            last = r[i] + g[i] * v[j] - v[i] + g[i] * lam * last
         else:
             boot = 0.0 if done[i] else v[i]
-            last = r[i] + gamma * boot - v[i]
+            last = r[i] + g[i] * boot - v[i]
         adv[i] = last
-    _ = ts
     return adv, adv + v
 
 
@@ -226,7 +260,9 @@ def main() -> None:
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--ent", type=float, default=0.01)
     ap.add_argument("--vf", type=float, default=0.5)
-    ap.add_argument("--gamma", type=float, default=0.995)
+    ap.add_argument("--gamma", type=float, default=0.9995, help="per simulated second")
+    ap.add_argument("--reward", default="team", choices=["team", "attrib", "selfish"])
+    ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--eval-every", type=int, default=25)
     ap.add_argument("--eval-seeds", type=int, default=4)
@@ -237,7 +273,7 @@ def main() -> None:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--runs-dir", type=Path, default=Path("artifacts/out/quan4/routing2_runs"))
-    ap.add_argument("--tag", default="selfish")
+    ap.add_argument("--tag", default="")
     ap.add_argument("--smoke", action="store_true", help="2 workers, 5-min episodes, 2 updates, CPU")
     args = ap.parse_args()
     if args.smoke:
@@ -253,7 +289,7 @@ def main() -> None:
 
     net_path = build_net(DEFAULT_GRAPH, args.net_dir)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run = args.runs_dir / f"sumo_marl_{args.tag}{'_smoke' if args.smoke else ''}_{stamp}_seed{args.seed}"
+    run = args.runs_dir / f"sumo_marl_{args.tag or args.reward}{'_smoke' if args.smoke else ''}_{stamp}_seed{args.seed}"
     run.mkdir(parents=True, exist_ok=True)
     (run / "args.json").write_text(json.dumps({**{k: (str(v) if isinstance(v, Path) else v)
                                                   for k, v in vars(args).items()},
@@ -264,7 +300,7 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     dev = torch.device(args.device)
     conf = {"horizon": args.horizon, "zones": args.zones, "net": str(net_path), "hidden": args.hidden,
-            "layers": args.layers, "max_detour": args.max_detour,
+            "layers": args.layers, "max_detour": args.max_detour, "reward": args.reward,
             "live_every": args.live_every, "incident_rate": args.incident_rate, "school_rate": args.school_rate,
             "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
@@ -281,12 +317,12 @@ def main() -> None:
         for tph in args.eval_tph:
             for s in range(args.eval_seeds):
                 for pen in args.eval_pen:
-                    for pol in ("rl", "ff", "app"):
+                    for pol in POLICIES:
                         tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol,
                                       "record": False, "state": cpu_state(), "drain": args.eval_drain})
         res = pool.map(_worker_run, tasks)
         out = {"update": u, "eval": {}}
-        for pol in ("rl", "ff", "app"):
+        for pol in POLICIES:
             rows = [r for r in res if r["policy"] == pol]
             J = lambda r: objective(r["metrics"], args.w_all)  # noqa: E731
             avg = lambda key, rs=rows: round(float(np.mean([r["metrics"][key] for r in rs])), 3)  # noqa: E731
@@ -321,7 +357,8 @@ def main() -> None:
         a = torch.from_numpy(np.concatenate([r["a"] for r in res]))
         t = np.concatenate([r["t"] for r in res])
         old_logp = torch.from_numpy(np.concatenate([r["logp"] for r in res]))
-        rew = -np.concatenate([r["dt"] for r in res]) / REWARD_SCALE
+        dts = np.concatenate([r["dt"] for r in res])
+        rew = np.concatenate([_episode_reward(r, args) for r in res])
         done = np.concatenate([r["done"] for r in res])
         off, veh, tk_off, tick, pens = 0, [], 0, [], []
         for r in res:
@@ -360,7 +397,7 @@ def main() -> None:
                 chunk = np.array(keys[s0:s0 + args.ticks_per_batch])
                 idx = np.concatenate([groups[int(k)] for k in chunk])
                 v[idx] = forward(chunk, idx)[1].cpu().numpy()
-        adv, ret = gae(rew, v, veh, t, done, args.gamma, args.lam)
+        adv, ret = gae(rew, v, veh, t, done, dts, args.gamma, args.lam)
         adv_t = torch.from_numpy(adv)
         adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
         ret_t = torch.from_numpy(ret)
@@ -398,6 +435,7 @@ def main() -> None:
         row = {"update": u, "samples": n, "episodes": len(res),
                "train_mean_tt_s": round(float(np.mean([r["mean_tt_s"] for r in res])), 2),
                "train_tph_mean": round(float(np.mean([r["tph"] for r in res])), 0),
+               "reward_mean": round(float(rew.mean()), 4),
                "collect_s": round(t_col, 1), "update_s": round(time.perf_counter() - t0 - t_col, 1),
                **{k2: round(v2 / k, 5) for k2, v2 in stats.items()},
                "elapsed_h": round((time.perf_counter() - t_start) / 3600, 3)}
