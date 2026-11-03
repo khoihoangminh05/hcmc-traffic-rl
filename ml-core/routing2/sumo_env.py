@@ -4,6 +4,12 @@ Vehicles are motorbikes on the v4 net (routing2.sumo_net), demand from
 routing2.demand (same zones and trips as the meso). A share `penetration` of the
 trips is the controlled fleet; the rest is background traffic on free-flow routes.
 
+With `micro` on, the episode is a sequence of single decisions. SUMO runs until the first time
+a vehicle must choose: it is about to reach the end of its link (decide_ahead_*) or it departs.
+Vehicles due at the same time are served one at a time, in random order, at zero elapsed time, so
+each one sees what the previous one chose. The vehicle count feature then covers fleet vehicles
+only. Without `micro` (the setting of the gate scripts):
+
 A controlled vehicle decides its next link at every node (next-hop routing):
 - at its origin, when it departs (it is inserted on the chosen first link);
 - each time it enters a new link e, for the exit at e's downstream node, unless that
@@ -12,10 +18,13 @@ After a decision the vehicle's SUMO route is [current link, chosen exit] + the
 free-flow shortest completion, so SUMO always holds a valid route; the next
 decision replaces the completion.
 
-Policies see only what a real system measures: per candidate exit its free-flow
-time, SUMO's current link travel time estimate (edge.getTraveltime, from the last
-step's mean speed, i.e. what a probe fleet reports), the vehicle count on the link,
-and the free-flow time from the exit's end to the destination. No SUMO internals.
+Policies see, per candidate exit (feature order in FEAT_*): free-flow time, current link time,
+vehicle count on the link, free-flow time to the destination, length, intent, live time to the
+destination. Intent is the number of other fleet vehicles that already chose this link and have
+not entered it yet; only the provider knows this, a speed map does not. With live_source="probe"
+the link time comes from completed traversals of fleet vehicles; otherwise it is SUMO's
+edge.getTraveltime, which jumps when one vehicle stops. The vehicle count is still SUMO's count of
+all vehicles, which a provider could not measure at p < 1.
 
 `run(policy)` plays one episode and returns, per decision, the request, the chosen
 index and the time to the vehicle's next decision (or arrival / horizon). The reward
@@ -38,10 +47,12 @@ import torch
 
 from .demand import Demand
 from .graph import MesoGraph
+from .objectives import trip_metrics
 from .sumo_check import MOTO_VTYPE
 from .sumo_net import sumo_binary
 
-N_FEAT = 5  # per candidate exit
+N_FEAT = 7  # per candidate exit
+FEAT_FF, FEAT_TT, FEAT_N, FEAT_TOGO, FEAT_LEN, FEAT_INTENT, FEAT_LIVE_TOGO = range(N_FEAT)
 
 
 def read_connections(net: Path, e_of: dict[str, int]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -98,6 +109,18 @@ class SumoEnvConfig:
     incident_s: float = 600.0
     incident_speed: float = 0.5
     incident_seed: int = 0
+    # School letting out: every link at one alley node slows down for school_s. Rate unknown, swept.
+    school_rate_per_h: float = 0.0
+    school_s: float = 900.0
+    school_speed: float = 1.5
+    # One decision at a time, at the end of the link. See the module docstring.
+    micro: bool = False
+    decide_ahead_m: float = 10.0
+    decide_ahead_s: float = 3.0
+    # Exits are hidden when the trip's free-flow length would pass (1 + max_detour) x its shortest
+    # one + detour_abs_s. Stops untrained policies from wandering; the shortest exit stays. None = off.
+    max_detour: float | None = None
+    detour_abs_s: float = 60.0
 
 
 @dataclass
@@ -111,6 +134,7 @@ class Request:
     feat: torch.Tensor  # [M, D, N_FEAT]
     dest_zone: torch.Tensor  # [M]
     live_cost: torch.Tensor | None = None  # [M, D] live link time + live time to the zone (inf = padding)
+    tick: int = -1  # index of the current report period
 
 
 class SumoPolicy(Protocol):
@@ -122,6 +146,7 @@ class SumoPolicy(Protocol):
 @dataclass
 class Episode:
     decisions: list[dict] = field(default_factory=list)
+    ticks: list[dict] = field(default_factory=list)  # micro + record: edge state per report period
     ttt_s: float = 0.0
     ttt_ctrl_s: float = 0.0
     n_trips: int = 0
@@ -133,6 +158,8 @@ class Episode:
     km: float = 0.0  # distance driven by controlled vehicles (completed links)
     incidents: int = 0
     n_decisions: int = 0
+    missed_decisions: int = 0  # micro: entered the next link before its decision came due
+    metrics: dict = field(default_factory=dict)  # routing2.objectives.trip_metrics
 
 
 class SumoRoutingEnv:
@@ -195,8 +222,10 @@ class SumoRoutingEnv:
             if x > m:
                 tot[e] = tot.get(e, 0.0) + x
                 cnt[e] = cnt.get(e, 0) + 1
-        a = self.cfg.live_alpha
-        now = self.live_tt + 0.1 * (self.ff_edge - self.live_tt)  # no report: drift back to free flow
+        # live_alpha and the drift are per 30 s of simulated time, whatever the refresh period
+        rate = self.cfg.live_every_s / 30.0
+        a = 1.0 - (1.0 - self.cfg.live_alpha) ** rate
+        now = self.live_tt + (1.0 - 0.9**rate) * (self.ff_edge - self.live_tt)  # no report: drift to free flow
         for e, n in cnt.items():
             if self.cfg.live_mask == "roads" and bool(self.g.is_alley[e]):
                 continue
@@ -278,10 +307,10 @@ class SumoRoutingEnv:
 
     # ----------------------------------------------------------- episode
 
-    def _incident_schedule(self, rt: list[list[int]], dep: torch.Tensor) -> list[tuple[float, int]]:
-        """(start time, link), links drawn in proportion to free-flow use among alleys."""
+    def _incident_schedule(self, rt: list[list[int]], dep: torch.Tensor) -> list[tuple[float, list[int], float, float]]:
+        """(start, links, speed, duration), places drawn in proportion to free-flow use among alleys."""
         cfg = self.cfg
-        if cfg.incident_rate_per_h <= 0:
+        if cfg.incident_rate_per_h <= 0 and cfg.school_rate_per_h <= 0:
             return []
         use = torch.zeros(self.g.n_edges)
         for r in rt:
@@ -290,10 +319,20 @@ class SumoRoutingEnv:
         use = use * self.g.is_alley.cpu().float()
         gen = torch.Generator().manual_seed(cfg.incident_seed)
         last = float(dep.max())
-        n = max(1, round(cfg.incident_rate_per_h * last / 3600.0))
-        links = torch.multinomial(use, n, replacement=False, generator=gen).tolist()
-        starts = (torch.rand(n, generator=gen) * last).tolist()
-        return sorted(zip(starts, links))
+        out: list[tuple[float, list[int], float, float]] = []
+        if cfg.incident_rate_per_h > 0:
+            n = max(1, round(cfg.incident_rate_per_h * last / 3600.0))
+            links = torch.multinomial(use, n, replacement=False, generator=gen).tolist()
+            starts = (torch.rand(n, generator=gen) * last).tolist()
+            out += [(s, [e], cfg.incident_speed, cfg.incident_s) for s, e in zip(starts, links)]
+        if cfg.school_rate_per_h > 0:
+            gen2 = torch.Generator().manual_seed(cfg.incident_seed + 1)
+            n = max(1, round(cfg.school_rate_per_h * last / 3600.0))
+            for e in torch.multinomial(use, n, replacement=False, generator=gen2).tolist():
+                node = self.dst[e]
+                near = torch.nonzero((self.src == node) | (self.dst == node)).squeeze(1).tolist()
+                out.append((float(torch.rand(1, generator=gen2)) * last, near, cfg.school_speed, cfg.school_s))
+        return sorted(out, key=lambda x: x[0])
 
     def _start(self, rou: Path) -> None:
         cfg = self.cfg
@@ -307,15 +346,58 @@ class SumoRoutingEnv:
     def _features(self, node: int, cand: list[int], z: int) -> list[list[float]]:
         ed = self.sumo.edge
         rows = []
+        probe = self.cfg.live_source == "probe" and self.cfg.live_every_s > 0
         for e in cand:
             eid = self.eid[e]
-            tt = ed.getTraveltime(eid)
             ff = float(self.ff_edge[e])
-            if not math.isfinite(tt) or tt <= 0 or tt > 1e5:
-                tt = ff
-            rows.append([ff, tt, float(ed.getLastStepVehicleNumber(eid)),
-                         float(self.Dz[z, e]), float(self.length[e])])
+            if probe:
+                tt = float(self.live_tt[e])
+            else:
+                tt = ed.getTraveltime(eid)
+                if not math.isfinite(tt) or tt <= 0 or tt > 1e5:
+                    tt = ff
+            count = self._fleet_n[e] if self.cfg.micro else ed.getLastStepVehicleNumber(eid)
+            rows.append([ff, tt, float(count),
+                         float(self.Dz[z, e]), float(self.length[e]),
+                         float(self._intent_n[e]), float(self.live_D[z, e])])
         return rows
+
+    def _edge_state(self, truth: bool) -> dict[str, torch.Tensor]:
+        """actor: [E, 2] congestion from reports, fleet load. true (training only): [E, 2] all
+        vehicles per 10 m, speed / free-flow speed."""
+        per10m = 10.0 / self.length.float().clamp(min=5.0)
+        fleet = torch.tensor(self._fleet_n, dtype=torch.float32) + torch.tensor(self._intent_n, dtype=torch.float32)
+        out = {"actor": torch.stack([torch.log(self.live_tt.float() / self.ff_edge.float()).clamp(-1.0, 4.0),
+                                     (fleet * per10m).clamp(max=5.0)], -1)}
+        if truth:
+            ed = self.sumo.edge
+            n = torch.tensor([ed.getLastStepVehicleNumber(e) for e in self.eid], dtype=torch.float32)
+            v = torch.tensor([ed.getLastStepMeanSpeed(e) for e in self.eid], dtype=torch.float32)
+            vf = (self.length.float() / self.ff_edge.float()).clamp(min=0.1)
+            out["true"] = torch.stack([(n * per10m).clamp(max=5.0), (v / vf).clamp(0.0, 1.5)], -1)
+        return out
+
+    def _within_detour(self, vid: str, cur: int, z: int, c: list[int]) -> list[int]:
+        cost = [float(self.ff_edge[e]) + float(self.Dz[z, e]) for e in c]
+        if cur < 0:
+            self._ff_orig[vid], self._ff_done[vid] = min(cost), 0.0
+        limit = (1.0 + self.cfg.max_detour) * self._ff_orig[vid] + self.cfg.detour_abs_s
+        done = self._ff_done[vid]
+        keep = [e for e, x in zip(c, cost) if done + x <= limit]
+        return keep or [c[cost.index(min(cost))]]
+
+    def _move_fleet(self, vid: str, e: int | None) -> None:
+        old = self._fleet_at.pop(vid, None)
+        if old is not None:
+            self._fleet_n[old] -= 1
+        if e is not None:
+            self._fleet_at[vid] = e
+            self._fleet_n[e] += 1
+
+    def _clear_intent(self, vid: str) -> None:
+        e = self._intent.pop(vid, None)
+        if e is not None:
+            self._intent_n[e] -= 1
 
     def run(self, demand: Demand, b: int, policy: SumoPolicy | None, record: bool = True) -> Episode:
         """One episode for env b of `demand` (its controlled flags pick the fleet)."""
@@ -352,29 +434,51 @@ class SumoRoutingEnv:
         on_edge: dict[str, int] = {}   # controlled vid -> link index it is on
         last_dec: dict[str, int] = {}  # vid -> index of its last decision in ep.decisions
         arrive: dict[str, float] = {}
+        rem_ff: dict[str, float] = {}
         pi = 0
         self.live_tt = self.ff_edge.clone()
         self.live_D = self.Dz.clone()
         next_live = 0.0
         schedule = self._incident_schedule(rt, dep)
         ending: list[tuple[float, int]] = []
+        slow: dict[int, int] = {}
         ep.incidents = len(schedule)
         self._probes: deque = deque()
         self._on_edge = on_edge
         self._t_enter: dict[str, float] = {}
+        self._intent: dict[str, int] = {}  # fleet vid -> link it chose and has not entered
+        self._intent_n = [0] * self.g.n_edges
+        self._due: dict[str, tuple[int, int, int]] = {}  # micro: vid -> (node, link, zone) to decide
+        self._fleet_at: dict[str, int] = {}  # micro: vid -> link it is counted on
+        self._fleet_n = [0] * self.g.n_edges
+        order_gen = torch.Generator().manual_seed(cfg.sumo_seed)
+        self._tick = -1
+        self._ff_orig: dict[str, float] = {}
+        self._ff_done: dict[str, float] = {}
         try:
             while ss.getTime() < cfg.horizon_s - 1e-9:
                 t = ss.getTime()
                 while schedule and schedule[0][0] <= t:
-                    _, e = schedule.pop(0)
-                    self.sumo.edge.setMaxSpeed(self.eid[e], cfg.incident_speed)
-                    ending.append((t + cfg.incident_s, e))
+                    _, links, speed, dur = schedule.pop(0)
+                    for e in links:
+                        self.sumo.edge.setMaxSpeed(self.eid[e], speed)
+                        slow[e] = slow.get(e, 0) + 1
+                        ending.append((t + dur, e))
                 for item in [x for x in ending if x[0] <= t]:
                     ending.remove(item)
-                    self.sumo.edge.setMaxSpeed(self.eid[item[1]], float(self.g.v_free[item[1]]))
+                    slow[item[1]] -= 1
+                    if slow[item[1]] == 0:  # overlapping events: free flow only after the last one
+                        self.sumo.edge.setMaxSpeed(self.eid[item[1]], float(self.g.v_free[item[1]]))
                 if cfg.live_every_s > 0 and t >= next_live:
                     self._refresh_live(t)
                     next_live = t + cfg.live_every_s
+                    self._tick += 1
+                    if cfg.micro:
+                        state = self._edge_state(record)
+                        if record:
+                            ep.ticks.append(state)
+                        if hasattr(policy, "observe"):
+                            policy.observe(state)
                 # departures of controlled trips due by the end of this step: decide at the origin
                 reqs: list[tuple[str, int, int, int]] = []  # vid, node, cur, zone
                 while pi < len(pending) and float(dep[pending[pi]]) < t + cfg.step_s:
@@ -387,24 +491,47 @@ class SumoRoutingEnv:
                     if not road or road.startswith(":"):
                         continue
                     e = self.e_of.get(road)
-                    if e is None or e == on_edge[vid]:
+                    if e is not None and self._intent.get(vid) == e:
+                        self._clear_intent(vid)
+                    if e is not None and cfg.micro and self._fleet_at.get(vid) != e:
+                        self._move_fleet(vid, e)
+                    if e is None:
                         continue
-                    old = on_edge[vid]
-                    ep.km += float(self.length[old]) / 1000.0
-                    if vid in self._t_enter:
-                        self._probes.append((t, old, t - self._t_enter[vid]))
-                    self._t_enter[vid] = t
-                    on_edge[vid] = e
-                    z = self._zone_of[vid]
-                    n = int(self.dst[e])
-                    if n != int(self.zones[z]):
-                        reqs.append((vid, n, e, z))
-                if reqs:
+                    if e != on_edge[vid]:
+                        old = on_edge[vid]
+                        ep.km += float(self.length[old]) / 1000.0
+                        if vid in self._t_enter:
+                            self._probes.append((t, old, t - self._t_enter[vid]))
+                        self._t_enter[vid] = t
+                        on_edge[vid] = e
+                        z = self._zone_of[vid]
+                        n = int(self.dst[e])
+                        if cfg.micro:
+                            ep.missed_decisions += self._due.pop(vid, None) is not None
+                        if n != int(self.zones[z]):
+                            if cfg.micro:
+                                self._due[vid] = (n, e, z)
+                            else:
+                                reqs.append((vid, n, e, z))
+                    if vid in self._due and e == self._due[vid][1]:
+                        # a link shorter than one step is due in the step it is entered
+                        # the lane length, not the graph's: netconvert shortens lanes at junctions
+                        rem = self.sumo.lane.getLength(sv.getLaneID(vid)) - sv.getLanePosition(vid)
+                        if rem <= max(cfg.decide_ahead_m, sv.getSpeed(vid) * cfg.decide_ahead_s):
+                            n, _, z = self._due.pop(vid)
+                            reqs.append((vid, n, e, z))
+                if reqs and cfg.micro:
+                    for k in torch.randperm(len(reqs), generator=order_gen).tolist():
+                        self._decide([reqs[k]], t, policy, ep, on_edge, last_dec, record)
+                elif reqs:
                     self._decide(reqs, t, policy, ep, on_edge, last_dec, record)
                 self.sumo.simulationStep()
                 tn = ss.getTime()
                 for vid in ss.getArrivedIDList():
                     arrive[vid] = tn
+                    self._clear_intent(vid)
+                    self._due.pop(vid, None)
+                    self._move_fleet(vid, None)
                     if vid in on_edge:
                         last = on_edge.pop(vid)
                         ep.km += float(self.length[last]) / 1000.0
@@ -412,9 +539,12 @@ class SumoRoutingEnv:
                             self._probes.append((tn, last, tn - self._t_enter.pop(vid)))
                 for vid in ss.getStartingTeleportIDList() if hasattr(ss, "getStartingTeleportIDList") else []:
                     ep.teleports += 1
+            for vid in sv.getIDList():  # still driving at the end
+                rem_ff[vid] = self._remaining_ff(vid, int(dz[int(vid[1:])]))
         finally:
             self.sumo.close()
         H = cfg.horizon_s
+        rows: list[tuple[float, float, bool, float, float, bool]] = []
         for i in order:
             if not rt[i]:
                 continue
@@ -424,11 +554,15 @@ class SumoRoutingEnv:
                 continue
             end = arrive.get(vid, H)
             tt = end - d0
+            ff = float(self.ff_edge[torch.tensor(rt[i])].sum())
+            # a trip that never entered the network still has its whole route to drive
+            rows.append((d0, end, vid in arrive, rem_ff.get(vid, ff), ff, bool(ctrl[i])))
             ep.ttt_s += tt
             ep.arrived += vid in arrive
             if bool(ctrl[i]):
                 ep.ttt_ctrl_s += tt
                 ep.arrived_ctrl += vid in arrive
+        ep.metrics = trip_metrics(*zip(*rows), teleports=ep.teleports) if rows else {}
         # time from each decision to the vehicle's next one (or arrival / horizon)
         nxt: dict[str, float] = {}
         for d in reversed(ep.decisions):
@@ -438,11 +572,28 @@ class SumoRoutingEnv:
         ep.wall_s = time.perf_counter() - t0
         return ep
 
+    def _remaining_ff(self, vid: str, z: int) -> float:
+        """Free-flow time from the vehicle's position to zone z along connected links."""
+        sv = self.sumo.vehicle
+        k = sv.getRouteIndex(vid)
+        route = sv.getRoute(vid)
+        e = self.e_of.get(route[k]) if 0 <= k < len(route) else None
+        if e is None:
+            return 0.0
+        togo = float(self.Dz[z, e])
+        togo = togo if math.isfinite(togo) else 0.0
+        if sv.getRoadID(vid) == route[k]:
+            v = float(self.length[e]) / float(self.ff_edge[e])
+            togo += max(0.0, float(self.length[e]) - sv.getLanePosition(vid)) / v
+        return togo
+
     def _decide(self, reqs, t, policy, ep, on_edge, last_dec, record) -> None:
         kept, cands = [], []
         for r in reqs:
             vid, n, cur, z = r
             c = [e for e in self.candidates(n, cur) if math.isfinite(float(self.Dz[z, e]))]
+            if c and self.cfg.max_detour is not None:
+                c = self._within_detour(vid, cur, z, c)
             if c:
                 kept.append(r)
                 cands.append(c)
@@ -463,7 +614,7 @@ class SumoRoutingEnv:
             live = self.live_tt[c0] + self.live_D[zs.unsqueeze(1), c0]
             live = torch.where(cand >= 0, live, torch.full_like(live, math.inf))
         req = Request([r[0] for r in reqs], t, torch.tensor([r[1] for r in reqs]), cand, feat,
-                      torch.tensor([r[3] for r in reqs]), live)
+                      torch.tensor([r[3] for r in reqs]), live, self._tick)
         a = policy.act(req) if policy is not None else torch.zeros(M, dtype=torch.long)
         sv = self.sumo.vehicle
         for j, (vid, n, cur, z) in enumerate(reqs):
@@ -471,6 +622,8 @@ class SumoRoutingEnv:
             if not 0 <= k < len(cands[j]):
                 k = 0
             e = cands[j][k]
+            if self.cfg.max_detour is not None:
+                self._ff_done[vid] += float(self.ff_edge[e])
             route = ([] if cur < 0 else [cur]) + [e] + self.completion(z, e)
             ids = [self.eid[x] for x in route]
             if cur < 0:
@@ -479,9 +632,14 @@ class SumoRoutingEnv:
                 self.sumo.route.add(rid, ids)
                 sv.add(vid, rid, typeID="moto", depart="now", departLane="best", departSpeed="max")
                 on_edge[vid] = e
+                if self.cfg.micro and int(self.dst[e]) != int(self.zones[z]):
+                    self._due[vid] = (int(self.dst[e]), e, z)
             else:
                 sv.setRoute(vid, ids)
+            self._clear_intent(vid)  # it left its previous target without entering it (teleport)
+            self._intent[vid] = e
+            self._intent_n[e] += 1
             ep.n_decisions += 1
             if record:
                 ep.decisions.append({"vid": vid, "t": t, "node": n, "cand": cands[j], "feat": feat[j, : len(cands[j])],
-                                     "dest_zone": z, "a": k})
+                                     "dest_zone": z, "a": k, "tick": self._tick})
