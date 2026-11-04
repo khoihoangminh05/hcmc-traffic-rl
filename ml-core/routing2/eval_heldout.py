@@ -49,22 +49,9 @@ def _init(conf: dict, teleport_s: float | None) -> None:
 
 
 def _run(task: dict) -> dict:
-    import torch
-
     from routing2 import sumo_marl as M
 
-    class Actor(M._RLActor):
-        @torch.no_grad()
-        def act(self, req):
-            if task["name"] != "argmax":
-                return super().act(req)
-            n = len(req.vid)
-            glob = torch.tensor([min(req.t / self.H, 1.0), self.p]).expand(n, -1)
-            local = M.prep_local(req.feat, req.cand >= 0)
-            return self.net.policy(self.h, self.z, req.cand, local, glob, torch.zeros(n, dtype=torch.long)).argmax(1)
-
-    M._RLActor = Actor
-    r = M._worker_run(task)
+    r = M._worker_run({**task, "best": task["name"] == "argmax"})
     return {"name": task["name"], "seed": task["seed"], "tph": task["tph"], "pen": task["pen"],
             "wall_s": r["wall_s"], "metrics": r["metrics"]}
 
@@ -119,7 +106,7 @@ def main() -> None:
     ap.add_argument("--modes", nargs="+", default=["sample", "argmax"], choices=["sample", "argmax"])
     ap.add_argument("--baselines", nargs="*", default=["ff", "app", "greedy"], choices=["ff", "app", "greedy"])
     ap.add_argument("--queue", type=float, default=0.5, help="greedy: s per fleet vehicle")
-    ap.add_argument("--drain", type=float, default=900.0)
+    ap.add_argument("--drain", type=float, default=None, help="default: the run's --eval-drain")
     ap.add_argument("--teleport-s", type=float, default=None)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--work-dir", type=Path, default=None)
@@ -142,13 +129,15 @@ def main() -> None:
     conf = {k: saved[k] for k in ("horizon", "zones", "hidden", "layers", "max_detour", "reward", "live_every",
                                   "incident_rate", "school_rate", "depart_window", "hot_share", "hot_zones",
                                   "peak_sd", "greedy_queue", "report_drop", "report_noise", "compliance")}
+    conf.update(teleport_s=saved.get("teleport_s", 180.0))  # runs before v7 used 180 s
+    drain = saved["eval_drain"] if args.drain is None else args.drain
     conf.update(bg_reroute=saved["bg_reroute"], net=str(Path(saved["net_dir"]) / "quan4_v4.net.xml"),
                 work_dir=str(args.work_dir or out_dir / f"work_heldout_{stamp}"))
     tasks = []
     for s in range(args.seeds):
         for tph in args.tph:
             for pen in args.pen:
-                base = {"seed": args.start + s, "tph": tph, "pen": pen, "record": False, "drain": args.drain}
+                base = {"seed": args.start + s, "tph": tph, "pen": pen, "record": False, "drain": drain}
                 tasks += [{**base, "policy": "rl", "name": m, "state": state} for m in args.modes]
                 tasks += [{**base, "policy": b, "name": b, "queue_s": args.queue} for b in args.baselines]
     t0 = time.time()

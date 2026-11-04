@@ -28,8 +28,9 @@ Episodes run in worker processes (one libsumo per process), each with a CPU copy
 the policy; PPO updates run on the GPU. Every `--eval-every` updates the
 policy and the baselines (free-flow next hop, app = live link time + live time to go, greedy = app +
 a queue cost per fleet vehicle on or committed to the link)
-play the fixed eval seeds 50000+ (the actor samples), with `--eval-drain` extra seconds so that late trips can
-finish; `best.pt` keeps the best eval J.
+play the fixed eval seeds 50000+, with `--eval-drain` extra seconds so that late trips can finish. In eval
+the actor takes its best exit, the mode that is reported, and `best.pt` keeps the best J of that mode.
+Baselines run once: their scores on the same seeds do not change.
 Final numbers come from held-out seeds 60000+ (not in this script).
 
     python -u -m routing2.sumo_marl --smoke            # CPU, minutes
@@ -79,6 +80,7 @@ def _worker_init(conf: dict) -> None:
     env = SumoRoutingEnv(g, zones, SumoEnvConfig(net=Path(conf["net"]), horizon_s=conf["horizon"],
                                                  work_dir=work, live_every_s=conf["live_every"],
                                                  live_source="probe", micro=True,
+                                                 teleport_s=conf.get("teleport_s", 180.0),
                                                  max_detour=conf["max_detour"],
                                                  attribute_every_s=5.0 if conf["reward"] == "attrib" else 0.0,
                                                  report_drop=conf["report_drop"], report_noise=conf["report_noise"],
@@ -91,10 +93,10 @@ def _worker_init(conf: dict) -> None:
 
 
 class _RLActor:
-    """Samples from the policy, also in evaluation: greedy would send identical vehicles the same way."""
+    """Samples from the policy while recording; `best` takes the top exit."""
 
-    def __init__(self, net: RoutingNet, H: float, p: float, gen: torch.Generator):
-        self.net, self.H, self.p, self.gen = net, H, p, gen
+    def __init__(self, net: RoutingNet, H: float, p: float, gen: torch.Generator, best: bool = False):
+        self.net, self.H, self.p, self.gen, self.best = net, H, p, gen, best
         self.logp: list[torch.Tensor] = []
 
     @torch.no_grad()
@@ -107,6 +109,8 @@ class _RLActor:
         glob = torch.tensor([min(req.t / self.H, 1.0), self.p]).expand(M, -1)
         local = prep_local(req.feat, req.cand >= 0)
         logits = self.net.policy(self.h, self.z, req.cand, local, glob, torch.zeros(M, dtype=torch.long))
+        if self.best:
+            return logits.argmax(1)
         a = torch.multinomial(torch.softmax(logits, 1), 1, generator=self.gen).squeeze(1)
         self.logp.append(torch.log_softmax(logits, 1).gather(1, a.unsqueeze(1)).squeeze(1))
         return a
@@ -138,7 +142,7 @@ def _worker_run(task: dict) -> dict:
     if kind == "rl":
         _W["net"].load_state_dict({k: torch.from_numpy(v) for k, v in task["state"].items()})
         # 0: a provider does not know its share of the traffic. The critic does, in training.
-        actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]))
+        actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]), task.get("best", False))
         pol = actor
     else:
         pol = _Score(live=kind in ("app", "greedy"), queue_s=task.get("queue_s", conf["greedy_queue"]) if kind == "greedy" else 0.0)
@@ -288,6 +292,7 @@ def main() -> None:
     ap.add_argument("--pen", type=float, nargs=2, default=[0.1, 1.0], help="range of the fleet share p per episode")
     ap.add_argument("--eval-pen", type=float, nargs="+", default=[0.25, 0.75])
     ap.add_argument("--max-detour", type=float, default=0.5, help="see SumoEnvConfig.max_detour")
+    ap.add_argument("--teleport-s", type=float, default=300.0, help="SUMO --time-to-teleport, its default")
     ap.add_argument("--layers", type=int, default=3, help="GNN layers")
     ap.add_argument("--ticks-per-batch", type=int, default=64, help="report periods per PPO minibatch")
     ap.add_argument("--zones", type=int, default=32)
@@ -299,6 +304,7 @@ def main() -> None:
     ap.add_argument("--lr-actor", type=float, default=1e-4)
     ap.add_argument("--lr-critic", type=float, default=5e-4)
     ap.add_argument("--steps", type=int, default=12, help="Adam steps per update")
+    ap.add_argument("--critic-steps", type=int, default=24, help="extra critic-only Adam steps per update")
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--ent-start", type=float, default=0.03)
     ap.add_argument("--ent-end", type=float, default=0.005)
@@ -315,7 +321,7 @@ def main() -> None:
     ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--eval-every", type=int, default=25)
-    ap.add_argument("--eval-seeds", type=int, default=4)
+    ap.add_argument("--eval-seeds", type=int, default=8)
     ap.add_argument("--eval-tph", type=float, nargs="+", default=[4000.0, 6000.0])
     ap.add_argument("--eval-drain", type=float, default=900.0, help="extra simulated seconds in eval")
     ap.add_argument("--w-all", type=float, default=0.5, help="J = w T_all + (1 - w) T_cust")
@@ -355,12 +361,14 @@ def main() -> None:
             "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
             "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
             "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
-            "work_dir": str(run / "work")}
+            "teleport_s": args.teleport_s, "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
     pool = ctx.Pool(args.workers, initializer=_worker_init, initargs=(conf,))
     metrics = (run / "metrics.jsonl").open("a", encoding="utf-8")
+
+    base_rows: list[dict] = []
 
     def evaluate(u: int) -> dict:
         tasks = []
@@ -369,9 +377,13 @@ def main() -> None:
             for s in range(args.eval_seeds):
                 for pen in args.eval_pen:
                     for pol in POLICIES:
-                        tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol,
-                                      "record": False, "state": st, "drain": args.eval_drain})
+                        if pol == "rl" or not base_rows:
+                            tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol, "best": True,
+                                          "record": False, "state": st, "drain": args.eval_drain})
         res = pool.map(_worker_run, tasks)
+        if not base_rows:
+            base_rows.extend(r for r in res if r["policy"] != "rl")
+        res = [r for r in res if r["policy"] == "rl"] + base_rows
         out = {"update": u, "eval": {}}
         for pol in POLICIES:
             rows = [r for r in res if r["policy"] == pol]
@@ -485,12 +497,25 @@ def main() -> None:
                 stats["kl"] += float((old_logp[ii].to(dev) - lp).mean())
                 stats["clipfrac"] += float(((ratio - 1).abs() > args.clip).float().mean())
                 stats["k"] += 1
+        for step in range(args.critic_steps):
+            s0 = (args.steps + step) * args.ticks_per_batch % len(order)
+            chunk = np.array(order[s0:s0 + args.ticks_per_batch])
+            idx = np.concatenate([groups[int(k)] for k in chunk])
+            val = forward(chunk, idx)[1]
+            vf_loss = args.vf * ((val - ret_t[torch.from_numpy(idx)].to(dev).float()) ** 2).mean()
+            opt.zero_grad()
+            vf_loss.backward()
+            for group in opt.param_groups:
+                nn.utils.clip_grad_norm_(group["params"], 1.0)
+            opt.step()
         net.eval()
         k = max(1, stats.pop("k"))
         row = {"update": u, "samples": n, "episodes": len(res),
                "train_mean_tt_s": round(float(np.mean([r["mean_tt_s"] for r in res])), 2),
                "train_tph_mean": round(float(np.mean([r["tph"] for r in res])), 0),
                "reward_mean": round(float(rew.mean()), 4), "ent_coef": round(ent_coef, 5),
+               "cut_share": round(float(1.0 - np.mean([r["arrived_share"] for r in res])), 4),
+               "ev": round(float(1.0 - adv.var() / max(float(ret.var()), 1e-8)), 4),
                "dt_mean_s": round(float(dts.mean()), 2),
                "charged_mean_s": round(float(np.mean([(r["e_cust"] + r["e_other"]).mean() for r in res])), 2),
                "forced_share": round(float(np.mean([r["forced"] / max(1, r["forced"] + r["decisions"])
@@ -507,6 +532,7 @@ def main() -> None:
                 torch.save({"net": net.state_dict(), "args": vars(args), "update": u, "eval": ev},
                            run / "best.pt")
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "update": u}, run / "last.pt")
+            torch.save({"net": net.state_dict(), "update": u}, run / f"ckpt_u{u}.pt")
         metrics.write(json.dumps(row, default=str) + "\n")
         metrics.flush()
         print(f"[marl] {json.dumps(row, default=str)}", flush=True)
