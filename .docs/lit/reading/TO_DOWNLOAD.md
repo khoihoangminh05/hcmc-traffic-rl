@@ -1,5 +1,7 @@
 # Danh sách bài cần tải bằng tài khoản Swinburne
 
+> **Cập nhật 04/11:** 14 bài đã có trong `papers/`. Còn thiếu: Wolpert & Tumer; nhóm C; và 3 bài mới ở cuối file. **Mục 10 có DOI sai** (lỗi in trong tài liệu tham khảo của Salawavidana, mình chép lại mà chưa kiểm), file tải về là bài về động cơ điện.
+
 Lưu vào `Downloads\HCMC_papers\`, đặt đúng tên file ở cột cuối (không bắt buộc, tên khác mình vẫn nhận ra). Không đưa PDF vào git. Tải theo thứ tự; hết nhóm A là đã đủ dùng trước mắt. Bài nào không tải được thì bỏ qua, ghi lại cho mình là đủ.
 
 ## A. Quan trọng nhất (9 bài)
@@ -20,7 +22,7 @@ Lưu vào `Downloads\HCMC_papers\`, đặt đúng tên file ở cột cuối (kh
 
 | # | Bài | Vì sao cần | Link | Tên file |
 |---|---|---|---|---|
-| 10 | Chowdhury & Chakraborty 2024, Calibration of SUMO for heterogeneous traffic, Khulna, Results in Engineering | Hiệu chỉnh SUMO hỗn hợp xe máy | https://doi.org/10.1016/j.rineng.2024.102413 | Chowdhury_2024_SUMO.pdf |
+| 10 | Chowdhury & Chakraborty 2024, Calibration of SUMO for heterogeneous traffic, Khulna, Transportation Engineering 18 (2024) | Hiệu chỉnh SUMO hỗn hợp xe máy | https://doi.org/10.1016/j.treng.2024.100281 (đã sửa) | Chowdhury_2024_SUMO.pdf |
 | 11 | Ni et al. 2022, Simulation framework for multi-interaction of two-wheelers, Physica A | Tương tác xe hai bánh | https://doi.org/10.1016/j.physa.2022.128441 | Ni_2022_TwoWheelers.pdf |
 | 12 | Kim et al. 2025, Scalable link cost learning for real-time route guidance, TR-C | Học chi phí cạnh ở quy mô lớn | https://doi.org/10.1016/j.trc.2025.105244 | Kim_2025_LinkCost.pdf |
 | 13 | Hosseinzadeh et al. 2023, An MFD approach to route guidance with fairness, TR-C | Dẫn đường có công bằng | https://doi.org/10.1016/j.trc.2023.104359 | Hosseinzadeh_2023_MFD.pdf |
@@ -40,3 +42,11 @@ Lưu vào `Downloads\HCMC_papers\`, đặt đúng tên file ở cột cuối (kh
 
 - Guillén 2022, Basso 2021, Salenek 2024: lệch trọng tâm.
 - Các bài trên arXiv (Psarou 2510.11410 và 2610.13439, Li & Duan 2404.15599): mở, mình tự lấy.
+
+## D. Thêm sau đợt đọc 04/11 (3 bài)
+
+| # | Bài | Vì sao cần | Cách tìm |
+|---|---|---|---|
+| 20 | Chowdhury & Chakraborty 2024, Transportation Engineering | Thay file sai ở mục 10 | https://doi.org/10.1016/j.treng.2024.100281 |
+| 21 | Patil & Sangole 2016, gap acceptance xe máy, Ấn Độ | Nguồn gốc 3.0 s cho chỗ hẻm nhập đường | Tìm tên tác giả + "gap acceptance", trích qua Fadilah p.9 |
+| 22 | Ibrahim & Sanik 2007, gap acceptance, Malaysia | Nguồn gốc 3.2 s | Tìm tên tác giả + "gap acceptance", trích qua Fadilah p.9 |

@@ -174,3 +174,14 @@ Ngoài ra, RESEARCH_V4 §2.1 viết "MARL chưa thắng được người": đú
 8. SO-DTA Partial Control, Transp. Sci. 2018, `10.1287/trsc.2017.0800`
 9. Kaddoura & Nagel 2019, `10.1016/j.retrec.2019.01.002`
 10. Gibert-Flutre 2018, `10.1177/0308518x17751230` (kiểm số 85%)
+
+---
+
+## Cập nhật sau khi đọc toàn văn (2026-11-04)
+
+Bản thay thế: `.docs/paper/related_work.md` mục 2.8 và `RESEARCH_V4.md` mục 13. Các dòng trên giữ làm nhật ký.
+
+- **G1, sửa:** dòng về bài Ninh Kiều ghi "không nói về hẻm" là sai vì khi đó chỉ đọc tóm tắt. Fadilah 2024 nêu "narrow shortcuts and alleys" (p.2, p.16), nhưng không có tham số hay kết quả riêng cho hẻm (p.6, p.8, p.9).
+- **G3, thêm:** Jiang 2023 có difference reward không chạy lại, từ NMFD cấp vùng (p.11); Ramos 2020 có toll cục bộ (p.8). Psarou 2510 p.4, p.6 chỉ ra ma trận chi phí biên không FIFO vì ưu tiên ở nút, đe dọa trực tiếp cách quy theo hàng đợi.
+- **G4, thêm:** Kim 2025 có tuân thủ đo thật (p.18), và đo hẻm rất thấp ở ô tô (p.12-13).
+- **G6, xác nhận:** MA-GRL đọc từ trang bài: 100 xe điều khiển, 2847 xe nền, giới hạn khoảng 200 agent, phạt phối hợp đặt tay.

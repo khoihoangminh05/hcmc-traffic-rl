@@ -1,8 +1,8 @@
-# Đọc 39 bài do Grok Bot tải (2026-11-04)
+# Đọc 53 bài trong `papers/` (2026-11-04)
 
-PDF ở `Downloads\HCMC_papers\` trên máy local, **không đưa vào git**. Trang `p.N` là trang của tệp PDF. Đây là bản đọc từ văn bản trích (không xem hình), một người đọc mỗi bài. Con số quan trọng đã được đối chiếu lại với văn bản gốc được đánh dấu ✓; còn lại phải kiểm trước khi đưa vào bài.
+PDF ở `papers/` (gitignored). Nhóm 5–6 và mục 7 là đợt đọc thứ hai, 14 bài có tài khoản trường và 3 bài arXiv. Trang `p.N` là trang của tệp PDF. Đây là bản đọc từ văn bản trích (không xem hình), một người đọc mỗi bài. Con số quan trọng đã được đối chiếu lại với văn bản gốc được đánh dấu ✓; còn lại phải kiểm trước khi đưa vào bài.
 
-Ghi chú chi tiết: `group1_routing.md`, `group2_reward_training.md`, `group3_navapps.md`, `group4_moto_gnn.md`. Manifest gốc: `manifest_grok.csv`. Ghi chú của Grok về khả năng viết survey (`survey_feasibility.md`) chưa được kiểm chứng và không được dùng làm nguồn.
+Ghi chú chi tiết: `group1_routing.md`, `group2_reward_training.md`, `group3_navapps.md`, `group4_moto_gnn.md`, `group5_guidance.md`, `group6_moto_calib.md`. Bản nháp Related Work: `.docs/paper/related_work.md`. Manifest gốc: `manifest_grok.csv`. Ghi chú của Grok về khả năng viết survey (`survey_feasibility.md`) chưa được kiểm chứng và không được dùng làm nguồn.
 
 ## 1. Những gì đổi so với điều ta đang tin
 
@@ -67,3 +67,24 @@ Bản preprint, cần lấy bản đăng trước khi trích: Chan, Bittihn, Wan
 Ưu tiên vừa: Kim TR-C 2025 `10.1016/j.trc.2025.105244`; Hosseinzadeh TR-C 2023 `10.1016/j.trc.2023.104359`; Zhou & Gayah TR-C 2023 `10.1016/j.trc.2023.104033`; Kamiński 2020 `10.1155/2020/3152020`; Ni 2022 `10.1016/j.physa.2022.128441`. Còn lại xem `manifest_grok.csv`.
 
 Chưa có trong manifest nhưng nên tìm: Psarou 2610.13439 và 2510.11410 toàn văn; Li & Duan 2404.15599; Chowdhury & Chakraborty 2024; Codeca & Härri 2019; Kuo 2023; và các nguồn thứ cấp Peeta, Litescu, Friedman, Devlin & Kudenko.
+
+## 7. Đợt đọc thứ hai: điều làm đổi quyết định
+
+Đã đối chiếu với văn bản gốc (✓). Chưa áp dụng vào code; chuỗi v6 đang chạy không đổi.
+
+**Mô hình mạng (quan trọng nhất, chưa đo tác động).** ✓ Cả 1460 cạnh hẻm đều có cạnh ngược chiều, mỗi cạnh một làn 2.5 m, OSM không có width, không có cạnh một chiều. Nếu 2.5 m là bề rộng cả con hẻm thì mô phỏng đang có 5 m mặt đường và **không có xung đột ngược chiều**, có thể làm hẻm quá thoáng và đẩy trễ về chỗ nhập. Độ phân giải ngang 0.8 không chia hết 2.5.
+
+**Teleport.** Thứ hạng đổi theo tham số này: ở 180 s `selfish` 471.91, `attrib` 482.65; ở 600 s `attrib` 527.29, `selfish` 566.13 (argmax update 125, 4 seed chọn mô hình). 180 s đang giải phóng tắc thay vì mô tả nó; không bài nào làm cơ sở cho giá trị này. Đề xuất: kết quả chính ở 600 s trở lên, kèm teleport theo nguyên nhân và vị trí, tỉ lệ tới đích.
+
+**Tuân thủ.** 90% của ta cao so với đo thật của Kim 2025: PCR 68.12→68.78% ✓, hẻm hẹp không tuân thủ 91.06% ✓ (p.12-13, ô tô Hàn Quốc, tính theo link). Quét 60–100%, thử theo loại cạnh. Train ở 90%, test thấp hơn: Hosseinzadeh mất 57% lợi ích (BC) so với 27% (FC) khi tuân thủ 100→30% ✓ (p.17, tính lại).
+
+**Baseline SO.** Yun dùng DSO-Iterative trong SUMO ✓ (p.13); khoảng DUE–DSO 5.2–7.12% (tính lại) trên mạng nhỏ, η = 0.25 mất 20–69% khoảng đó. Dùng `gate_msa` theo hướng này làm mốc, ghi rõ là cận tĩnh.
+
+**Reward.** Trong Yun, chia sẻ Q với −thời gian link đã gần DSO (0.07%, tính lại; mạng nhỏ, 100% xe). Psarou 2610: trọng số xã hội lớn làm xấu hệ thống (p.6, p.8). Vậy không mặc định `attrib` hơn `selfish`. Thêm nhánh rẻ `selfish + β(f−F)` (Ramos p.8) nếu cần, và kiểm riêng chỗ nhường đường khi đối chiếu phản thực.
+
+**Chọn tham số SUMO** (chi tiết `group6_moto_calib.md` mục b): sửa lớp mạng → thí nghiệm một nút chữ T để đo gap do SUMO sinh ra so với 3.0–3.2 s → Morris rồi LHS → hiệu chỉnh tổng hợp theo RMSE tốc độ Mapbox trên cạnh không phải hẻm → đánh giá trên 3–5 bộ tham số. Được nói "đo": topology; "hiệu chỉnh": phần qua bước tốc độ; "độ nhạy": `impatience`, `jm*`, `lc*`, `sigma`, bề rộng. **Không được nói "đã hiệu chỉnh cho hẻm".**
+
+**Sửa lỗi.** `Chowdhury_2024_SUMO.pdf` là bài động cơ điện do DOI sai trong danh sách tải. Lần đọc nhóm 1 ghi số hình của Chan chỉ qua văn bản; hàng std Bảng 2 của Hosseinzadeh bị dính khi trích, xem lại PDF.
+
+**Chưa đọc hết:** Ramos p.12-13, Hosseinzadeh p.5-8 và phần sau chưa liền mạch, Li & Duan chỉ p.1-2, p.10-11, Khulna; Arora 2026 toàn văn chưa có.
+

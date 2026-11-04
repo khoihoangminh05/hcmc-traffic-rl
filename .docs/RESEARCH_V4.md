@@ -191,3 +191,19 @@ Rủi ro:
 3. Người bị chọn đi thử chịu thiệt, nên phải báo cáo công bằng và mức tuân thủ.
 
 Thí nghiệm cổng C, trước khi xây kiến trúc: trong SUMO có sự cố ẩn, quét mức thông tin (không live, chỉ đường lớn, chỉ đội xe với tỉ lệ p, đủ) với app và Thompson. Nếu đủ thông tin không hơn hẳn không live thì hướng này không có đất.
+
+## 13. Luận điểm và đóng góp sau đợt đọc toàn văn (2026-11-04)
+
+Thay cho phần tương ứng ở mục 3, 10, 12. Chưa chạy Scopus / WoS. Kết quả định lượng của phương pháp chưa có, nên đây là điều bài **định** nói.
+
+**Câu hỏi:** một nhà cung cấp dẫn đường điều phối phần xe của mình ở mức next-hop trên mạng có nhiều hẻm, khi chỉ có báo cáo không hoàn hảo và người lái không luôn làm theo, thì giảm được J = 0.5 T_all + 0.5 T_cust bao nhiêu so với app tốt nhất, và lợi ích đổi theo p, tuân thủ, thông tin ra sao?
+
+**Đóng góp định nói, theo thứ tự chắc chắn giảm dần:**
+1. Mô hình và đánh giá en-route có học trên mạng hẻm mô hình riêng, xe máy, với bộ giới hạn thực tế chung cho mọi controller. Khác biệt chủ yếu về bối cảnh.
+2. Đo tương tác giữa p, tuân thủ theo quyết định và báo cáo nhiễu. Có giá trị chỉ khi tương tác đáng kể.
+3. Chia công theo trễ đo được từng xe, có đối chiếu với phản thực. **Hiện chưa có bằng chứng**: kiểm chạy lại chưa đo sàn nhiễu, Psarou 2510 p.4, p.6 cho lý do ở ngã ưu tiên có thể sai, và trên 8 seed chọn mô hình `selfish` 480.8, `attrib` 488.6, ff 484.5, app 492.3 (chưa phân biệt được). Nếu không qua kiểm chứng thì bỏ khỏi đóng góp, giữ làm phân tích.
+
+**Không còn nói được:** "đầu tiên" cho next-hop RL, không tuân thủ, nhà cung cấp gợi ý, credit không chạy lại, mạng lớn nhất. Câu "app chưa tính hẻm" đã bỏ từ trước.
+
+**Đối thủ gần nhất:** Yun 2024 / Kim 2025 (có dữ liệu Kakao thật), nhóm Kucharski (Psarou, Akman), MA-GRL. Theo dõi bản mới của họ trước khi nộp.
+
