@@ -22,9 +22,12 @@ lanes, connections and junction logic.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
@@ -99,24 +102,38 @@ def write_plain(graph_path: Path, out_dir: Path, signals_path: Path | None = Non
     return nod, edg
 
 
+def net_sha(path: Path) -> str:
+    """Hash of the network content, without netconvert's header comment (date and input paths)."""
+    data = path.read_bytes()
+    return hashlib.sha256(data[max(0, data.find(b"<net ")):]).hexdigest()[:16]
+
+
 def build_net(graph_path: Path, out_dir: Path) -> Path:
-    nod, edg = write_plain(graph_path, out_dir)
+    """Builds in a private directory and swaps the file in only if its content changed. Workers of
+    running jobs start SUMO on this path for every episode, so they must never see a partial file."""
     net = out_dir / "quan4_v4.net.xml"
-    cmd = [
-        sumo_binary("netconvert"),
-        "--node-files", str(nod),
-        "--edge-files", str(edg),
-        "--output-file", str(net),
-        "--junctions.join", "false",
-        "--geometry.remove", "false",
-        "--offset.disable-normalization", "true",
-        "--default.junctions.radius", "1.5",
-        "--junctions.corner-detail", "0",
-        "--tls.default-type", "static",
-        "--tls.cycle.time", "60",
-        "--no-warnings", "true",
-    ]
-    subprocess.run(cmd, check=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=out_dir, prefix="build_") as tmp:
+        nod, edg = write_plain(graph_path, Path(tmp))
+        new = Path(tmp) / net.name
+        cmd = [
+            sumo_binary("netconvert"),
+            "--node-files", str(nod),
+            "--edge-files", str(edg),
+            "--output-file", str(new),
+            "--junctions.join", "false",
+            "--geometry.remove", "false",
+            "--offset.disable-normalization", "true",
+            "--default.junctions.radius", "1.5",
+            "--junctions.corner-detail", "0",
+            "--tls.default-type", "static",
+            "--tls.cycle.time", "60",
+            "--no-warnings", "true",
+        ]
+        subprocess.run(cmd, check=True)
+        if not net.exists() or net_sha(net) != net_sha(new):
+            for f in (nod, edg, new):
+                os.replace(f, out_dir / f.name)
     return net
 
 

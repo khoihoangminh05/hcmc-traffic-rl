@@ -1,8 +1,8 @@
-# Khung bài báo (đích TR-C; nháp 2026-11-02)
+# Khung bài báo (đích TR-C hoặc T-ITS; cập nhật 2026-11-04)
 
-Luận điểm và số liệu phụ thuộc cổng A và B (`PLAN_PAPER.md` Phần 1). **Chưa có kết quả nào trong khung này là kết luận.**
+Luận điểm: `RESEARCH_V4.md` mục 13. Related Work: `related_work.md`. Giao thức: `experiment_protocol.md`. Câu reviewer: `reviewer_qa.md`. Rà code: `code_review.md`. Tài liệu tham khảo: `refs.bib`. **Chưa có kết quả nào trong khung này là kết luận.**
 
-Tiêu đề làm việc: *System-efficient navigation in motorcycle-dominated alley networks: measuring and using merge externalities* (đổi theo kết quả).
+Tiêu đề làm việc: *Coordinated navigation in motorcycle-dominated alley networks under partial participation and imperfect reports* (đổi theo kết quả).
 
 | Mục | Nội dung | Nguồn | Trạng thái |
 |---|---|---|---|

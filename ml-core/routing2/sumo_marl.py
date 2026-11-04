@@ -40,6 +40,7 @@ Final numbers come from held-out seeds 60000+ (not in this script).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -277,6 +278,21 @@ def git_hash() -> str:
         return "unknown"
 
 
+def provenance(net_path: Path, graph_path: Path) -> dict[str, str | bool]:
+    """What a result depends on besides its arguments. One past run used the wrong commit unnoticed."""
+    from .sumo_net import net_sha, sumo_binary
+
+    out: dict[str, str | bool] = {"net_sha": net_sha(net_path),
+                                  "graph_sha": hashlib.sha256(graph_path.read_bytes()).hexdigest()[:16]}
+    try:
+        changed = subprocess.check_output(["git", "status", "--porcelain", "--", "ml-core/routing2", "routing2"], text=True)
+        out["git_dirty_routing2"] = bool(changed.strip())
+        out["sumo_version"] = subprocess.check_output([sumo_binary("sumo"), "--version"], text=True).splitlines()[0]
+    except Exception as ex:  # never stop a run for this
+        out["provenance_error"] = f"{type(ex).__name__}: {ex}"
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=16)
@@ -349,7 +365,8 @@ def main() -> None:
     run.mkdir(parents=True, exist_ok=True)
     (run / "args.json").write_text(json.dumps({**{k: (str(v) if isinstance(v, Path) else v)
                                                   for k, v in vars(args).items()},
-                                               "git": git_hash()}, indent=2), encoding="utf-8")
+                                               "git": git_hash(), **provenance(net_path, DEFAULT_GRAPH)}, indent=2),
+                                    encoding="utf-8")
     print(f"[marl] run={run} device={args.device} workers={args.workers} episodes/update={E}", flush=True)
 
     torch.manual_seed(args.seed)
