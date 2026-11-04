@@ -35,6 +35,10 @@ def main() -> None:
     ap.add_argument("--depart-window", type=float, default=600.0)
     ap.add_argument("--drain", type=float, default=900.0)
     ap.add_argument("--queue", type=float, nargs="+", default=[0.5, 2.0], help="greedy: s per fleet vehicle")
+    ap.add_argument("--report-drop", type=float, default=0.2)
+    ap.add_argument("--report-noise", type=float, default=0.1)
+    ap.add_argument("--compliance", type=float, default=0.9)
+    ap.add_argument("--bg-reroute", type=float, default=0.3)
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args()
@@ -43,9 +47,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(dir=".") as work:
         for hot in args.hot_share:
             conf = {"horizon": args.horizon, "zones": 32, "net": str(net), "hidden": 64, "layers": 3, "max_detour": 0.5,
-                    "reward": "crowd", "live_every": 10.0, "incident_rate": 2.0, "school_rate": 1.0,
+                    "reward": "selfish", "live_every": 10.0, "incident_rate": 2.0, "school_rate": 1.0,
                     "depart_window": args.depart_window, "hot_share": hot, "hot_zones": 4, "peak_sd": args.peak_sd,
-                    "greedy_queue": 0.0, "work_dir": work}
+                    "greedy_queue": 0.0, "report_drop": args.report_drop, "report_noise": args.report_noise,
+                    "compliance": args.compliance, "bg_reroute": args.bg_reroute, "work_dir": work}
             pols = [("ff", "ff", 0.0), ("app", "app", 0.0)] + [(f"greedy{q:g}", "greedy", q) for q in args.queue]
             with mp.get_context("spawn").Pool(args.workers, _worker_init, (conf,)) as pool:
                 tasks = [{"seed": 50000 + s, "tph": tph, "pen": args.pen, "policy": kind, "record": False,

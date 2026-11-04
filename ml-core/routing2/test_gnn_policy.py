@@ -199,7 +199,7 @@ def test_team_reward_limits():
     assert math.isclose(full, -(0.5 * 4 + 0.5 * 2) / 0.3 / 60.0)
 
 
-def test_single_exits_are_not_asked_and_their_crowd_counts_for_the_last_choice():
+def test_single_exits_are_not_asked():
     class App:
         n_asked = 0
 
@@ -212,7 +212,6 @@ def test_single_exits_are_not_asked_and_their_crowd_counts_for_the_last_choice()
     env = _env(H)
     ep = env.run(make_demand(_g, _z, [61000], 6000.0, H, 1.0), 0, App(), record=True)
     assert ep.forced > 0 and App.n_asked == ep.n_decisions == len(ep.decisions)
-    assert min(d["crowd"] for d in ep.decisions) >= 0.0 and max(d["crowd"] for d in ep.decisions) > 0.0
     assert ep.missed_decisions == 0
     print(f"  asked={ep.n_decisions} forced={ep.forced}")
 
@@ -242,6 +241,29 @@ def test_peak_demand_goes_to_the_hot_zones_and_bunches():
     assert bool((peak.orig != _z[peak.dest_zone]).all())
     again = make_demand(_g, _z, [1], 6000.0, H, 0.5, hot_share=0.6, peak_sd=0.15)
     assert torch.equal(peak.orig, again.orig) and torch.equal(peak.dest_zone, again.dest_zone)
+
+
+def test_real_world_limits_change_what_is_known_not_the_trips():
+    class App:
+        def __init__(self):
+            self.rows = []
+
+        def act(self, req):
+            self.rows.append((req.vid[0], req.cand[0].tolist(), req.feat[0].tolist()))
+            return req.live_cost.argmin(1)
+
+    H = 120.0
+    d = make_demand(_g, _z, [61000], 6000.0, H, 0.5)
+    limits = dict(report_drop=0.5, report_noise=0.2, fleet_snapshot=True, compliance=0.7, bg_reroute_share=0.5,
+                  incident_seed=7)
+    a, b = App(), App()
+    ep = _env(H, **limits).run(d, 0, a, record=False)
+    _env(H, **limits).run(d, 0, b, record=False)
+    assert ep.n_trips == make_demand(_g, _z, [61000], 6000.0, H, 0.5).dep_t.numel()
+    assert ep.missed_decisions == 0 and ep.n_decisions > 0
+    full = _env(H, incident_seed=7).run(d, 0, App(), record=False)
+    assert full.metrics["T_all_s"] != ep.metrics["T_all_s"]  # the limits reach the simulation
+    print(f"  T_all full={full.metrics['T_all_s']:.1f} limited={ep.metrics['T_all_s']:.1f}")
 
 
 def test_actor_and_critic_learn_at_their_own_rates():

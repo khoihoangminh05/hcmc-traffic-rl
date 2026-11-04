@@ -5,20 +5,22 @@ of its current one, one vehicle at a time (routing2.sumo_env, micro). The shared
 compression of the network built from fleet reports and scores each exit
 (routing2.gnn_policy). The critic is centralised: in training it also sees all vehicles.
 
-Reward of a decision over the time to the vehicle's next decision (--reward crowd, the default):
-    r = -(dt + beta C) / 60 + (R - gamma^dt R') / 60
-C is the number of vehicles on each link the decision sends the vehicle onto, weighted by how narrow
-the link is: the vehicle's externality, as in v3v, where dropping such a charge lost to the heuristic
-on travel time too. beta is chosen by hand, so it is swept and beta = 0 is reported. R is the live time
-to the destination: potential-based, so it guides learning without changing the best policy (--shaping).
-Neither term enters a score. Other rewards, for the record:
+Reward of a decision over the time to the vehicle's next decision (--reward attrib, the default):
+    r = -[a (dt + D_cust) + b D_other] / 60 + (R - gamma^dt R') / 60
+D_cust and D_other are the seconds of measured delay of customers and of other trips that the simulator
+charges to this vehicle (sumo_env._attribute). A delay is split among the vehicles holding that vehicle
+up, so charges add up to measured delay. a, b follow from J and the fleet share (fleet_weights), so no
+weight is set by hand. R is the live time to the destination: potential-based, so it guides learning
+without changing the best policy (--shaping). Neither term enters a score. Training only: the actor
+never sees charges or the true state.
 
+Other rewards, for comparison:
 --reward team was r = -[(1 - rho) dt + rho I / mean rate] / 60, correlated 0.996 with the selfish reward:
 I is the integral of the system rate w (trips in the system / trips) + (1 - w) (customers in the
 system / customers), whose integral over an episode is exactly J. So the shared term is J itself,
 with no estimate of who delayed whom; the central critic has to separate the credit. Dividing by the
 episode's mean rate puts I on the scale of dt. rho = 0 is a selfish vehicle.
---reward attrib uses sumo_env._attribute instead (a check against reruns did not support it);
+A rerun check of the charges was inconclusive: its noise floor was not measured.
 --reward selfish is the vehicle's own time. Discounting is per second. Scores never use any of
 these: every controller is scored on T_all, T_cust and J (routing2.objectives), w = --w-all.
 
@@ -79,6 +81,9 @@ def _worker_init(conf: dict) -> None:
                                                  live_source="probe", micro=True,
                                                  max_detour=conf["max_detour"],
                                                  attribute_every_s=5.0 if conf["reward"] == "attrib" else 0.0,
+                                                 report_drop=conf["report_drop"], report_noise=conf["report_noise"],
+                                                 fleet_snapshot=True, compliance=conf["compliance"],
+                                                 bg_reroute_share=conf["bg_reroute"],
                                                  incident_rate_per_h=conf["incident_rate"],
                                                  school_rate_per_h=conf["school_rate"]))
     _W.update(g=g, zones=zones, env=env, conf=conf, net=RoutingNet.from_env(env, conf["hidden"], conf["layers"]))
@@ -132,7 +137,8 @@ def _worker_run(task: dict) -> dict:
     actor = None
     if kind == "rl":
         _W["net"].load_state_dict({k: torch.from_numpy(v) for k, v in task["state"].items()})
-        actor = _RLActor(_W["net"], H, task["pen"], torch.Generator().manual_seed(task["seed"]))
+        # 0: a provider does not know its share of the traffic. The critic does, in training.
+        actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]))
         pol = actor
     else:
         pol = _Score(live=kind in ("app", "greedy"), queue_s=task.get("queue_s", conf["greedy_queue"]) if kind == "greedy" else 0.0)
@@ -163,7 +169,6 @@ def _worker_run(task: dict) -> dict:
             a=np.array([dd["a"] for dd in ep.decisions], dtype=np.int64),
             t=np.array([dd["t"] for dd in ep.decisions], dtype=np.float32),
             dt=np.array([dd["dt"] for dd in ep.decisions], dtype=np.float32),
-            crowd=np.array([dd["crowd"] for dd in ep.decisions], dtype=np.float32),
             togo=np.array([dd["togo"] for dd in ep.decisions], dtype=np.float32),
             e_cust=np.array([dd["e_cust"] for dd in ep.decisions], dtype=np.float32),
             e_other=np.array([dd["e_other"] for dd in ep.decisions], dtype=np.float32),
@@ -181,9 +186,7 @@ def _worker_run(task: dict) -> dict:
 # ---------------------------------------------------------------- learner side
 
 def _episode_reward(r: dict, args) -> np.ndarray:
-    if args.reward == "crowd":
-        base = -(r["dt"] + args.beta * r["crowd"]) / REWARD_SCALE
-    elif args.reward == "selfish":
+    if args.reward == "selfish":
         base = -r["dt"] / REWARD_SCALE
     elif args.reward == "attrib":
         a, b = fleet_weights(args.w_all, r["pen"])
@@ -302,8 +305,12 @@ def main() -> None:
     ap.add_argument("--ent-anneal", type=int, default=400, help="updates from ent-start to ent-end")
     ap.add_argument("--vf", type=float, default=0.5)
     ap.add_argument("--gamma", type=float, default=0.9995, help="per simulated second")
-    ap.add_argument("--reward", default="crowd", choices=["crowd", "team", "attrib", "selfish"])
-    ap.add_argument("--beta", type=float, default=8.0, help="s per vehicle on the narrowest link")
+    ap.add_argument("--reward", default="attrib", choices=["attrib", "team", "selfish"])
+    # Real-world limits, the same for every controller. Invented values: swept in the results.
+    ap.add_argument("--report-drop", type=float, default=0.2, help="share of fleet reports lost")
+    ap.add_argument("--report-noise", type=float, default=0.1, help="lognormal error of a reported time")
+    ap.add_argument("--compliance", type=float, default=0.9, help="share of instructions drivers follow")
+    ap.add_argument("--bg-reroute", type=float, default=0.3, help="share of background trips using another app")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the potential term, 0 = off")
     ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
     ap.add_argument("--lam", type=float, default=0.95)
@@ -346,7 +353,9 @@ def main() -> None:
             "layers": args.layers, "max_detour": args.max_detour, "reward": args.reward,
             "live_every": args.live_every, "incident_rate": args.incident_rate, "school_rate": args.school_rate,
             "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
-            "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "work_dir": str(run / "work")}
+            "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
+            "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
+            "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
@@ -416,6 +425,7 @@ def main() -> None:
                             torch.from_numpy(np.concatenate(pens))], -1)
         groups = _tick_groups(tick)
         tick_t = torch.from_numpy(tick)
+        actor_glob = torch.tensor([1.0, 0.0], device=dev)  # the actor is not told the fleet share
 
         def forward(chunk: np.ndarray, idx: np.ndarray):
             """A minibatch is a set of report periods: each one needs one GNN pass, however many decide."""
@@ -429,7 +439,7 @@ def main() -> None:
             local = prep_local(feat[ii].to(dev), cd >= 0)
             h, z = net.encode_actor(d)
             hc, zc = net.encode_critic(d, tr)
-            return net.policy(h, z, cd, local, g_, b), net.critic(hc, zc, cd, local, g_, b)
+            return net.policy(h, z, cd, local, g_ * actor_glob, b), net.critic(hc, zc, cd, local, g_, b)
 
         n = len(a)
         keys = sorted(groups)
@@ -482,7 +492,7 @@ def main() -> None:
                "train_tph_mean": round(float(np.mean([r["tph"] for r in res])), 0),
                "reward_mean": round(float(rew.mean()), 4), "ent_coef": round(ent_coef, 5),
                "dt_mean_s": round(float(dts.mean()), 2),
-               "crowd_mean": round(float(np.mean([r["crowd"].mean() for r in res])), 3),
+               "charged_mean_s": round(float(np.mean([(r["e_cust"] + r["e_other"]).mean() for r in res])), 2),
                "forced_share": round(float(np.mean([r["forced"] / max(1, r["forced"] + r["decisions"])
                                                      for r in res])), 3),
                "collect_s": round(t_col, 1), "update_s": round(time.perf_counter() - t0 - t_col, 1),
