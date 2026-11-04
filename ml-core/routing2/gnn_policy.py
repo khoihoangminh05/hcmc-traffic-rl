@@ -87,6 +87,12 @@ class RoutingNet(nn.Module):
                               env.ff_edge.float() / 60.0], -1)
         return cls(env.frm, env.to, static, hidden, layers)
 
+    def param_groups(self, lr_actor: float, lr_critic: float) -> list[dict]:
+        critic = list(self.critic_gnn.parameters()) + list(self.value.parameters())
+        ids = {id(p) for p in critic}
+        actor = [p for p in self.parameters() if id(p) not in ids]
+        return [{"params": actor, "lr": lr_actor}, {"params": critic, "lr": lr_critic}]
+
     def encode_actor(self, dyn: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """dyn [B, E, N_DYN_ACTOR]."""
         s = self.static.unsqueeze(0).expand(dyn.shape[0], -1, -1)

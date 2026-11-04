@@ -5,8 +5,15 @@ of its current one, one vehicle at a time (routing2.sumo_env, micro). The shared
 compression of the network built from fleet reports and scores each exit
 (routing2.gnn_policy). The critic is centralised: in training it also sees all vehicles.
 
-Reward of a decision over the time to the vehicle's next decision (--reward team, the default):
-    r = -[(1 - rho) dt + rho I / mean rate] / 60
+Reward of a decision over the time to the vehicle's next decision (--reward crowd, the default):
+    r = -(dt + beta C) / 60 + (R - gamma^dt R') / 60
+C is the number of vehicles on each link the decision sends the vehicle onto, weighted by how narrow
+the link is: the vehicle's externality, as in v3v, where dropping such a charge lost to the heuristic
+on travel time too. beta is chosen by hand, so it is swept and beta = 0 is reported. R is the live time
+to the destination: potential-based, so it guides learning without changing the best policy (--shaping).
+Neither term enters a score. Other rewards, for the record:
+
+--reward team was r = -[(1 - rho) dt + rho I / mean rate] / 60, correlated 0.996 with the selfish reward:
 I is the integral of the system rate w (trips in the system / trips) + (1 - w) (customers in the
 system / customers), whose integral over an episode is exactly J. So the shared term is J itself,
 with no estimate of who delayed whom; the central critic has to separate the credit. Dividing by the
@@ -16,10 +23,10 @@ episode's mean rate puts I on the scale of dt. rho = 0 is a selfish vehicle.
 these: every controller is scored on T_all, T_cust and J (routing2.objectives), w = --w-all.
 
 Episodes run in worker processes (one libsumo per process), each with a CPU copy of
-the policy; PPO updates run on the GPU. Every `--eval-every` updates the greedy
+the policy; PPO updates run on the GPU. Every `--eval-every` updates the
 policy and the baselines (free-flow next hop, app = live link time + live time to go, greedy = app +
 a queue cost per fleet vehicle on or committed to the link)
-play the fixed eval seeds 50000+, with `--eval-drain` extra seconds so that late trips can
+play the fixed eval seeds 50000+ (the actor samples), with `--eval-drain` extra seconds so that late trips can
 finish; `best.pt` keeps the best eval J.
 Final numbers come from held-out seeds 60000+ (not in this script).
 
@@ -118,7 +125,9 @@ def _worker_run(task: dict) -> dict:
 
     conf, env = _W["conf"], _W["env"]
     H = conf["horizon"]
-    d = make_demand(_W["g"], _W["zones"], [task["seed"]], task["tph"], H, task["pen"])
+    d = make_demand(_W["g"], _W["zones"], [task["seed"]], task["tph"], H, task["pen"],
+                    depart_window_s=conf["depart_window"], hot_share=conf["hot_share"], n_hot=conf["hot_zones"],
+                    peak_sd=conf["peak_sd"])
     kind = task["policy"]
     actor = None
     if kind == "rl":
@@ -126,8 +135,7 @@ def _worker_run(task: dict) -> dict:
         actor = _RLActor(_W["net"], H, task["pen"], torch.Generator().manual_seed(task["seed"]))
         pol = actor
     else:
-        # greedy: about 2 s per queued vehicle, an alley exit passes about 0.5 vehicles/s
-        pol = _Score(live=kind in ("app", "greedy"), queue_s=2.0 if kind == "greedy" else 0.0)
+        pol = _Score(live=kind in ("app", "greedy"), queue_s=task.get("queue_s", conf["greedy_queue"]) if kind == "greedy" else 0.0)
     env.cfg.sumo_seed = task.get("sumo_seed", 1)
     env.cfg.horizon_s = H + task.get("drain", 0.0)
     env.cfg.incident_seed = task["seed"]  # same events for every policy on a seed
@@ -136,7 +144,7 @@ def _worker_run(task: dict) -> dict:
            "mean_tt_s": ep.ttt_s / max(1, ep.n_trips),
            "mean_tt_ctrl_s": ep.ttt_ctrl_s / max(1, ep.n_ctrl),
            "arrived_share": ep.arrived / max(1, ep.n_trips), "decisions": ep.n_decisions,
-           "teleports": ep.teleports, "metrics": ep.metrics}
+           "forced": ep.forced, "teleports": ep.teleports, "metrics": ep.metrics}
     if task["record"] and ep.decisions:
         D = env.Dmax
         M = len(ep.decisions)
@@ -155,6 +163,8 @@ def _worker_run(task: dict) -> dict:
             a=np.array([dd["a"] for dd in ep.decisions], dtype=np.int64),
             t=np.array([dd["t"] for dd in ep.decisions], dtype=np.float32),
             dt=np.array([dd["dt"] for dd in ep.decisions], dtype=np.float32),
+            crowd=np.array([dd["crowd"] for dd in ep.decisions], dtype=np.float32),
+            togo=np.array([dd["togo"] for dd in ep.decisions], dtype=np.float32),
             e_cust=np.array([dd["e_cust"] for dd in ep.decisions], dtype=np.float32),
             e_other=np.array([dd["e_other"] for dd in ep.decisions], dtype=np.float32),
             sys_all=np.array([dd["sys_all"] for dd in ep.decisions], dtype=np.float32),
@@ -171,12 +181,28 @@ def _worker_run(task: dict) -> dict:
 # ---------------------------------------------------------------- learner side
 
 def _episode_reward(r: dict, args) -> np.ndarray:
-    if args.reward == "selfish":
-        return -r["dt"] / REWARD_SCALE
-    if args.reward == "attrib":
+    if args.reward == "crowd":
+        base = -(r["dt"] + args.beta * r["crowd"]) / REWARD_SCALE
+    elif args.reward == "selfish":
+        base = -r["dt"] / REWARD_SCALE
+    elif args.reward == "attrib":
         a, b = fleet_weights(args.w_all, r["pen"])
-        return -(a * (r["dt"] + r["e_cust"]) + b * r["e_other"]) / REWARD_SCALE
-    return team_reward(r["dt"], r["sys_all"], r["sys_cust"], r["sys_mean"], args.w_all, args.rho)
+        base = -(a * (r["dt"] + r["e_cust"]) + b * r["e_other"]) / REWARD_SCALE
+    else:
+        base = team_reward(r["dt"], r["sys_all"], r["sys_cust"], r["sys_mean"], args.w_all, args.rho)
+    return base + args.shaping * potential_shaping(r["togo"], r["veh"], r["t"], r["done"], r["dt"], args.gamma)
+
+
+def potential_shaping(togo: np.ndarray, veh: np.ndarray, t: np.ndarray, done: np.ndarray, dt: np.ndarray,
+                      gamma: float) -> np.ndarray:
+    """(R - gamma^dt R') / REWARD_SCALE, R = time to go at each decision. R' = 0 for a vehicle that
+    arrived; a vehicle cut at the horizon keeps its own R, as its value is bootstrapped there."""
+    order = np.lexsort((t, veh))
+    nxt = togo.copy()
+    nxt[done] = 0.0
+    same = veh[order][1:] == veh[order][:-1]
+    nxt[order[:-1][same]] = togo[order[1:][same]]
+    return (togo - gamma ** dt * nxt) / REWARD_SCALE
 
 
 def team_reward(dt, sys_all, sys_cust, sys_mean, w: float, rho: float) -> np.ndarray:
@@ -246,11 +272,16 @@ def git_hash() -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--episodes", type=int, default=0, help="episodes per update (default = workers)")
-    ap.add_argument("--updates", type=int, default=400)
-    ap.add_argument("--horizon", type=float, default=1800.0)
+    ap.add_argument("--updates", type=int, default=300)
+    ap.add_argument("--horizon", type=float, default=900.0)
+    ap.add_argument("--depart-window", type=float, default=600.0, help="trips depart in the first seconds")
     ap.add_argument("--tph", type=float, nargs=2, default=[4000.0, 7000.0], help="demand range per episode")
+    ap.add_argument("--hot-share", type=float, default=0.0, help="share of trips to or from the hot zones")
+    ap.add_argument("--hot-zones", type=int, default=4)
+    ap.add_argument("--peak-sd", type=float, default=0.0, help="spread of departures / window, 0 = uniform")
+    ap.add_argument("--greedy-queue", type=float, default=2.0, help="greedy baseline: s per fleet vehicle")
     ap.add_argument("--pen", type=float, nargs=2, default=[0.1, 1.0], help="range of the fleet share p per episode")
     ap.add_argument("--eval-pen", type=float, nargs="+", default=[0.25, 0.75])
     ap.add_argument("--max-detour", type=float, default=0.5, help="see SumoEnvConfig.max_detour")
@@ -261,13 +292,19 @@ def main() -> None:
     ap.add_argument("--live-every", type=float, default=10.0, help="seconds between fleet reports")
     ap.add_argument("--incident-rate", type=float, default=2.0, help="hidden accidents per hour")
     ap.add_argument("--school-rate", type=float, default=1.0, help="school releases per hour")
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--epochs", type=int, default=4)
+    # Learning rates, entropy schedule and size of a PPO step as in v3v, about 12 Adam steps per update.
+    ap.add_argument("--lr-actor", type=float, default=1e-4)
+    ap.add_argument("--lr-critic", type=float, default=5e-4)
+    ap.add_argument("--steps", type=int, default=12, help="Adam steps per update")
     ap.add_argument("--clip", type=float, default=0.2)
-    ap.add_argument("--ent", type=float, default=0.01)
+    ap.add_argument("--ent-start", type=float, default=0.03)
+    ap.add_argument("--ent-end", type=float, default=0.005)
+    ap.add_argument("--ent-anneal", type=int, default=400, help="updates from ent-start to ent-end")
     ap.add_argument("--vf", type=float, default=0.5)
     ap.add_argument("--gamma", type=float, default=0.9995, help="per simulated second")
-    ap.add_argument("--reward", default="team", choices=["team", "attrib", "selfish"])
+    ap.add_argument("--reward", default="crowd", choices=["crowd", "team", "attrib", "selfish"])
+    ap.add_argument("--beta", type=float, default=8.0, help="s per vehicle on the narrowest link")
+    ap.add_argument("--shaping", type=float, default=1.0, help="weight of the potential term, 0 = off")
     ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--eval-every", type=int, default=25)
@@ -283,7 +320,7 @@ def main() -> None:
     ap.add_argument("--smoke", action="store_true", help="2 workers, 5-min episodes, 2 updates, CPU")
     args = ap.parse_args()
     if args.smoke:
-        args.workers, args.updates, args.horizon = 2, 2, 300.0
+        args.workers, args.updates, args.horizon, args.depart_window = 2, 2, 300.0, 240.0
         args.tph, args.eval_tph, args.eval_seeds, args.eval_every = [2000.0, 3000.0], [2000.0], 1, 2
         args.eval_drain = 60.0
         args.device, args.ticks_per_batch = "cpu", 16
@@ -308,9 +345,10 @@ def main() -> None:
     conf = {"horizon": args.horizon, "zones": args.zones, "net": str(net_path), "hidden": args.hidden,
             "layers": args.layers, "max_detour": args.max_detour, "reward": args.reward,
             "live_every": args.live_every, "incident_rate": args.incident_rate, "school_rate": args.school_rate,
-            "work_dir": str(run / "work")}
+            "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
+            "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
     pool = ctx.Pool(args.workers, initializer=_worker_init, initargs=(conf,))
     metrics = (run / "metrics.jsonl").open("a", encoding="utf-8")
@@ -406,40 +444,47 @@ def main() -> None:
         adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
         ret_t = torch.from_numpy(ret)
         stats = {"pi": 0.0, "vf": 0.0, "ent": 0.0, "kl": 0.0, "clipfrac": 0.0, "k": 0}
+        ent_coef = args.ent_start + (args.ent_end - args.ent_start) * min(1.0, (u - 1) / max(1, args.ent_anneal))
         net.train()
-        for _ in range(args.epochs):
-            order = np.random.default_rng(int(rng.integers(1 << 31))).permutation(keys)
-            for s0 in range(0, len(order), args.ticks_per_batch):
-                chunk = np.array(order[s0:s0 + args.ticks_per_batch])
-                idx = np.concatenate([groups[int(k)] for k in chunk])
-                ii = torch.from_numpy(idx)
-                logits, val = forward(chunk, idx)
-                logp_all = torch.log_softmax(logits, 1)
-                lp = logp_all.gather(1, a[ii].to(dev).unsqueeze(1)).squeeze(1)
-                ratio = torch.exp(lp - old_logp[ii].to(dev))
-                ad = adv_t[ii].to(dev).float()
-                pi_loss = -torch.min(ratio * ad, ratio.clamp(1 - args.clip, 1 + args.clip) * ad).mean()
-                vf_loss = ((val - ret_t[ii].to(dev).float()) ** 2).mean()
-                p = logp_all.exp()
-                ent = -(torch.where(cand[ii].to(dev) >= 0, p * logp_all, torch.zeros_like(p))).sum(1).mean()
-                loss = pi_loss + args.vf * vf_loss - args.ent * ent
-                opt.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(net.parameters(), 0.5)
-                opt.step()
-                with torch.no_grad():
-                    stats["pi"] += float(pi_loss)
-                    stats["vf"] += float(vf_loss)
-                    stats["ent"] += float(ent)
-                    stats["kl"] += float((old_logp[ii].to(dev) - lp).mean())
-                    stats["clipfrac"] += float(((ratio - 1).abs() > args.clip).float().mean())
-                    stats["k"] += 1
+        shuffle = np.random.default_rng(int(rng.integers(1 << 31)))
+        order = shuffle.permutation(keys)
+        for step in range(args.steps):
+            s0 = step * args.ticks_per_batch % len(order)
+            chunk = np.array(order[s0:s0 + args.ticks_per_batch])
+            idx = np.concatenate([groups[int(k)] for k in chunk])
+            ii = torch.from_numpy(idx)
+            logits, val = forward(chunk, idx)
+            logp_all = torch.log_softmax(logits, 1)
+            lp = logp_all.gather(1, a[ii].to(dev).unsqueeze(1)).squeeze(1)
+            ratio = torch.exp(lp - old_logp[ii].to(dev))
+            ad = adv_t[ii].to(dev).float()
+            pi_loss = -torch.min(ratio * ad, ratio.clamp(1 - args.clip, 1 + args.clip) * ad).mean()
+            vf_loss = ((val - ret_t[ii].to(dev).float()) ** 2).mean()
+            p = logp_all.exp()
+            ent = -(torch.where(cand[ii].to(dev) >= 0, p * logp_all, torch.zeros_like(p))).sum(1).mean()
+            loss = pi_loss + args.vf * vf_loss - ent_coef * ent
+            opt.zero_grad()
+            loss.backward()
+            for group in opt.param_groups:
+                nn.utils.clip_grad_norm_(group["params"], 1.0)
+            opt.step()
+            with torch.no_grad():
+                stats["pi"] += float(pi_loss)
+                stats["vf"] += float(vf_loss)
+                stats["ent"] += float(ent)
+                stats["kl"] += float((old_logp[ii].to(dev) - lp).mean())
+                stats["clipfrac"] += float(((ratio - 1).abs() > args.clip).float().mean())
+                stats["k"] += 1
         net.eval()
         k = max(1, stats.pop("k"))
         row = {"update": u, "samples": n, "episodes": len(res),
                "train_mean_tt_s": round(float(np.mean([r["mean_tt_s"] for r in res])), 2),
                "train_tph_mean": round(float(np.mean([r["tph"] for r in res])), 0),
-               "reward_mean": round(float(rew.mean()), 4),
+               "reward_mean": round(float(rew.mean()), 4), "ent_coef": round(ent_coef, 5),
+               "dt_mean_s": round(float(dts.mean()), 2),
+               "crowd_mean": round(float(np.mean([r["crowd"].mean() for r in res])), 3),
+               "forced_share": round(float(np.mean([r["forced"] / max(1, r["forced"] + r["decisions"])
+                                                     for r in res])), 3),
                "collect_s": round(t_col, 1), "update_s": round(time.perf_counter() - t0 - t_col, 1),
                **{k2: round(v2 / k, 5) for k2, v2 in stats.items()},
                "elapsed_h": round((time.perf_counter() - t_start) / 3600, 3)}

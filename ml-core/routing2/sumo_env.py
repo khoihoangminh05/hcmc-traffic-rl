@@ -8,7 +8,9 @@ With `micro` on, the episode is a sequence of single decisions. SUMO runs until 
 a vehicle must choose: it is about to reach the end of its link (decide_ahead_*) or it departs.
 Vehicles due at the same time are served one at a time, in random order, at zero elapsed time, so
 each one sees what the previous one chose. The vehicle count feature then covers fleet vehicles
-only. Without `micro` (the setting of the gate scripts):
+only. A vehicle with a single exit is not asked: it is routed and nothing is recorded, so a
+decision's dt runs to the vehicle's next real choice. Without `micro` (the setting of the gate
+scripts):
 
 A controlled vehicle decides its next link at every node (next-hop routing):
 - at its origin, when it departs (it is inserted on the chosen first link);
@@ -163,6 +165,7 @@ class Episode:
     km: float = 0.0  # distance driven by controlled vehicles (completed links)
     incidents: int = 0
     n_decisions: int = 0
+    forced: int = 0  # micro: nodes passed with a single exit, no decision asked
     missed_decisions: int = 0  # micro: entered the next link before its decision came due
     # Integrals over the episode of (trips in the system / trips) and the same for customers. With
     # every trip finished they equal T_all and T_cust, so these are J written as a rate over time.
@@ -202,6 +205,7 @@ class SumoRoutingEnv:
         self.Dmax = max(max((len(x) for x in self.succ), default=1), self.out_edges.shape[1])
         self._path_cache: dict[tuple[int, int], list[int]] = {}
         self._lane_len: dict[int, float] = {}
+        self.crowd_weight = (g.cap.cpu().min() / g.cap.cpu()).tolist()  # 1 on the narrowest links
 
     def _time_to_zones(self, cost: torch.Tensor) -> torch.Tensor:
         """[Z, E] time from the end of each link to each zone over connected links."""
@@ -520,6 +524,7 @@ class SumoRoutingEnv:
         at_end: dict[str, tuple[float, float]] = {}  # vid -> integrals when it arrived
         self._ff_orig: dict[str, float] = {}
         self._ff_done: dict[str, float] = {}
+        self._last_rec: dict[str, dict] = {}  # micro + record: vid -> its last recorded decision
         try:
             while ss.getTime() < cfg.horizon_s - 1e-9:
                 t = ss.getTime()
@@ -699,6 +704,14 @@ class SumoRoutingEnv:
         M = len(reqs)
         if M == 0:
             return
+        forced = self.cfg.micro and M == 1 and len(cands[0]) == 1
+        if forced:
+            self._route(reqs[0], cands[0][0], ep, on_edge)
+            ep.forced += 1
+            last = self._last_rec.get(reqs[0][0])
+            if record and last is not None:  # its link counts for the choice that led here
+                last["crowd"] += self._crowd(cands[0][0])
+            return
         cand = torch.full((M, self.Dmax), -1, dtype=torch.long)
         feat = torch.zeros(M, self.Dmax, N_FEAT)
         for j, (vid, n, cur, z) in enumerate(reqs):
@@ -714,32 +727,44 @@ class SumoRoutingEnv:
         req = Request([r[0] for r in reqs], t, torch.tensor([r[1] for r in reqs]), cand, feat,
                       torch.tensor([r[3] for r in reqs]), live, self._tick)
         a = policy.act(req) if policy is not None else torch.zeros(M, dtype=torch.long)
-        sv = self.sumo.vehicle
         for j, (vid, n, cur, z) in enumerate(reqs):
             k = int(a[j])
             if not 0 <= k < len(cands[j]):
                 k = 0
             e = cands[j][k]
-            if self.cfg.max_detour is not None:
-                self._ff_done[vid] += float(self.ff_edge[e])
-            route = ([] if cur < 0 else [cur]) + [e] + self.completion(z, e)
-            ids = [self.eid[x] for x in route]
-            if cur < 0:
-                self._zone_of[vid] = z
-                rid = f"r_{vid}"
-                self.sumo.route.add(rid, ids)
-                sv.add(vid, rid, typeID="moto", depart="now", departLane="best", departSpeed="max")
-                on_edge[vid] = e
-                if self.cfg.micro and int(self.dst[e]) != int(self.zones[z]):
-                    self._due[vid] = (int(self.dst[e]), e, z)
-            else:
-                sv.setRoute(vid, ids)
-            self._clear_intent(vid)  # it left its previous target without entering it (teleport)
-            self._intent[vid] = e
-            self._intent_n[e] += 1
+            self._route(reqs[j], e, ep, on_edge)
             ep.n_decisions += 1
             if record:
                 ep.decisions.append({"vid": vid, "t": t, "node": n, "cand": cands[j], "feat": feat[j, : len(cands[j])],
                                      "dest_zone": z, "a": k, "tick": self._tick,
+                                     "crowd": self._crowd(e) if self.cfg.micro else 0.0,
+                                     "togo": float(live[j].min()) if live is not None else 0.0,
                                      "cust0": self._caused_cust.get(vid, 0.0),
                                      "other0": self._caused_other.get(vid, 0.0), "sys0": self._sys})
+                self._last_rec[vid] = ep.decisions[-1]
+
+    def _crowd(self, e: int) -> float:
+        """All vehicles now on link e, weighted by how narrow it is. Training reward only."""
+        return self.sumo.edge.getLastStepVehicleNumber(self.eid[e]) * self.crowd_weight[e]
+
+    def _route(self, req, e: int, ep: Episode, on_edge: dict[str, int]) -> None:
+        """Send the vehicle of a request onto exit e."""
+        vid, _, cur, z = req
+        sv = self.sumo.vehicle
+        if self.cfg.max_detour is not None:
+            self._ff_done[vid] += float(self.ff_edge[e])
+        route = ([] if cur < 0 else [cur]) + [e] + self.completion(z, e)
+        ids = [self.eid[x] for x in route]
+        if cur < 0:
+            self._zone_of[vid] = z
+            rid = f"r_{vid}"
+            self.sumo.route.add(rid, ids)
+            sv.add(vid, rid, typeID="moto", depart="now", departLane="best", departSpeed="max")
+            on_edge[vid] = e
+            if self.cfg.micro and int(self.dst[e]) != int(self.zones[z]):
+                self._due[vid] = (int(self.dst[e]), e, z)
+        else:
+            sv.setRoute(vid, ids)
+        self._clear_intent(vid)  # it left its previous target without entering it (teleport)
+        self._intent[vid] = e
+        self._intent_n[e] += 1

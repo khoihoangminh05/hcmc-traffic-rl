@@ -10,12 +10,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .demand import make_demand, pick_zones
+from .demand import hot_zone_index, make_demand, pick_zones
 from .gnn_policy import N_DYN_ACTOR, N_GLOBAL, N_LOCAL, RoutingNet, prep_local
 from .graph import DEFAULT_GRAPH, load_graph
 from .params import SimConfig
 from .sumo_env import N_FEAT, SumoEnvConfig, SumoRoutingEnv
-from .sumo_marl import _RLActor, _tick_groups, fleet_weights, gae, numpy_state, team_reward
+from .sumo_marl import _RLActor, _tick_groups, fleet_weights, gae, numpy_state, potential_shaping, team_reward
 from .sumo_net import build_net
 
 H = 180.0
@@ -197,6 +197,61 @@ def test_team_reward_limits():
     assert math.isclose(float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 0.0)[0]), -10.0 / 60.0)  # rho 0 = selfish
     full = float(team_reward(dt, sa, sc, (0.4, 0.2), 0.5, 1.0)[0])
     assert math.isclose(full, -(0.5 * 4 + 0.5 * 2) / 0.3 / 60.0)
+
+
+def test_single_exits_are_not_asked_and_their_crowd_counts_for_the_last_choice():
+    class App:
+        n_asked = 0
+
+        def act(self, req):
+            assert (req.cand >= 0).sum(1).min() > 1
+            App.n_asked += len(req.vid)
+            return req.live_cost.argmin(1)
+
+    H = 120.0
+    env = _env(H)
+    ep = env.run(make_demand(_g, _z, [61000], 6000.0, H, 1.0), 0, App(), record=True)
+    assert ep.forced > 0 and App.n_asked == ep.n_decisions == len(ep.decisions)
+    assert min(d["crowd"] for d in ep.decisions) >= 0.0 and max(d["crowd"] for d in ep.decisions) > 0.0
+    assert ep.missed_decisions == 0
+    print(f"  asked={ep.n_decisions} forced={ep.forced}")
+
+
+def test_potential_terms_add_up_to_the_first_potential():
+    togo = np.array([100.0, 60.0, 30.0, 50.0, 40.0], dtype=np.float32)
+    veh = np.array([0, 0, 0, 1, 1])
+    t = np.array([0.0, 10.0, 20.0, 5.0, 9.0], dtype=np.float32)
+    dt = np.array([10.0, 10.0, 30.0, 4.0, 3.0], dtype=np.float32)
+    done = np.array([True, True, True, True, False])
+    f = potential_shaping(togo, veh, t, done, dt, 1.0) * 60.0
+    assert abs(f[:3].sum() - 100.0) < 1e-3  # arrived: everything from the first R to 0
+    assert abs(f[3] - 10.0) < 1e-3 and abs(f[4]) < 1e-3  # cut at the horizon: keeps its own R
+    order = np.array([3, 0, 4, 1, 2])  # same result in any row order
+    g = potential_shaping(togo[order], veh[order], t[order], done[order], dt[order], 1.0) * 60.0
+    assert np.allclose(g, f[order])
+
+
+def test_peak_demand_goes_to_the_hot_zones_and_bunches():
+    H = 600.0
+    hot = hot_zone_index(_g, _z, 4)
+    plain = make_demand(_g, _z, [1], 6000.0, H, 0.5)
+    peak = make_demand(_g, _z, [1], 6000.0, H, 0.5, hot_share=0.6, peak_sd=0.15)
+    share = lambda d: float(torch.isin(d.dest_zone, hot).float().mean())  # noqa: E731
+    assert share(peak) > 0.35 > 0.25 > share(plain)
+    assert peak.dep_t.std() < 0.7 * plain.dep_t.std()
+    assert bool((peak.orig != _z[peak.dest_zone]).all())
+    again = make_demand(_g, _z, [1], 6000.0, H, 0.5, hot_share=0.6, peak_sd=0.15)
+    assert torch.equal(peak.orig, again.orig) and torch.equal(peak.dest_zone, again.dest_zone)
+
+
+def test_actor_and_critic_learn_at_their_own_rates():
+    net = RoutingNet.from_env(_env(60.0))
+    a, c = net.param_groups(1e-4, 5e-4)
+    assert a["lr"] == 1e-4 and c["lr"] == 5e-4
+    assert sum(p.numel() for p in a["params"]) + sum(p.numel() for p in c["params"]) == \
+        sum(p.numel() for p in net.parameters())
+    assert {id(p) for p in net.value.parameters()} <= {id(p) for p in c["params"]}
+    assert not {id(p) for p in net.score.parameters()} & {id(p) for p in c["params"]}
 
 
 def test_weights_reach_workers_without_tensors():
