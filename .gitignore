@@ -47,3 +47,6 @@ artifacts/
 
 # v4 SUMO net is rebuilt by python -m routing2.sumo_net
 sumo-env/networks/v4/
+
+# Paper PDFs (copyright), local only
+papers/
