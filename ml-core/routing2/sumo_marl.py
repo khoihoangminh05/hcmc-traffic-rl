@@ -129,6 +129,46 @@ class _Score:
         return torch.where(req.cand >= 0, s, torch.full_like(s, math.inf)).argmin(1)
 
 
+class _AppHistory(_Score):
+    """`app` that also sums, per link, reports x (live time - free flow): what a provider's history
+    holds. Reads only reports, never the true state. Picks the link set of _AppExt."""
+
+    def __init__(self, env):
+        super().__init__(live=True)
+        self.env = env
+        self.hist = np.zeros(env.g.n_edges, dtype=np.float64)
+        self.seen = np.zeros(env.g.n_edges, dtype=np.int64)
+
+    def observe(self, state: dict) -> None:
+        n = np.array(self.env._report_n, dtype=np.int64)
+        self.hist += (n - self.seen) * (self.env.live_tt - self.env.ff_edge).numpy()
+        self.seen = n
+
+
+class _AppExt:
+    """`app` with a fixed charge on the congested links of a set chosen from history. The structure is
+    Arora et al. 2026 (Nature Cities); the values are ours. Unlike their route-level cap, the cap here
+    holds at each decision. Specification: .docs/paper/experiment_protocol.md, section 3b."""
+
+    def __init__(self, env, links: list[int], f: float, charge_s: float, cap: float):
+        self.env, self.f, self.charge_s, self.cap = env, f, charge_s, cap
+        self.links = torch.tensor(links, dtype=torch.long)
+        self.tick = None
+
+    def act(self, req):
+        env = self.env
+        if req.tick != self.tick:  # live times change only at a report period
+            self.tick = req.tick
+            hit = self.links[env.ff_edge[self.links] / env.live_tt[self.links] < self.f]
+            self.cost = env.live_tt.clone()
+            self.cost[hit] += self.charge_s
+            self.togo = env._time_to_zones(self.cost)
+        c0 = req.cand.clamp(min=0)
+        charged = self.cost[c0] + self.togo[req.dest_zone.unsqueeze(1), c0]
+        allowed = req.live_cost <= (1.0 + self.cap) * req.live_cost.min(1, keepdim=True).values
+        return torch.where(allowed, charged, torch.full_like(charged, math.inf)).argmin(1)
+
+
 def _worker_run(task: dict) -> dict:
     from .demand import make_demand
     from .sumo_env import N_FEAT
@@ -145,6 +185,10 @@ def _worker_run(task: dict) -> dict:
         # 0: a provider does not know its share of the traffic. The critic does, in training.
         actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]), task.get("best", False))
         pol = actor
+    elif kind == "app_history":
+        pol = _AppHistory(env)
+    elif kind == "app_ext":
+        pol = _AppExt(env, task["links"], task["f"], task["charge_s"], task["cap"])
     else:
         pol = _Score(live=kind in ("app", "greedy"), queue_s=task.get("queue_s", conf["greedy_queue"]) if kind == "greedy" else 0.0)
     env.cfg.sumo_seed = task.get("sumo_seed", 1)
@@ -156,6 +200,8 @@ def _worker_run(task: dict) -> dict:
            "mean_tt_ctrl_s": ep.ttt_ctrl_s / max(1, ep.n_ctrl),
            "arrived_share": ep.arrived / max(1, ep.n_trips), "decisions": ep.n_decisions,
            "forced": ep.forced, "teleports": ep.teleports, "metrics": ep.metrics}
+    if kind == "app_history":
+        out["hist"] = pol.hist
     if task["record"] and ep.decisions:
         D = env.Dmax
         M = len(ep.decisions)
@@ -396,7 +442,7 @@ def main() -> None:
                     for pol in POLICIES:
                         if pol == "rl" or not base_rows:
                             tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol, "best": True,
-                                          "record": False, "state": st, "drain": args.eval_drain})
+                                          "record": False, "state": st, "drain": args.eval_drain, "sumo_seed": 50000 + s})
         res = pool.map(_worker_run, tasks)
         if not base_rows:
             base_rows.extend(r for r in res if r["policy"] != "rl")
@@ -409,7 +455,8 @@ def main() -> None:
             out["eval"][pol] = {
                 "J": round(float(np.mean([J(r) for r in rows])), 2),
                 **{k: avg(k) for k in ("T_all_s", "T_cust_s", "congestion_index", "p95_all_s", "p95_cust_s",
-                                       "arrived_share_all", "arrived_share_cust", "teleports_per_1k_trips")},
+                                       "arrived_share_all", "arrived_share_cust", "teleports_per_1k_trips",
+                                       "teleports_collision_per_1k_trips", "collisions_per_1k_trips")},
                 "by_tph": {str(t): {"J": round(float(np.mean([J(r) for r in rows if r["tph"] == t])), 2),
                                     "T_all_s": avg("T_all_s", [r for r in rows if r["tph"] == t]),
                                     "T_cust_s": avg("T_cust_s", [r for r in rows if r["tph"] == t])}

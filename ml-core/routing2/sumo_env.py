@@ -175,6 +175,8 @@ class Episode:
     arrived: int = 0
     arrived_ctrl: int = 0
     teleports: int = 0
+    teleports_collision: int = 0  # of those, the vehicle had just collided; the others waited too long
+    collisions: int = 0
     wall_s: float = 0.0
     km: float = 0.0  # distance driven by controlled vehicles (completed links)
     incidents: int = 0
@@ -530,6 +532,7 @@ class SumoRoutingEnv:
         slow: dict[int, int] = {}
         ep.incidents = len(schedule)
         self._probes: deque = deque()
+        self._report_n = [0] * self.g.n_edges  # traversal reports received per link, this episode
         self._on_edge = on_edge
         self._t_enter: dict[str, float] = {}
         self._intent: dict[str, int] = {}  # fleet vid -> link it chose and has not entered
@@ -654,8 +657,11 @@ class SumoRoutingEnv:
                         ep.km += float(self.length[last]) / 1000.0
                         if vid in self._t_enter:
                             self._add_probe(tn, last, tn - self._t_enter.pop(vid))
-                for vid in ss.getStartingTeleportIDList() if hasattr(ss, "getStartingTeleportIDList") else []:
+                crashed = {c.collider for c in ss.getCollisions()}
+                ep.collisions += len(crashed)
+                for vid in ss.getStartingTeleportIDList():
                     ep.teleports += 1
+                    ep.teleports_collision += vid in crashed
             for vid in sv.getIDList():  # still driving at the end
                 rem_ff[vid] = self._remaining_ff(vid, int(dz[int(vid[1:])]))
         finally:
@@ -681,6 +687,9 @@ class SumoRoutingEnv:
                 ep.ttt_ctrl_s += tt
                 ep.arrived_ctrl += vid in arrive
         ep.metrics = trip_metrics(*zip(*rows), teleports=ep.teleports) if rows else {}
+        if rows:
+            ep.metrics["collisions_per_1k_trips"] = 1000.0 * ep.collisions / len(rows)
+            ep.metrics["teleports_collision_per_1k_trips"] = 1000.0 * ep.teleports_collision / len(rows)
         # time from each decision to the vehicle's next one (or arrival / horizon)
         nxt: dict[str, float] = {}
         nxt_cust, nxt_other = dict(self._caused_cust), dict(self._caused_other)
@@ -706,6 +715,7 @@ class SumoRoutingEnv:
     def _add_probe(self, t: float, e: int, x: float) -> None:
         if self._rng.random() >= self.cfg.report_drop:
             self._probes.append((t, e, x * self._rng.lognormvariate(0.0, self.cfg.report_noise)))
+            self._report_n[e] += 1
 
     def _remaining_ff(self, vid: str, z: int) -> float:
         """Free-flow time from the vehicle's position to zone z along connected links."""

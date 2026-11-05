@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 METRICS = ("T_all_s", "T_cust_s", "p95_all_s", "p95_cust_s", "arrived_share_all", "arrived_share_cust",
-           "congestion_index", "teleports_per_1k_trips")
+           "congestion_index", "teleports_per_1k_trips", "teleports_collision_per_1k_trips", "collisions_per_1k_trips")
 
 
 def paired_gain(by_seed: dict[int, tuple[float, float]], draws: int = 10000, seed: int = 0) -> dict:
@@ -76,7 +76,7 @@ def summarize(rows: list[dict], w_all: float) -> dict:
             res[n] = {"J": round(float(np.mean(vals)), 2),
                       "J_sd_seeds": round(float(np.std(vals, ddof=1)), 2) if len(vals) > 1 else None}
             for m in METRICS:
-                res[n][m] = round(float(np.mean(list(seed_mean(n, lambda x: x["metrics"][m], keep).values()))), 3)
+                res[n][m] = round(float(np.mean(list(seed_mean(n, lambda x: x["metrics"].get(m, float("nan")), keep).values()))), 3)
         return res
 
     base = [n for n in names if n not in ("sample", "argmax")]
@@ -95,6 +95,16 @@ def summarize(rows: list[dict], w_all: float) -> dict:
             "by_pen": {str(p): block(lambda x, p=p: x["pen"] == p) for p in pens}}
 
 
+def worker_conf(saved: dict, work_dir: Path) -> dict:
+    """What a worker needs from the args.json of a run."""
+    conf = {k: saved[k] for k in ("horizon", "zones", "hidden", "layers", "max_detour", "reward", "live_every",
+                                  "incident_rate", "school_rate", "depart_window", "hot_share", "hot_zones",
+                                  "peak_sd", "greedy_queue", "report_drop", "report_noise", "compliance")}
+    conf.update(teleport_s=saved.get("teleport_s", 180.0))  # runs before v7 used 180 s
+    conf.update(bg_reroute=saved["bg_reroute"], net=str(Path(saved["net_dir"]) / "quan4_v4.net.xml"), work_dir=str(work_dir))
+    return conf
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", type=Path, required=True)
@@ -104,8 +114,9 @@ def main() -> None:
     ap.add_argument("--tph", type=float, nargs="+", default=[8000.0, 10000.0])
     ap.add_argument("--pen", type=float, nargs="+", default=[0.25, 0.5, 0.75])
     ap.add_argument("--modes", nargs="+", default=["sample", "argmax"], choices=["sample", "argmax"])
-    ap.add_argument("--baselines", nargs="*", default=["ff", "app", "greedy"], choices=["ff", "app", "greedy"])
-    ap.add_argument("--queue", type=float, default=0.5, help="greedy: s per fleet vehicle")
+    ap.add_argument("--baselines", nargs="*", default=["ff", "app", "greedy"], choices=["ff", "app", "greedy", "app_ext"])
+    ap.add_argument("--queue", type=float, default=None, help="greedy: s per fleet vehicle; default: --tuned, else 0.5")
+    ap.add_argument("--tuned", type=Path, default=None, help="tuned.json from routing2.tune_baselines")
     ap.add_argument("--drain", type=float, default=None, help="default: the run's --eval-drain")
     ap.add_argument("--teleport-s", type=float, default=None)
     ap.add_argument("--workers", type=int, default=16)
@@ -126,20 +137,22 @@ def main() -> None:
     out = out_dir / f"heldout_eval_{stamp}.json"
     if out.exists():
         raise FileExistsError(out)
-    conf = {k: saved[k] for k in ("horizon", "zones", "hidden", "layers", "max_detour", "reward", "live_every",
-                                  "incident_rate", "school_rate", "depart_window", "hot_share", "hot_zones",
-                                  "peak_sd", "greedy_queue", "report_drop", "report_noise", "compliance")}
-    conf.update(teleport_s=saved.get("teleport_s", 180.0))  # runs before v7 used 180 s
+    conf = worker_conf(saved, args.work_dir or out_dir / f"work_heldout_{stamp}")
     drain = saved["eval_drain"] if args.drain is None else args.drain
-    conf.update(bg_reroute=saved["bg_reroute"], net=str(Path(saved["net_dir"]) / "quan4_v4.net.xml"),
-                work_dir=str(args.work_dir or out_dir / f"work_heldout_{stamp}"))
+    tuned = json.loads(args.tuned.read_text(encoding="utf-8")) if args.tuned else {}
+    if "app_ext" in args.baselines and not tuned:
+        ap.error("app_ext needs --tuned")
+    queue = args.queue if args.queue is not None else tuned.get("greedy_queue", 0.5)
+    extra = {"greedy": {"queue_s": queue}, "app_ext": tuned.get("app_ext", {})}
     tasks = []
     for s in range(args.seeds):
         for tph in args.tph:
             for pen in args.pen:
-                base = {"seed": args.start + s, "tph": tph, "pen": pen, "record": False, "drain": drain}
+                # one SUMO seed per scenario seed, the same for every controller
+                base = {"seed": args.start + s, "tph": tph, "pen": pen, "record": False, "drain": drain,
+                        "sumo_seed": args.start + s}
                 tasks += [{**base, "policy": "rl", "name": m, "state": state} for m in args.modes]
-                tasks += [{**base, "policy": b, "name": b, "queue_s": args.queue} for b in args.baselines]
+                tasks += [{**base, "policy": b, "name": b, **extra.get(b, {})} for b in args.baselines]
     t0 = time.time()
     rows = []
     with mp.get_context("spawn").Pool(args.workers, _init, (conf, args.teleport_s)) as pool:
