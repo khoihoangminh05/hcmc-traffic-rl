@@ -48,6 +48,32 @@ def test_jam_three_links_ahead_reaches_the_current_link():
     assert torch.allclose(ha[0, 0], net.encode_actor(c)[0][0, 0], atol=1e-6), "4 links is out of reach"
 
 
+def test_untrained_prior_is_the_shortest_path_controller():
+    net = RoutingNet(torch.tensor([0, 1]), torch.tensor([1, 2]), torch.zeros(5, 3), hidden=16, layers=2, prior=10.0).eval()
+    h, z = net.encode_actor(torch.rand(1, 5, N_DYN_ACTOR))
+    feat, cand = torch.rand(6, 3, N_FEAT) * 50.0 + 1.0, torch.tensor([[0, 1, 2]] * 5 + [[3, 4, -1]])
+    mask = cand >= 0
+    logits = net.policy(h, z, cand, prep_local(feat, mask), torch.zeros(6, N_GLOBAL), torch.zeros(6, dtype=torch.long))
+    ff = torch.where(mask, feat[..., 0] + feat[..., 3], torch.full((6, 3), 1e9))
+    assert torch.equal(logits.argmax(1), ff.argmin(1))
+
+
+def test_fleet_ahead_counts_along_the_live_path():
+    env = _env(60.0)
+    gen = torch.Generator().manual_seed(1)
+    load = torch.randint(0, 4, (env.g.n_edges,), generator=gen).float()
+    env.live_tt = env.ff_edge * (1.0 + torch.rand(env.g.n_edges, generator=gen))
+    env.live_D = env._time_to_zones(env.live_tt)
+    table = env._fleet_ahead_table(load)
+    n = 0
+    for z in range(len(env.zones)):
+        for e in torch.randint(0, env.g.n_edges, (20,), generator=gen).tolist():
+            if math.isfinite(float(env.live_D[z, e])):
+                assert abs(float(table[z, e]) - sum(float(load[x]) for x in env.live_path(z, e))) < 1e-3
+                n += 1
+    assert n > 100
+
+
 def test_exit_order_and_padding_do_not_matter():
     net = _tiny()
     h, z = net.encode_actor(torch.rand(1, 5, N_DYN_ACTOR))

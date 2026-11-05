@@ -89,7 +89,8 @@ def _worker_init(conf: dict) -> None:
                                                  bg_reroute_share=conf["bg_reroute"],
                                                  incident_rate_per_h=conf["incident_rate"],
                                                  school_rate_per_h=conf["school_rate"]))
-    _W.update(g=g, zones=zones, env=env, conf=conf, net=RoutingNet.from_env(env, conf["hidden"], conf["layers"]))
+    _W.update(g=g, zones=zones, env=env, conf=conf,
+              net=RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior", 0.0)))
     _W["net"].eval()
 
 
@@ -314,7 +315,7 @@ def _learner_net(conf: dict, run: Path) -> RoutingNet:
 
     g = load_graph(DEFAULT_GRAPH, replace(SimConfig(), horizon_s=conf["horizon"]))
     env = SumoRoutingEnv(g, pick_zones(g, conf["zones"], seed=0), SumoEnvConfig(net=Path(conf["net"]), work_dir=run / "work"))
-    return RoutingNet.from_env(env, conf["hidden"], conf["layers"])
+    return RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior", 0.0))
 
 
 def git_hash() -> str:
@@ -355,7 +356,10 @@ def main() -> None:
     ap.add_argument("--eval-pen", type=float, nargs="+", default=[0.25, 0.75])
     ap.add_argument("--max-detour", type=float, default=0.5, help="see SumoEnvConfig.max_detour")
     ap.add_argument("--teleport-s", type=float, default=300.0, help="SUMO --time-to-teleport, its default")
-    ap.add_argument("--layers", type=int, default=3, help="GNN layers")
+    ap.add_argument("--layers", type=int, default=6, help="GNN layers")
+    ap.add_argument("--prior", type=float, default=120.0,
+                    help="logits per minute of free-flow cost above the best exit at the start; 0 = none. "
+                         "Sampling at 30, 60, 120 left 49%, 13%, 1% of trips unfinished (6 episodes)")
     ap.add_argument("--ticks-per-batch", type=int, default=64, help="report periods per PPO minibatch")
     ap.add_argument("--zones", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=64)
@@ -367,8 +371,10 @@ def main() -> None:
     ap.add_argument("--lr-critic", type=float, default=5e-4)
     ap.add_argument("--steps", type=int, default=12, help="Adam steps per update")
     ap.add_argument("--critic-steps", type=int, default=24, help="extra critic-only Adam steps per update")
+    ap.add_argument("--actor-delay", type=int, default=10, help="first updates teach only the critic")
+    ap.add_argument("--lr-end", type=float, default=0.1, help="actor learning rate at the end / at the start, linear")
     ap.add_argument("--clip", type=float, default=0.2)
-    ap.add_argument("--ent-start", type=float, default=0.03)
+    ap.add_argument("--ent-start", type=float, default=0.01)
     ap.add_argument("--ent-end", type=float, default=0.005)
     ap.add_argument("--ent-anneal", type=int, default=400, help="updates from ent-start to ent-end")
     ap.add_argument("--vf", type=float, default=0.5)
@@ -383,7 +389,7 @@ def main() -> None:
     ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--eval-every", type=int, default=25)
-    ap.add_argument("--eval-seeds", type=int, default=8)
+    ap.add_argument("--eval-seeds", type=int, default=16)
     ap.add_argument("--eval-tph", type=float, nargs="+", default=[4000.0, 6000.0])
     ap.add_argument("--eval-drain", type=float, default=900.0, help="extra simulated seconds in eval")
     ap.add_argument("--w-all", type=float, default=0.5, help="J = w T_all + (1 - w) T_cust")
@@ -424,7 +430,7 @@ def main() -> None:
             "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
             "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
             "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
-            "teleport_s": args.teleport_s, "work_dir": str(run / "work")}
+            "teleport_s": args.teleport_s, "prior": args.prior, "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
@@ -464,7 +470,15 @@ def main() -> None:
             }
         return out
 
-    best = math.inf
+    # The untrained net first: with --prior it plays the free-flow controller, so a run never reports
+    # less than that on the selection seeds.
+    ev = evaluate(0)
+    best = ev["eval"]["rl"]["J"]
+    torch.save({"net": net.state_dict(), "args": vars(args), "update": 0, "eval": ev}, run / "best.pt")
+    torch.save({"net": net.state_dict(), "update": 0}, run / "ckpt_u0.pt")
+    metrics.write(json.dumps({"update": 0, "eval": ev["eval"]}, default=str) + "\n")
+    metrics.flush()
+    print(f"[marl] update 0 eval rl={best} ff={ev['eval']['ff']['J']}", flush=True)
     ep_seed = 1000
     t_start = time.perf_counter()
     for u in range(1, args.updates + 1):
@@ -534,7 +548,9 @@ def main() -> None:
         net.train()
         shuffle = np.random.default_rng(int(rng.integers(1 << 31)))
         order = shuffle.permutation(keys)
-        for step in range(args.steps):
+        opt.param_groups[0]["lr"] = args.lr_actor * (1.0 + (args.lr_end - 1.0) * (u - 1) / max(1, args.updates - 1))
+        # zero gradients would not do: weight decay would still move the actor through Adam
+        for step in range(args.steps if u > args.actor_delay else 0):
             s0 = step * args.ticks_per_batch % len(order)
             chunk = np.array(order[s0:s0 + args.ticks_per_batch])
             idx = np.concatenate([groups[int(k)] for k in chunk])

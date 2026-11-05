@@ -8,6 +8,14 @@ upstream, where the inflow comes from.
 
 Actor input per link: congestion from fleet reports, fleet load, alley flag, length, free-flow time.
 The critic is used in training only and also sees the true count and speed of all vehicles.
+
+The GNN reaches a few links, about 100 m on this map's short links. A jam further on reaches the
+decision through the live time to go; other fleet vehicles further on through the fleet-ahead
+feature, the count along the live shortest path to the destination.
+
+With prior > 0 the score starts as the free-flow choice and the network learns a correction: logits
+= correction - prior x (free-flow cost above the best exit, minutes), with the last layer at zero.
+No data is imitated. Before any training the top exit is exactly the shortest-path controller's.
 """
 
 from __future__ import annotations
@@ -18,13 +26,13 @@ import torch.nn as nn
 N_DYN_ACTOR = 2  # congestion, fleet load
 N_DYN_TRUE = 2  # all vehicles per 10 m, speed / free-flow speed
 N_STATIC = 3  # alley flag, log length, free-flow minutes
-N_LOCAL = 6  # per candidate, fresh at the decision
+N_LOCAL = 7  # per candidate, fresh at the decision
 N_GLOBAL = 2  # time of day, share of the fleet p
 
 
 def prep_local(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Raw candidate features [M, D, sumo_env.N_FEAT] -> [M, D, N_LOCAL]. Relative to the best exit."""
-    ff, tt, n, togo, length, intent, live_togo = feat.unbind(-1)
+    ff, tt, n, togo, length, intent, live_togo, ahead = feat.unbind(-1)
     big = torch.full_like(ff, 1e6)
     a = torch.where(mask, ff + togo, big)
     b = torch.where(mask, tt + live_togo, big)
@@ -32,7 +40,7 @@ def prep_local(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     rel_tt = ((b - b.min(1, keepdim=True).values) / 60.0).clamp(max=10.0)
     congestion = torch.log(tt.clamp(min=1e-3) / ff.clamp(min=1e-3)).clamp(-1.0, 4.0)
     load = ((n + intent) / length.clamp(min=5.0) * 10.0).clamp(max=5.0)
-    x = torch.stack([rel_ff, rel_tt, congestion, load, togo / 600.0, live_togo / 600.0], -1)
+    x = torch.stack([rel_ff, rel_tt, congestion, load, togo / 600.0, live_togo / 600.0, (ahead / 20.0).clamp(max=5.0)], -1)
     return torch.where(mask.unsqueeze(-1), x, torch.zeros_like(x))
 
 
@@ -66,7 +74,7 @@ class EdgeGNN(nn.Module):
 
 class RoutingNet(nn.Module):
     def __init__(self, frm: torch.Tensor, to: torch.Tensor, static: torch.Tensor, hidden: int = 64, layers: int = 3,
-                 heads: int = 4):
+                 heads: int = 4, prior: float = 0.0):
         super().__init__()
         E = static.shape[0]
         self.register_buffer("static", static, persistent=False)
@@ -80,12 +88,16 @@ class RoutingNet(nn.Module):
                                    nn.Linear(hidden, 1))
         self.value = nn.Sequential(nn.Linear(2 * hidden + N_LOCAL + N_GLOBAL, 2 * hidden), nn.ReLU(),
                                    nn.Linear(2 * hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1))
+        self.prior = nn.Parameter(torch.tensor(float(prior))) if prior > 0 else None
+        if prior > 0:
+            nn.init.zeros_(self.score[-1].weight)
+            nn.init.zeros_(self.score[-1].bias)
 
     @classmethod
-    def from_env(cls, env, hidden: int = 64, layers: int = 3) -> RoutingNet:
+    def from_env(cls, env, hidden: int = 64, layers: int = 3, prior: float = 0.0) -> RoutingNet:
         static = torch.stack([env.g.is_alley.cpu().float(), torch.log1p(env.length.float()) / 5.0,
                               env.ff_edge.float() / 60.0], -1)
-        return cls(env.frm, env.to, static, hidden, layers)
+        return cls(env.frm, env.to, static, hidden, layers, prior=prior)
 
     def param_groups(self, lr_actor: float, lr_critic: float) -> list[dict]:
         critic = list(self.critic_gnn.parameters()) + list(self.value.parameters())
@@ -114,6 +126,8 @@ class RoutingNet(nn.Module):
         tok = self.attn_norm(tok + cmp)
         q = self.query(torch.cat([z[b], glob], -1)).unsqueeze(1).expand_as(tok)
         logits = self.score(torch.cat([tok, q], -1)).squeeze(-1)
+        if self.prior is not None:
+            logits = logits - self.prior * local[..., 0]
         return logits.masked_fill(~mask, -1e9)
 
     def critic(self, h, z, cand, local, glob, b) -> torch.Tensor:

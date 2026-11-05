@@ -54,8 +54,8 @@ from .objectives import trip_metrics
 from .sumo_check import MOTO_VTYPE
 from .sumo_net import sumo_binary
 
-N_FEAT = 7  # per candidate exit
-FEAT_FF, FEAT_TT, FEAT_N, FEAT_TOGO, FEAT_LEN, FEAT_INTENT, FEAT_LIVE_TOGO = range(N_FEAT)
+N_FEAT = 8  # per candidate exit
+FEAT_FF, FEAT_TT, FEAT_N, FEAT_TOGO, FEAT_LEN, FEAT_INTENT, FEAT_LIVE_TOGO, FEAT_AHEAD = range(N_FEAT)
 
 
 def read_connections(net: Path, e_of: dict[str, int]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -237,6 +237,23 @@ class SumoRoutingEnv:
             D = nd
         return D.float()
 
+    def _fleet_ahead_table(self, load: torch.Tensor) -> torch.Tensor:
+        """[Z, E + 1] sum of `load` over the links after each link on the live shortest path to each
+        zone. Pointer doubling; a path of up to 256 links counts in full."""
+        Z, E = len(self.zones), self.g.n_edges
+        idx = self.frm.unsqueeze(0).expand(Z, -1)
+        cost = self.live_tt[self.to].unsqueeze(0) + self.live_D[:, self.to]
+        best = torch.full((Z, E), math.inf, dtype=cost.dtype).scatter_reduce(1, idx, cost, reduce="amin", include_self=True)
+        zi, k = torch.nonzero((cost == best.gather(1, idx)) & torch.isfinite(cost), as_tuple=True)
+        nxt = torch.full((Z, E + 1), E, dtype=torch.long)
+        nxt[zi, self.frm[k]] = self.to[k]
+        nxt[:, :E][self._at] = E  # arrived: the path ends
+        out = torch.cat([load.float(), torch.zeros(1)])[nxt]
+        for _ in range(8):
+            out = out + out.gather(1, nxt)
+            nxt = nxt.gather(1, nxt)
+        return out
+
     def _refresh_probe(self, t: float) -> None:
         win = self.cfg.probe_window_s
         while self._probes and self._probes[0][0] < t - win:
@@ -381,6 +398,10 @@ class SumoRoutingEnv:
         ed = self.sumo.edge
         rows = []
         probe = self.cfg.live_source == "probe" and self.cfg.live_every_s > 0
+        if self._ahead_tick != self._tick or self._ahead is None:  # the same table for one report period
+            self._ahead_tick = self._tick
+            self._ahead = self._fleet_ahead_table(torch.tensor(self._fleet_seen, dtype=torch.float32)
+                                                  + torch.tensor(self._intent_n, dtype=torch.float32))
         for e in cand:
             eid = self.eid[e]
             ff = float(self.ff_edge[e])
@@ -393,7 +414,7 @@ class SumoRoutingEnv:
             count = self._fleet_seen[e] if self.cfg.micro else ed.getLastStepVehicleNumber(eid)
             rows.append([ff, tt, float(count),
                          float(self.Dz[z, e]), float(self.length[e]),
-                         float(self._intent_n[e]), float(self.live_D[z, e])])
+                         float(self._intent_n[e]), float(self.live_D[z, e]), float(self._ahead[z, e])])
         return rows
 
     def _attribute(self, dt: float, ep: Episode) -> None:
@@ -411,16 +432,17 @@ class SumoRoutingEnv:
             if e is not None:
                 on.setdefault(e, []).append((sv.getLanePosition(vid), vid, sv.getSpeed(vid)))
         lane_len = self._lane_len
-        near_node: dict[int, list[tuple[int, str]]] = {}
+        near_node: dict[int, list[tuple[int, str, float]]] = {}
         for e, rows in on.items():
             if e not in lane_len:
                 lane_len[e] = self.sumo.lane.getLength(f"{self.eid[e]}_0")
             rows.sort(reverse=True)  # front of the link first
-            for pos, vid, _ in rows:
+            for pos, vid, v in rows:
                 if lane_len[e] - pos <= cfg.attribute_merge_m:
-                    near_node.setdefault(int(self.dst[e]), []).append((e, vid))
+                    near_node.setdefault(int(self.dst[e]), []).append((e, vid, v))
         for e, rows in on.items():
-            vf = float(self.length[e]) / float(self.ff_edge[e])
+            # an event's own slowdown is nobody's fault: measure against the limit in force
+            vf = self._limit.get(e, float(self.length[e]) / float(self.ff_edge[e]))
             node = int(self.dst[e])
             for k, (pos, vid, v) in enumerate(rows):
                 if v >= 0.9 * vf:  # drivers run a little under the limit: not a delay
@@ -429,7 +451,8 @@ class SumoRoutingEnv:
                 ep.delay_seen_s += d
                 causes = [x[1] for x in rows[:k] if x[0] - pos <= cfg.attribute_ahead_m]
                 if lane_len[e] - pos <= cfg.attribute_merge_m:
-                    causes += [u for f, u in near_node.get(node, []) if f != e]
+                    # a vehicle standing on another branch is waiting too, it holds nobody up
+                    causes += [u for f, u, w in near_node.get(node, []) if f != e and w > 0.5]
                 if not causes:
                     continue
                 ep.delay_attributed_s += d
@@ -530,6 +553,8 @@ class SumoRoutingEnv:
         schedule = self._incident_schedule(rt, dep)
         ending: list[tuple[float, int]] = []
         slow: dict[int, int] = {}
+        self._limit: dict[int, float] = {}  # link -> speed limit of an event in force
+        self._ahead, self._ahead_tick = None, None
         ep.incidents = len(schedule)
         self._probes: deque = deque()
         self._report_n = [0] * self.g.n_edges  # traversal reports received per link, this episode
@@ -562,11 +587,13 @@ class SumoRoutingEnv:
                     for e in links:
                         self.sumo.edge.setMaxSpeed(self.eid[e], speed)
                         slow[e] = slow.get(e, 0) + 1
+                        self._limit[e] = speed
                         ending.append((t + dur, e))
                 for item in [x for x in ending if x[0] <= t]:
                     ending.remove(item)
                     slow[item[1]] -= 1
                     if slow[item[1]] == 0:  # overlapping events: free flow only after the last one
+                        self._limit.pop(item[1], None)
                         self.sumo.edge.setMaxSpeed(self.eid[item[1]], float(self.g.v_free[item[1]]))
                 if cfg.live_every_s > 0 and t >= next_live:
                     self._refresh_live(t)
