@@ -9,7 +9,7 @@
 | 3 | Kết quả có phụ thuộc teleport không? | 🔴 | Có, thứ hạng đổi; teleport còn gộp cả va chạm (`code_review.md` A1). Kết quả chính ở 600 s trở lên, báo theo nguyên nhân |
 | 4 | Một seed train có đủ không? | 🔴 | Không. ≥ 5 seed train cho phương pháp chính |
 | 5 | Sao không dùng tối ưu tập trung hoặc Frank–Wolfe? | 🟡 | Vì cần biết cầu và không phản ứng online. Cần số: mốc `dso` để cho thấy khoảng còn lại, và lý do mô phỏng động khác gán tĩnh |
-| 6 | Baseline có bị làm yếu không? | 🟡 | Chung môi trường. Cần thêm app có ngưỡng kiểu Chan (p.8), vì `app` đổi ở mọi nút có thể bất lợi, và `app_ext` theo Arora 2026; tham số greedy chọn trên seed 50000+ |
+| 6 | Baseline có bị làm yếu không? | 🟡 | Chung môi trường. Cần thêm app có ngưỡng kiểu Chan (p.8), vì `app` đổi ở mọi nút có thể bất lợi, và `app_ext` theo Arora 2026; tham số baseline chọn trên seed 40000+ riêng (q = 0.5 cũ chọn trên 50000, phải chọn lại) |
 | 7 | MARL hơn heuristic bao nhiêu, có phân biệt được không? | 🔴 | Chưa có kết quả seed báo cáo. Nhiễu chênh 3–4% trên 48 cặp |
 | 8 | Chia công `attrib` có đúng không? | 🔴 | Chưa kiểm được; `code_review.md` mục 2. Không qua thì bỏ khỏi đóng góp |
 | 9 | Điều gì mới so với Yun 2024, MA-GRL, Psarou? | 🟡 | `related_work.md` 2.7–2.8. Đọc đủ MA-GRL, chạy Scopus trước khi nộp |

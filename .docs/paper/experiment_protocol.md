@@ -13,17 +13,33 @@ Kết quả "không hơn baseline" vẫn được báo cáo. Không đổi giả
 | Việc | Seed |
 |---|---|
 | Train | từ 1001 tăng dần |
-| Chọn checkpoint, chế độ argmax hay sample, tham số greedy | 50000–50007 |
+| Tinh chỉnh tham số baseline | 40000–40007 |
+| Chọn checkpoint, chế độ argmax hay sample | 50000–50007 |
 | Báo cáo | 60000–60029, chỉ chạy một lần cho mỗi cấu hình đã chốt |
 SUMO seed của lần báo cáo lấy theo seed cầu thay vì cố định 1, để kết quả bao gồm cả nhiễu tài xế.
 
 ## 3. Controller
 Dùng chung môi trường, chung lịch sự cố, chung giới hạn thông tin, chung `max_detour`:
-- `ff`, `app` (đổi ở mọi nút), `app_chan` (kiểm tra mỗi T s, đổi khi lợi ≥ X s và Y%; chọn T, X, Y trên seed 50000+), `greedy` (q chọn trên seed 50000+).
-- `app_ext`: app + phí cố định ΔT trên cạnh tắc theo lịch sử khi tốc độ dưới ngưỡng, có trần so với đường nhanh nhất (Arora 2026, p.6). Đây là cách đã thử thật, không học, nên reviewer sẽ so với nó. Chọn ΔT, ngưỡng, tập cạnh trên seed 50000+.
+- `ff`, `app` (đổi ở mọi nút), `app_chan` (kiểm tra mỗi T s, đổi khi lợi ≥ X s và Y%; chọn T, X, Y trên seed 40000+), `greedy` (q chọn trên seed 40000+).
+- `app_ext`: xem mục 3b. Cách đã thử thật, không học, nên reviewer sẽ so với nó.
 - `dso`: bộ tuyến tốt nhất từ `gate_msa` có ngoại ứng ngã nhập, làm mốc, ghi rõ là tĩnh và có thông tin hoàn hảo về cầu.
 - MARL: `selfish`, `attrib` nếu qua mục 6, nhánh rẻ `selfish + β(f − F)` để đối chiếu, MLP không GNN cho ablation.
 Không được chỉnh baseline theo seed báo cáo. Mọi luật chung mới phải đo tác động lên baseline trước.
+
+## 3b. Đặc tả `app_ext` (theo Arora et al. 2026, Nature Cities)
+
+**Bài công bố gì:** phí cố định ΔT cộng vào chi phí tuyến cho mỗi đoạn trong tập chọn, chỉ khi tốc độ đoạn dưới ngưỡng v_congested, là một phần cố định của tốc độ tự do (p.6, Eq.2–3). Tổng phí bị chặn để tuyến được chọn nằm trong "vài phần trăm" so với tuyến nhanh nhất (p.2, p.6, Eq.4); trung bình tuyến đổi chậm hơn khoảng 30 s (p.6). Tập đoạn: khoảng 100 mỗi thành phố, chọn theo mật độ xe cao lúc cao điểm hoặc có nút cổ chai, từ dữ liệu lịch sử (p.1, p.6, p.10). Chi phí đoạn cập nhật theo mẫu lịch sử, không tối ưu động (p.4).
+
+**Bài không công bố trong phần đã đọc:** giá trị ΔT, phần tốc độ ngưỡng, giá trị trần. Chưa xem Supplementary. Vậy các giá trị dưới đây là **của ta, không phải của Arora**, và phải viết rõ như vậy trong bài.
+
+**Cách làm trong next-hop** (lựa chọn của ta):
+1. Lịch sử: chạy `app` trên seed tinh chỉnh 40000–40007, cùng kịch bản và cùng giới hạn thực tế. Lấy cạnh từ `live_tt` báo cáo, không dùng trạng thái thật. Tập chọn = K cạnh có tổng (số báo cáo × (live_tt − ff)) lớn nhất.
+2. Lúc chạy: cạnh x trong tập, nếu ff(x)/live_tt(x) < f thì cost(x) = live_tt(x) + ΔT, ngược lại live_tt(x). Tính time-to-go trên cost này.
+3. Trần ở mỗi quyết định: chỉ xét các lối ra có live_cost ≤ (1 + c) × live_cost nhỏ nhất, chọn lối có cost phạt nhỏ nhất. Phí áp dụng theo tuyến của Arora ở đây thành áp dụng theo từng nút: khác biệt này phải nêu.
+
+**Lưới tinh chỉnh:** K {20, 50, 100}, f {0.5, 0.7}, ΔT {15, 30, 60} s, c {0.03, 0.05, 0.10}. Mốc 30 s và vài phần trăm lấy từ bài; phần còn lại tự đặt. Chọn J thấp nhất trên seed 40000–40007, rồi cố định. **Không dùng seed 50000+ hay 60000+.**
+
+**Quy tắc chung cho baseline:** mọi tham số baseline (q của `greedy`, T, X, Y của `app_chan`, các tham số trên) tinh chỉnh trên 40000–40007. q = 0.5 hiện tại của `greedy` từng chọn trên seed 50000, nên phải chọn lại. Seed 50000+ chỉ để chọn checkpoint và chế độ của policy học. Tinh chỉnh baseline trên số seed bằng với số seed chọn checkpoint.
 
 ## 4. Kịch bản
 **Chính (giai thừa):** cầu {8000, 10000} chuyến/giờ × p {0.1, 0.25, 0.5, 0.75, 1.0} × tuân thủ {0.7, 0.9, 1.0} × mất báo cáo {0, 0.2, 0.5}. Với controller không học, chỉ p và tuân thủ làm đổi kết quả khi thông tin đổi. 
