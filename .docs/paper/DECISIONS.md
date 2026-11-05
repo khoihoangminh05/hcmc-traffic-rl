@@ -30,8 +30,13 @@ Người dùng ủy quyền: "có gì hợp lý thì bạn chốt luôn hộ tô
 - J của ff đổi gần gấp đôi theo giả định này. **Chiều so sánh còn đảo**: ở 2.5 m app kém ff, ở hẹp hơn app hơn ff. Nhận định "ba baseline trùng nhau" chỉ đúng ở 2.5 m, nên chưa thể coi là tính chất của mạng hẻm.
 - Không đơn điệu: 1.75 m tệ hơn 1.25 m. Nghi là do mô hình sublane: 1.75 m gần đủ cho hai xe nên xe chen rồi kẹt, 1.25 m là đi một hàng. Chưa kiểm chứng; có thể là tác dụng của độ phân giải ngang 0.8 m. Đang đo lại với 0.4 m.
 
-**Chốt:** v7 giữ nguyên 2.5 m để trọn chuỗi. Chuỗi sau không dùng một giá trị đơn lẻ:
-1. Nếu Grok gán nhãn được: bề rộng mỗi chiều = trung vị bề rộng cả hẻm / 2, chỉ sau khi kiểm mẫu.
-2. Nếu không: giá trị chính 1.25 m, vì đó là cách đọc nhất quán của giả định gốc "hẻm rộng 2.5 m, hai chiều"; 2.5 m và 1.75 m là độ nhạy bắt buộc.
-Kết quả chính phải nêu thứ hạng controller theo từng bề rộng.
-Đảo lại khi: có số đo; hoặc 1.75 m hóa ra chỉ là lỗi độ phân giải.
+**Nhãn Grok (2026-11-05, `.docs/results_alley/alley_width_sample.csv`):** 17/50 hẻm có nhãn bề rộng từ ảnh Street View: < 2 m: 3; 2–3 m: 11; 3–4 m: 1; > 4 m: 2. `two_way` không xác định được ở cả 50 hẻm. Theo tag OSM: `highway=service` (1298 cạnh hẻm): 14 nhãn, toàn ≤ 4 m, 13 nhãn ≤ 3 m; `highway=residential` (162 cạnh): 2 nhãn, đều > 4 m.
+
+Hạn chế, phải nêu trong bài: chỉ 34% có nhãn, mới gán các nơi có ảnh; 15/20 ảnh từ 2020; ước lượng bằng mắt theo nhóm, nhiều dòng ghi "rough" hoặc chưa xác minh khoảng cách tới đúng cạnh; không phải số đo. Mình kiểm tra 3 ảnh Grok lưu: 412 (< 2 m) hợp lý; Hẻm 76 (> 4 m) đúng, có ô tô đỗ; Hẻm 884 (< 2 m) có thể đã ở mức 2–3 m, không có vật so sánh. Không dùng `alley_width_interpolated.csv`: Grok tự suy từ hẻm cùng tên cách tới 194 m, không phải quan sát.
+
+**Chốt:** v7 giữ nguyên 2.5 m để trọn chuỗi. Chuỗi sau:
+1. Cạnh `highway=service`: **1.25 m mỗi chiều**, tức hẻm 2.5 m, nằm trong nhóm phổ biến nhất 2–3 m.
+2. Cạnh `highway=residential` trong lớp hẻm: 2.5 m mỗi chiều, **tạm thời**, vì mới có 2 nhãn. Đang gán thêm (`alley_width_sample2.csv`, Việc 1b).
+3. Độ nhạy bắt buộc: toàn bộ hẻm 2.5 m và 1.75 m mỗi chiều. Kết quả chính nêu thứ hạng controller theo từng trường hợp.
+Giả định hai chiều mỗi hẻm là từ OSM, chưa kiểm được.
+Đảo lại khi: có số đo; hoặc nhóm residential cho nhãn khác; hoặc các lần đo 0.4 m cho thấy 1.25 m cũng là tác dụng của độ phân giải.

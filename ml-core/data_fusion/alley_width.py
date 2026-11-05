@@ -8,9 +8,10 @@ OSM has no width on any alley link, so the SUMO net assumes a value. This gives 
 - `osm`: estimates width as the free space between building footprints on each side of the alley,
   at points along it. Reports coverage honestly: a side with no building within --search-m gives no
   estimate. The value is an upper bound on the drivable width (walls, not parked bikes or stalls)
-  and needs the labelled sample to check it. Overpass responses are cached under --out.
+  and needs the labelled sample to check it. Tried 2026-11-04: OSM has too few footprints here (2 of
+  730 alleys), so this is not usable for Quan 4. Overpass responses are cached under --out.
 
-    python -m data_fusion.alley_width sample --n 50 --csv ../.docs/alley_width_sample.csv
+    python -m data_fusion.alley_width sample --n 50 --csv ../.docs/results_alley/alley_width_sample.csv
     python -m data_fusion.alley_width osm --out artifacts/out/quan4/alley_width
     python -m data_fusion.alley_width test     # no network
 """
@@ -188,7 +189,7 @@ def main() -> None:
     ap.add_argument("cmd", choices=["sample", "osm", "test"])
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--csv", type=Path, default=Path("../.docs/alley_width_sample.csv"))
+    ap.add_argument("--csv", type=Path, default=Path("../.docs/results_alley/alley_width_sample.csv"))
     ap.add_argument("--out", type=Path, default=Path("artifacts/out/quan4/alley_width"))
     ap.add_argument("--step-m", type=float, default=5.0)
     ap.add_argument("--search-m", type=float, default=12.0)

@@ -50,3 +50,4 @@ sumo-env/networks/v4/
 
 # Paper PDFs (copyright), local only
 papers/
+.docs/results_alley/*.png

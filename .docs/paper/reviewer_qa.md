@@ -5,7 +5,7 @@
 | # | Câu hỏi | Trạng thái | Trả lời hoặc việc cần làm |
 |---|---|---|---|
 | 1 | Nhu cầu tổng hợp, sao tin được? | 🔴 | Báo là tổng hợp, quét dạng cầu. Cần đối chiếu hồ sơ tốc độ Mapbox và đo độ nhạy theo cầu (`experiment_protocol` mục 4) |
-| 2 | Mô hình hẻm đã kiểm chứng chưa? | 🔴 | Chưa, và đây là giả định bậc nhất: đổi bề rộng làm đảo thứ tự baseline (`DECISIONS.md` D7). OSM 0/1460 có width; footprint nhà chỉ cho 2/730 hẻm. Cần gán nhãn mẫu 50 hẻm (`.docs/alley_width_sample.csv`), quay video nếu được. Phải viết rõ: chưa hiệu chỉnh hành vi trong hẻm |
+| 2 | Mô hình hẻm đã kiểm chứng chưa? | 🔴 | Chưa, và đây là giả định bậc nhất: đổi bề rộng làm đảo thứ tự baseline (`DECISIONS.md` D7). OSM 0/1460 có width; footprint nhà chỉ cho 2/730 hẻm. Có nhãn thô từ Street View cho 17/50 hẻm (đa số 2–3 m), tag OSM có vẻ phân biệt được hẻm rộng (`DECISIONS.md` D7). Quay video nếu được. Phải viết rõ: chưa hiệu chỉnh hành vi trong hẻm |
 | 3 | Kết quả có phụ thuộc teleport không? | 🔴 | Có, thứ hạng đổi; teleport còn gộp cả va chạm (`code_review.md` A1). Kết quả chính ở 600 s trở lên, báo theo nguyên nhân |
 | 4 | Một seed train có đủ không? | 🔴 | Không. ≥ 5 seed train cho phương pháp chính |
 | 5 | Sao không dùng tối ưu tập trung hoặc Frank–Wolfe? | 🟡 | Vì cần biết cầu và không phản ứng online. Cần số: mốc `dso` để cho thấy khoảng còn lại, và lý do mô phỏng động khác gán tĩnh |

@@ -23,6 +23,14 @@ Yêu cầu:
 - Không tải hay lưu ảnh Street View. Không thêm hay xóa dòng, không đổi các cột đã có sẵn dữ liệu.
 - Nếu 5 dòng đầu đều không có ảnh, dừng lại và báo ngay, đừng làm tiếp.
 
+## Việc 1b. Gán thêm nhãn 40 hẻm
+
+File: `.docs\results_alley\alley_width_sample2.csv`. Làm giống Việc 1, cùng quy tắc, với các lưu ý:
+- Trong cột `note`, ghi **vật so sánh đã dùng để ước lượng** (xe máy, ô tô, cửa nhà), và khoảng cách từ ảnh tới đúng vị trí nếu xem được.
+- Không tự suy nhãn cho dòng không có ảnh (lần trước có file nội suy theo hẻm cùng tên, không dùng được). Không cần file nội suy.
+- Không lưu ảnh chụp màn hình.
+- Không dừng khi vài dòng đầu không có ảnh: lần trước khoảng 60% không có ảnh là bình thường.
+
 ## Việc 2. Tải bài báo còn thiếu
 
 Lưu vào `papers\`, đúng tên ở cột cuối. Chỉ giữ PDF đúng bài: kiểm tra tiêu đề và tác giả ở trang đầu. Bản truy cập mở trước; nếu cần tài khoản thì ghi `need_login` kèm DOI.
