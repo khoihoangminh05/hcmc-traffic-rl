@@ -16,6 +16,9 @@ Kết quả "không hơn baseline" vẫn được báo cáo. Không đổi giả
 | Tinh chỉnh tham số baseline | 40000–40007 |
 | Chọn checkpoint, chế độ argmax hay sample | 50000–50007 |
 | Báo cáo | 60000–60029, chỉ chạy một lần cho mỗi cấu hình đã chốt |
+
+Chạy chẩn đoán phía bài báo từ giờ dùng seed 70000+. Lưu ý: quét bề rộng ngày 2026-11-05 đã dùng 50010–50015 chỉ với `ff`, `app`, không tinh chỉnh hay chọn gì trên đó; seed 50008+ đang được v7 dùng.
+
 SUMO seed của lần báo cáo lấy theo seed cầu thay vì cố định 1, để kết quả bao gồm cả nhiễu tài xế.
 
 ## 3. Controller
@@ -67,7 +70,9 @@ Cầu là tổng hợp: báo cáo như vậy, kèm chỉ số tắc nghẽn và 
 | 2.5 m, 0.4 m | 18.8% | 111 / 170 | 307 / 473 |
 | 2.5 m, 0.8 m (v7) | 7.4% | 17 / 27 | 48 / 74 |
 
-Tương quan `ff`/`app` trên cùng seed chỉ từ −0.36 đến 0.48, nên ghép cặp giúp rất ít: ùn tắc hỗn loạn làm mất lợi ích của số ngẫu nhiên chung. Độ lệch ước từ 6 seed rất rộng (khoảng tin cậy 95% của sd khoảng 0.62–2.45 lần) và cầu thấp có thể khác, nên **đo lại với policy thật trên 30 seed trước khi chốt**. Tạm thời: D2 với 30 seed mỗi kịch bản chỉ đủ phát hiện gain khoảng 6% trong một kịch bản đơn ở 1.25 m, 0.4 m (α = 0.05, chưa hiệu chỉnh Holm); gain nhỏ hơn phải dựa trên gộp kịch bản hoặc tăng seed. Kịch bản khó nên phân phối hai đỉnh (có seed tắc lan, có seed không): báo cả phân phối và tỉ lệ seed tắc lan, không chỉ trung bình.
+Tương quan `ff`/`app` trên cùng seed chỉ từ −0.36 đến 0.48, nên ghép cặp giúp rất ít: ùn tắc hỗn loạn làm mất lợi ích của số ngẫu nhiên chung. Độ lệch ước từ 6 seed rất rộng (khoảng tin cậy 95% của sd khoảng 0.62–2.45 lần) và cầu thấp có thể khác, nên **đo lại với policy thật trên 30 seed trước khi chốt**. Tạm thời: D2 với 30 seed mỗi kịch bản chỉ đủ phát hiện gain khoảng 6% trong một kịch bản đơn ở 1.25 m, 0.4 m (α = 0.05, chưa hiệu chỉnh Holm); gain nhỏ hơn phải dựa trên gộp kịch bản hoặc tăng seed. Đối chiếu từ session train (`PLAN_V4`, code d0b5d71, 16 seed 50008–50023, cầu 8000 và 10000, p 0.25 và 0.75, teleport 300, 2.5 m, độ phân giải 0.8 m, **SUMO seed cố định 1**): sd chênh lệch ghép cặp so với `ff` là `app` 7.47%, `greedy` 7.61%, `selfish` u250 6.50%, u300 7.00%, `attrib` u300 7.87%; tương quan với `ff` 0.17–0.36. Số seed cho lực 80%: 14–20 cho 5%, 37–54 cho 3%, 83–122 cho 2%. Ở mức này 30 seed phát hiện được khoảng 3.3–4%. `v6` −5.55% trên 8 seed vì vậy **chưa được xác lập**. Khác với số ở trên là do cấu hình khác và SUMO seed không đổi; sd có thể lớn hơn khi đổi SUMO seed và ở 0.4 m, như bảng trên cho thấy.
+
+Kịch bản khó nên phân phối hai đỉnh (có seed tắc lan, có seed không): báo cả phân phối và tỉ lệ seed tắc lan, không chỉ trung bình.
 
 ## 6. Kiểm chứng chia công (điều kiện để giữ `attrib`)
 Giữ nguyên seed SUMO; đổi hành động hoặc bỏ nhóm xe, đo ΔJ thật; hồi quy theo tổng phí. Đo sàn nhiễu bằng cách lặp với nhóm ngẫu nhiên không bị tính phí. Kiểm riêng ở nút có ưu tiên, nơi thứ tự hàng đợi không phản ánh nhân quả (Psarou 2510.11410 p.4, p.6). Báo cáo cả khi không đạt.
