@@ -122,7 +122,7 @@ def test_learner_gets_the_same_logp_as_the_worker_on_the_real_map():
         h, z = net.encode_actor(dyn[ids])
         pos = {k: i for i, k in enumerate(ids)}
         b = torch.tensor([pos[int(x)] for x in tick])
-        glob = torch.stack([(t / H).clamp(max=1.0), torch.full((M,), 0.5)], -1)
+        glob = torch.stack([(t / H).clamp(max=1.0), torch.full((M,), 0.5), torch.full((M,), 0.9)], -1)
         logits = net.policy(h, z, cand, prep_local(feat, cand >= 0), glob, b)
         logp = torch.log_softmax(logits, 1).gather(1, a.unsqueeze(1)).squeeze(1)
         worst = float((logp - logp_w).abs().max())

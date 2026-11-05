@@ -68,6 +68,7 @@ def main() -> None:
     ap.add_argument("--drain", type=float, default=None, help="default: the run's --eval-drain")
     ap.add_argument("--quick", action="store_true", help="one value of each app_ext parameter, to test the tool")
     ap.add_argument("--no-ext", action="store_true", help="ff, app and greedy q only; tuned.json then has no app_ext")
+    ap.add_argument("--qs", type=float, nargs="+", default=None, help="greedy q values, default GREEDY_Q")
     args = ap.parse_args()
     if args.start + args.seeds > 50000:
         ap.error("tuning seeds must stay below 50000")
@@ -88,7 +89,7 @@ def main() -> None:
         grid = {"K": EXT_K[:1], "f": EXT_F[:1], "charge_s": EXT_CHARGE_S[:1], "cap": EXT_CAP[:1]} if args.quick else \
             {"K": EXT_K, "f": EXT_F, "charge_s": EXT_CHARGE_S, "cap": EXT_CAP}
         ext = [] if args.no_ext else [dict(zip(grid, x)) for x in itertools.product(*grid.values())]
-        qs = GREEDY_Q[:1] if args.quick else GREEDY_Q[1:]  # q = 0 is app
+        qs = args.qs or (GREEDY_Q[:1] if args.quick else GREEDY_Q[1:])  # q = 0 is app
         tasks = [{**b, "policy": "ff", "name": "ff"} for b in scen]
         tasks += [{**b, "policy": "greedy", "name": f"greedy_q{q}", "queue_s": q} for q in qs for b in scen]
         for i, x in enumerate(ext):

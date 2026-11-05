@@ -136,12 +136,17 @@ class SumoEnvConfig:
     report_noise: float = 0.0
     # True: features count the fleet vehicles seen at the last report, not where they are right now.
     fleet_snapshot: bool = False
-    # A driver follows the instruction with this probability, otherwise takes the shortest exit.
+    # A driver follows the instruction with this probability, otherwise takes the shortest exit, and
+    # less often the further the instruction is from the shortest way: x exp(-extra free-flow s /
+    # compliance_detour_s). Drivers avoid long or unfamiliar ways. Invented values: swept in the results.
     # The provider only learns it from later reports, so intent keeps what it told the driver.
     compliance: float = 1.0
+    compliance_detour_s: float = 60.0
     # This share of background trips uses another navigation app (SUMO rerouting device).
     bg_reroute_share: float = 0.0
     bg_reroute_period_s: float = 120.0
+    # Measure vehicle-seconds standing per link, for routing2.scenarios. Not for controllers.
+    record_link_wait: bool = False
 
 
 @dataclass
@@ -192,6 +197,8 @@ class Episode:
     trip_tt: dict = field(default_factory=dict)  # trip index -> travel time, unfinished ones included
     caused_s: dict = field(default_factory=dict)  # fleet vid -> delay charged to it, all vehicles
     metrics: dict = field(default_factory=dict)  # routing2.objectives.trip_metrics
+    link_wait_s: list[float] = field(default_factory=list)
+    teleport_links: dict = field(default_factory=dict)  # link index -> teleports of fleet vehicles
 
 
 class SumoRoutingEnv:
@@ -572,6 +579,9 @@ class SumoRoutingEnv:
         self._caused_cust: dict[str, float] = {}
         self._caused_other: dict[str, float] = {}
         next_attr = cfg.attribute_every_s
+        next_wait = 5.0
+        if cfg.record_link_wait:
+            ep.link_wait_s = [0.0] * self.g.n_edges
         kept = [i for i in order if rt[i]]
         n_kept, n_cust = max(1, len(kept)), max(1, ep.n_ctrl)
         dep_idx, in_all, in_cust = 0, 0, 0
@@ -668,6 +678,10 @@ class SumoRoutingEnv:
                     in_cust += is_cust
                     dep_idx += 1
                 self._sys = (sys_all, sys_cust)
+                if cfg.record_link_wait and tn >= next_wait:
+                    next_wait += 5.0
+                    for k, eid in enumerate(self.eid):
+                        ep.link_wait_s[k] += 5.0 * self.sumo.edge.getLastStepHaltingNumber(eid)
                 if record and cfg.attribute_every_s > 0 and tn >= next_attr:
                     self._attribute(cfg.attribute_every_s, ep)
                     next_attr += cfg.attribute_every_s
@@ -689,6 +703,8 @@ class SumoRoutingEnv:
                 for vid in ss.getStartingTeleportIDList():
                     ep.teleports += 1
                     ep.teleports_collision += vid in crashed
+                    if vid in on_edge:  # where: known for the fleet only
+                        ep.teleport_links[on_edge[vid]] = ep.teleport_links.get(on_edge[vid], 0) + 1
             for vid in sv.getIDList():  # still driving at the end
                 rem_ff[vid] = self._remaining_ff(vid, int(dz[int(vid[1:])]))
         finally:
@@ -798,8 +814,11 @@ class SumoRoutingEnv:
             if not 0 <= k < len(cands[j]):
                 k = 0
             told = cands[j][k]
-            ignores = self.cfg.compliance < 1.0 and self._rng.random() >= self.cfg.compliance
-            self._route(reqs[j], self._best(z, cands[j]) if ignores else told, told, on_edge)
+            best = self._best(z, cands[j])
+            extra = float(self.ff_edge[told] + self.Dz[z, told] - self.ff_edge[best] - self.Dz[z, best])
+            follow = self.cfg.compliance * math.exp(-max(extra, 0.0) / self.cfg.compliance_detour_s)
+            ignores = follow < 1.0 and self._rng.random() >= follow
+            self._route(reqs[j], best if ignores else told, told, on_edge)
             ep.n_decisions += 1
             if record:
                 ep.decisions.append({"vid": vid, "t": t, "node": n, "cand": cands[j], "feat": feat[j, : len(cands[j])],

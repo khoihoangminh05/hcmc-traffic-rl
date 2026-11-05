@@ -28,7 +28,7 @@ N_DYN_ACTOR = 2  # congestion, fleet load
 N_DYN_TRUE = 2  # all vehicles per 10 m, speed / free-flow speed
 N_STATIC = 3  # alley flag, log length, free-flow minutes
 N_LOCAL = 8  # per candidate, fresh at the decision
-N_GLOBAL = 2  # time of day, share of the fleet p
+N_GLOBAL = 3  # time of day, share of the fleet p, share of drivers who follow instructions
 
 
 def prior_weights(rule: str, alpha: float, q: float = 0.0) -> list[float]:

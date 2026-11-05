@@ -93,13 +93,17 @@ def _worker_init(conf: dict) -> None:
     _W.update(g=g, zones=zones, env=env, conf=conf,
               net=RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior")))
     _W["net"].eval()
+    if conf.get("hotspots"):
+        from .scenarios import load_hotspots
+
+        _W["spots"] = load_hotspots(conf["hotspots"])
 
 
 class _RLActor:
     """Samples from the policy while recording; `best` takes the top exit."""
 
-    def __init__(self, net: RoutingNet, H: float, p: float, gen: torch.Generator, best: bool = False):
-        self.net, self.H, self.p, self.gen, self.best = net, H, p, gen, best
+    def __init__(self, net: RoutingNet, H: float, p: float, gen: torch.Generator, best: bool = False, follow: float = 0.9):
+        self.net, self.H, self.p, self.gen, self.best, self.follow = net, H, p, gen, best, follow
         self.logp: list[torch.Tensor] = []
 
     @torch.no_grad()
@@ -109,7 +113,7 @@ class _RLActor:
     @torch.no_grad()
     def act(self, req):
         M = len(req.vid)
-        glob = torch.tensor([min(req.t / self.H, 1.0), self.p]).expand(M, -1)
+        glob = torch.tensor([min(req.t / self.H, 1.0), self.p, self.follow]).expand(M, -1)
         local = prep_local(req.feat, req.cand >= 0)
         logits = self.net.policy(self.h, self.z, req.cand, local, glob, torch.zeros(M, dtype=torch.long))
         if self.best:
@@ -171,6 +175,25 @@ class _AppExt:
         return torch.where(allowed, charged, torch.full_like(charged, math.inf)).argmin(1)
 
 
+class _SplitOracle:
+    """Diagnostic, not a controller: knows the burst's school and sends a share of the fleet around its
+    alley, the others by free flow. Sizes what perfect coordination could gain in a burst."""
+
+    def __init__(self, env, link: int, share: float):
+        self.env, self.share = env, share
+        cost = env.ff_edge.clone()
+        cost[link] = 1e5
+        self.around = cost + 0.0
+        self.togo = env._time_to_zones(cost)
+
+    def act(self, req):
+        c0 = req.cand.clamp(min=0)
+        direct = self.env.ff_edge[c0] + self.env.Dz[req.dest_zone.unsqueeze(1), c0]
+        around = self.around[c0] + self.togo[req.dest_zone.unsqueeze(1), c0]
+        go = torch.tensor([int(v[1:]) * 2654435761 % 1000 < 1000 * self.share for v in req.vid]).unsqueeze(1)
+        return torch.where(req.cand >= 0, torch.where(go, around, direct), torch.full_like(direct, math.inf)).argmin(1)
+
+
 def _worker_run(task: dict) -> dict:
     from .demand import make_demand
     from .sumo_env import N_FEAT
@@ -180,30 +203,46 @@ def _worker_run(task: dict) -> dict:
     d = make_demand(_W["g"], _W["zones"], [task["seed"]], task["tph"], H, task["pen"],
                     depart_window_s=conf["depart_window"], hot_share=conf["hot_share"], n_hot=conf["hot_zones"],
                     peak_sd=conf["peak_sd"])
+    pen = task["pen"]
+    spot = None
+    if task.get("burst_n", conf.get("burst_n", 0)) > 0:
+        from .scenarios import add_burst, hotspot_of
+
+        spot = _W["spots"][task["spot"]] if "spot" in task else hotspot_of(_W["spots"], task["seed"])
+        d = add_burst(d, spot, task["seed"], task.get("burst_n", conf["burst_n"]), task.get("burst_fleet", conf["burst_fleet"]))
+        pen = float(d.ctrl.float().mean())  # the reward weights follow the true share of the fleet
     kind = task["policy"]
     actor = None
+    follow = task.get("compliance", conf["compliance"])  # a provider estimates this from its history
+    env.cfg.compliance = follow
     if kind == "rl":
         _W["net"].load_state_dict({k: torch.from_numpy(v) for k, v in task["state"].items()})
         # 0: a provider does not know its share of the traffic. The critic does, in training.
-        actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]), task.get("best", False))
+        actor = _RLActor(_W["net"], H, 0.0, torch.Generator().manual_seed(task["seed"]), task.get("best", False), follow)
         pol = actor
     elif kind == "app_history":
         pol = _AppHistory(env)
     elif kind == "app_ext":
         pol = _AppExt(env, task["links"], task["f"], task["charge_s"], task["cap"])
+    elif kind == "split":
+        pol = _SplitOracle(env, spot.link, task["share"])
     else:
         pol = _Score(live=kind in ("app", "greedy"), queue_s=task.get("queue_s", conf["greedy_queue"]) if kind == "greedy" else 0.0)
     env.cfg.sumo_seed = task.get("sumo_seed", 1)
     env.cfg.horizon_s = H + task.get("drain", 0.0)
     env.cfg.incident_seed = task["seed"]  # same events for every policy on a seed
+    env.cfg.record_link_wait = task.get("link_wait", False)
     ep = env.run(d, 0, pol, record=task["record"])
     out = {"seed": task["seed"], "tph": task["tph"], "policy": kind, "wall_s": ep.wall_s,
            "mean_tt_s": ep.ttt_s / max(1, ep.n_trips),
            "mean_tt_ctrl_s": ep.ttt_ctrl_s / max(1, ep.n_ctrl),
            "arrived_share": ep.arrived / max(1, ep.n_trips), "decisions": ep.n_decisions,
-           "forced": ep.forced, "teleports": ep.teleports, "metrics": ep.metrics}
+           "forced": ep.forced, "teleports": ep.teleports, "metrics": ep.metrics,
+           "stress": task.get("burst_n", conf.get("burst_n", 0)) > 0, "teleport_links": ep.teleport_links}
     if kind == "app_history":
         out["hist"] = pol.hist
+    if task.get("link_wait", False):
+        out["link_wait"] = ep.link_wait_s
     if task["record"] and ep.decisions:
         D = env.Dmax
         M = len(ep.decisions)
@@ -215,7 +254,7 @@ def _worker_run(task: dict) -> dict:
             cand[j, :k] = dd["cand"]
         vids = {}
         out.update(
-            feat=feat, cand=cand, pen=task["pen"],
+            feat=feat, cand=cand, pen=pen, follow=follow,
             tick=np.array([dd["tick"] for dd in ep.decisions], dtype=np.int64),
             dyn=torch.stack([x["actor"] for x in ep.ticks]).numpy(),
             true=torch.stack([x["true"] for x in ep.ticks]).numpy(),
@@ -352,6 +391,10 @@ def main() -> None:
     ap.add_argument("--hot-share", type=float, default=0.0, help="share of trips to or from the hot zones")
     ap.add_argument("--hot-zones", type=int, default=4)
     ap.add_argument("--peak-sd", type=float, default=0.0, help="spread of departures / window, 0 = uniform")
+    ap.add_argument("--burst-n", type=int, default=0, help="trips of a burst onto a hotspot (routing2.scenarios), 0 = none")
+    ap.add_argument("--hotspots", default="", help="hotspot file from routing2.scenarios")
+    ap.add_argument("--burst-fleet", type=float, default=0.5, help="share of the fleet in the burst")
+    ap.add_argument("--burst-pen", type=float, default=0.33, help="fleet share of the other trips x this, in a burst episode")
     ap.add_argument("--greedy-queue", type=float, default=2.0, help="greedy baseline: s per fleet vehicle")
     ap.add_argument("--pen", type=float, nargs=2, default=[0.1, 1.0], help="range of the fleet share p per episode")
     ap.add_argument("--eval-pen", type=float, nargs="+", default=[0.25, 0.75])
@@ -387,7 +430,9 @@ def main() -> None:
     # Real-world limits, the same for every controller. Invented values: swept in the results.
     ap.add_argument("--report-drop", type=float, default=0.2, help="share of fleet reports lost")
     ap.add_argument("--report-noise", type=float, default=0.1, help="lognormal error of a reported time")
-    ap.add_argument("--compliance", type=float, default=0.9, help="share of instructions drivers follow")
+    ap.add_argument("--compliance", type=float, default=0.9, help="share of instructions drivers follow, in eval")
+    ap.add_argument("--compliance-train", type=float, nargs=2, default=[0.6, 1.0], help="range per training episode")
+    ap.add_argument("--burst-prob", type=float, default=0.5, help="share of training episodes with a burst")
     ap.add_argument("--bg-reroute", type=float, default=0.3, help="share of background trips using another app")
     ap.add_argument("--shaping", type=float, default=1.0, help="weight of the potential term, 0 = off")
     ap.add_argument("--rho", type=float, default=0.5, help="weight of the shared term in the team reward")
@@ -437,7 +482,8 @@ def main() -> None:
             "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
             "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
             "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
-            "teleport_s": args.teleport_s, "prior": args.prior_w, "lateral": args.lateral, "work_dir": str(run / "work")}
+            "teleport_s": args.teleport_s, "prior": args.prior_w, "lateral": args.lateral,
+            "burst_n": args.burst_n, "burst_fleet": args.burst_fleet, "hotspots": args.hotspots, "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
@@ -454,8 +500,11 @@ def main() -> None:
                 for pen in args.eval_pen:
                     for pol in POLICIES:
                         if pol == "rl" or not base_rows:
-                            tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen, "policy": pol, "best": True,
-                                          "record": False, "state": st, "drain": args.eval_drain, "sumo_seed": 50000 + s})
+                            for stress in ((False, True) if args.burst_n > 0 else (False,)):
+                                tasks.append({"seed": 50000 + s, "tph": tph, "pen": pen * (args.burst_pen if stress else 1.0),
+                                              "policy": pol, "best": True, "record": False, "state": st,
+                                              "drain": args.eval_drain, "sumo_seed": 50000 + s,
+                                              "burst_n": args.burst_n if stress else 0})
         res = pool.map(_worker_run, tasks)
         if not base_rows:
             base_rows.extend(r for r in res if r["policy"] != "rl")
@@ -474,6 +523,10 @@ def main() -> None:
                                     "T_all_s": avg("T_all_s", [r for r in rows if r["tph"] == t]),
                                     "T_cust_s": avg("T_cust_s", [r for r in rows if r["tph"] == t])}
                            for t in args.eval_tph},
+                "by_scen": {k: {"J": round(float(np.mean([J(r) for r in rows if r["stress"] == v])), 2),
+                                "T_all_s": avg("T_all_s", [r for r in rows if r["stress"] == v]),
+                                "T_cust_s": avg("T_cust_s", [r for r in rows if r["stress"] == v])}
+                            for k, v in (("ordinary", False), ("stress", True)) if any(r["stress"] == v for r in rows)},
             }
         return out
 
@@ -494,8 +547,12 @@ def main() -> None:
         tasks = []
         for _ in range(E):
             ep_seed += 1
-            tasks.append({"seed": ep_seed, "tph": float(rng.uniform(*args.tph)), "pen": float(rng.uniform(*args.pen)),
+            stress = args.burst_n > 0 and float(rng.random()) < args.burst_prob
+            pen = float(rng.uniform(*args.pen)) * (args.burst_pen if stress else 1.0)
+            tasks.append({"seed": ep_seed, "tph": float(rng.uniform(*args.tph)), "pen": pen,
                           "policy": "rl", "record": True, "state": st,
+                          "compliance": float(rng.uniform(*args.compliance_train)),
+                          "burst_n": args.burst_n if stress else 0,
                           "sumo_seed": int(rng.integers(1, 1_000_000))})
         res = [r for r in pool.map(_worker_run, tasks) if "feat" in r]
         t_col = time.perf_counter() - t0
@@ -508,21 +565,22 @@ def main() -> None:
         dts = np.concatenate([r["dt"] for r in res])
         rew = np.concatenate([_episode_reward(r, args) for r in res])
         done = np.concatenate([r["done"] for r in res])
-        off, veh, tk_off, tick, pens = 0, [], 0, [], []
+        off, veh, tk_off, tick, pens, follows = 0, [], 0, [], [], []
         for r in res:
             veh.append(r["veh"] + off)
             off += int(r["veh"].max()) + 1
             tick.append(r["tick"] + tk_off)
             tk_off += len(r["dyn"])
             pens.append(np.full(len(r["a"]), r["pen"], dtype=np.float32))
+            follows.append(np.full(len(r["a"]), r["follow"], dtype=np.float32))
         veh, tick = np.concatenate(veh), np.concatenate(tick)
         dyn = torch.from_numpy(np.concatenate([r["dyn"] for r in res]))
         true = torch.from_numpy(np.concatenate([r["true"] for r in res]))
         glob = torch.stack([torch.from_numpy(t / args.horizon).clamp(max=1.0).float(),
-                            torch.from_numpy(np.concatenate(pens))], -1)
+                            torch.from_numpy(np.concatenate(pens)), torch.from_numpy(np.concatenate(follows))], -1)
         groups = _tick_groups(tick)
         tick_t = torch.from_numpy(tick)
-        actor_glob = torch.tensor([1.0, 0.0], device=dev)  # the actor is not told the fleet share
+        actor_glob = torch.tensor([1.0, 0.0, 1.0], device=dev)  # the actor is not told the fleet share
 
         def forward(chunk: np.ndarray, idx: np.ndarray):
             """A minibatch is a set of report periods: each one needs one GNN pass, however many decide."""
