@@ -100,7 +100,8 @@ def worker_conf(saved: dict, work_dir: Path) -> dict:
     conf = {k: saved[k] for k in ("horizon", "zones", "hidden", "layers", "max_detour", "reward", "live_every",
                                   "incident_rate", "school_rate", "depart_window", "hot_share", "hot_zones",
                                   "peak_sd", "greedy_queue", "report_drop", "report_noise", "compliance")}
-    conf.update(teleport_s=saved.get("teleport_s", 180.0), prior=saved.get("prior", 0.0))  # 180 s: runs before v7
+    conf.update(teleport_s=saved.get("teleport_s", 180.0), prior=saved.get("prior_w"),  # 180 s: runs before v7
+                lateral=saved.get("lateral", 0.8))
     conf.update(bg_reroute=saved["bg_reroute"], net=str(Path(saved["net_dir"]) / "quan4_v4.net.xml"), work_dir=str(work_dir))
     return conf
 

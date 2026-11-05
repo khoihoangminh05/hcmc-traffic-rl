@@ -55,7 +55,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .gnn_policy import RoutingNet, prep_local
+from .gnn_policy import RoutingNet, prep_local, prior_weights
 from .sumo_env import FEAT_INTENT, FEAT_N
 
 REWARD_SCALE = 60.0
@@ -80,6 +80,7 @@ def _worker_init(conf: dict) -> None:
     work = Path(conf["work_dir"]) / f"w{os.getpid()}"
     env = SumoRoutingEnv(g, zones, SumoEnvConfig(net=Path(conf["net"]), horizon_s=conf["horizon"],
                                                  work_dir=work, live_every_s=conf["live_every"],
+                                                 lateral_m=conf.get("lateral", 0.8),
                                                  live_source="probe", micro=True,
                                                  teleport_s=conf.get("teleport_s", 180.0),
                                                  max_detour=conf["max_detour"],
@@ -90,7 +91,7 @@ def _worker_init(conf: dict) -> None:
                                                  incident_rate_per_h=conf["incident_rate"],
                                                  school_rate_per_h=conf["school_rate"]))
     _W.update(g=g, zones=zones, env=env, conf=conf,
-              net=RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior", 0.0)))
+              net=RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior")))
     _W["net"].eval()
 
 
@@ -315,7 +316,7 @@ def _learner_net(conf: dict, run: Path) -> RoutingNet:
 
     g = load_graph(DEFAULT_GRAPH, replace(SimConfig(), horizon_s=conf["horizon"]))
     env = SumoRoutingEnv(g, pick_zones(g, conf["zones"], seed=0), SumoEnvConfig(net=Path(conf["net"]), work_dir=run / "work"))
-    return RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior", 0.0))
+    return RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior"))
 
 
 def git_hash() -> str:
@@ -360,16 +361,19 @@ def main() -> None:
     ap.add_argument("--prior", type=float, default=120.0,
                     help="logits per minute of free-flow cost above the best exit at the start; 0 = none. "
                          "Sampling at 30, 60, 120 left 49%, 13%, 1% of trips unfinished (6 episodes)")
+    ap.add_argument("--prior-rule", default="ff", choices=["ff", "app", "greedy"], help="controller the net starts as")
+    ap.add_argument("--lateral", type=float, default=0.4, help="SUMO lateral resolution, m. 0.8 made false collisions")
+    ap.add_argument("--alley-width", type=float, default=1.25, help="m per direction; labels: 31 of 39 alleys are 2-3 m")
     ap.add_argument("--ticks-per-batch", type=int, default=64, help="report periods per PPO minibatch")
     ap.add_argument("--zones", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--live-every", type=float, default=10.0, help="seconds between fleet reports")
     ap.add_argument("--incident-rate", type=float, default=2.0, help="hidden accidents per hour")
     ap.add_argument("--school-rate", type=float, default=1.0, help="school releases per hour")
-    # Learning rates, entropy schedule and size of a PPO step as in v3v, about 12 Adam steps per update.
+    # Learning rates and entropy schedule as in v3v. v3v took 12 Adam steps per update, with far fewer vehicles.
     ap.add_argument("--lr-actor", type=float, default=1e-4)
     ap.add_argument("--lr-critic", type=float, default=5e-4)
-    ap.add_argument("--steps", type=int, default=12, help="Adam steps per update")
+    ap.add_argument("--steps", type=int, default=36, help="Adam steps per update; 36 x 64 periods is about all of 16 episodes")
     ap.add_argument("--critic-steps", type=int, default=24, help="extra critic-only Adam steps per update")
     ap.add_argument("--actor-delay", type=int, default=10, help="first updates teach only the critic")
     ap.add_argument("--lr-end", type=float, default=0.1, help="actor learning rate at the end / at the start, linear")
@@ -406,11 +410,14 @@ def main() -> None:
         args.eval_drain = 60.0
         args.device, args.ticks_per_batch = "cpu", 16
     E = args.episodes or args.workers
+    args.prior_w = prior_weights(args.prior_rule, args.prior, args.greedy_queue) if args.prior > 0 else None
 
+    from . import sumo_net
     from .graph import DEFAULT_GRAPH
     from .objectives import objective
     from .sumo_net import build_net
 
+    sumo_net.WIDTH_PER_LANE["alley"] = args.alley_width
     net_path = build_net(DEFAULT_GRAPH, args.net_dir)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run = args.runs_dir / f"sumo_marl_{args.tag or args.reward}{'_smoke' if args.smoke else ''}_{stamp}_seed{args.seed}"
@@ -430,7 +437,7 @@ def main() -> None:
             "depart_window": args.depart_window, "hot_share": args.hot_share, "hot_zones": args.hot_zones,
             "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
             "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
-            "teleport_s": args.teleport_s, "prior": args.prior, "work_dir": str(run / "work")}
+            "teleport_s": args.teleport_s, "prior": args.prior_w, "lateral": args.lateral, "work_dir": str(run / "work")}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")

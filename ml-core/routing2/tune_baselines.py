@@ -67,6 +67,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--drain", type=float, default=None, help="default: the run's --eval-drain")
     ap.add_argument("--quick", action="store_true", help="one value of each app_ext parameter, to test the tool")
+    ap.add_argument("--no-ext", action="store_true", help="ff, app and greedy q only; tuned.json then has no app_ext")
     args = ap.parse_args()
     if args.start + args.seeds > 50000:
         ap.error("tuning seeds must stay below 50000")
@@ -86,9 +87,10 @@ def main() -> None:
         print(f"[tune] history {(time.time() - t0) / 60:.1f} min", flush=True)
         grid = {"K": EXT_K[:1], "f": EXT_F[:1], "charge_s": EXT_CHARGE_S[:1], "cap": EXT_CAP[:1]} if args.quick else \
             {"K": EXT_K, "f": EXT_F, "charge_s": EXT_CHARGE_S, "cap": EXT_CAP}
-        ext = [dict(zip(grid, x)) for x in itertools.product(*grid.values())]
-        qs = GREEDY_Q[:1] if args.quick else GREEDY_Q
-        tasks = [{**b, "policy": "greedy", "name": f"greedy_q{q}", "queue_s": q} for q in qs for b in scen]
+        ext = [] if args.no_ext else [dict(zip(grid, x)) for x in itertools.product(*grid.values())]
+        qs = GREEDY_Q[:1] if args.quick else GREEDY_Q[1:]  # q = 0 is app
+        tasks = [{**b, "policy": "ff", "name": "ff"} for b in scen]
+        tasks += [{**b, "policy": "greedy", "name": f"greedy_q{q}", "queue_s": q} for q in qs for b in scen]
         for i, x in enumerate(ext):
             tasks += [{**b, "policy": "app_ext", "name": f"ext{i}", "links": top_links(hist, x["K"]), "f": x["f"],
                        "charge_s": x["charge_s"], "cap": x["cap"]} for b in scen]
@@ -101,17 +103,19 @@ def main() -> None:
     all_rows = hist_rows + rows
     J = mean_J(all_rows, saved["w_all"])
     best_q = min(qs, key=lambda q: J[f"greedy_q{q}"])
-    i_best = min(range(len(ext)), key=lambda i: J[f"ext{i}"])
-    x = ext[i_best]
-    tuned = {"greedy_queue": best_q,
-             "app_ext": {"links": top_links(hist, x["K"]), "f": x["f"], "charge_s": x["charge_s"], "cap": x["cap"]},
-             "app_ext_grid_point": x, "J": {"app": J["app"], "greedy": J[f"greedy_q{best_q}"], "app_ext": J[f"ext{i_best}"]},
-             "seeds": [args.start, args.seeds]}
+    tuned = {"greedy_queue": best_q, "J": {"ff": J["ff"], "app": J["app"], "greedy": J[f"greedy_q{best_q}"]},
+             "J_all": {k: round(v, 2) for k, v in J.items()}, "seeds": [args.start, args.seeds], "app_ext_grid_point": None}
+    if ext:
+        i_best = min(range(len(ext)), key=lambda i: J[f"ext{i}"])
+        x = ext[i_best]
+        tuned["app_ext"] = {"links": top_links(hist, x["K"]), "f": x["f"], "charge_s": x["charge_s"], "cap": x["cap"]}
+        tuned["app_ext_grid_point"] = x
+        tuned["J"]["app_ext"] = J[f"ext{i_best}"]
     (args.out_dir / "tuned.json").write_text(json.dumps(tuned, indent=1), encoding="utf-8")
     (args.out_dir / "all.json").write_text(json.dumps({"J": J, "ext": ext, "hist": hist.tolist(), "rows": all_rows,
                                                        "args": {k: str(v) for k, v in vars(args).items()}}),
                                            encoding="utf-8")
-    print(json.dumps({k: tuned[k] for k in ("greedy_queue", "app_ext_grid_point", "J")}), flush=True)
+    print(json.dumps({k: tuned[k] for k in ("greedy_queue", "app_ext_grid_point", "J", "J_all")}), flush=True)
     print("TUNE_DONE", flush=True)
 
 

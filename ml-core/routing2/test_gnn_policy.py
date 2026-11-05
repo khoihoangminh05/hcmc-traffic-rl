@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from .demand import hot_zone_index, make_demand, pick_zones
-from .gnn_policy import N_DYN_ACTOR, N_GLOBAL, N_LOCAL, RoutingNet, prep_local
+from .gnn_policy import N_DYN_ACTOR, N_GLOBAL, N_LOCAL, RoutingNet, prep_local, prior_weights
 from .graph import DEFAULT_GRAPH, load_graph
 from .params import SimConfig
 from .sumo_env import N_FEAT, SumoEnvConfig, SumoRoutingEnv
@@ -48,14 +48,17 @@ def test_jam_three_links_ahead_reaches_the_current_link():
     assert torch.allclose(ha[0, 0], net.encode_actor(c)[0][0, 0], atol=1e-6), "4 links is out of reach"
 
 
-def test_untrained_prior_is_the_shortest_path_controller():
-    net = RoutingNet(torch.tensor([0, 1]), torch.tensor([1, 2]), torch.zeros(5, 3), hidden=16, layers=2, prior=10.0).eval()
-    h, z = net.encode_actor(torch.rand(1, 5, N_DYN_ACTOR))
-    feat, cand = torch.rand(6, 3, N_FEAT) * 50.0 + 1.0, torch.tensor([[0, 1, 2]] * 5 + [[3, 4, -1]])
+def test_untrained_prior_is_exactly_the_chosen_controller():
+    feat, cand = torch.rand(40, 3, N_FEAT) * 50.0 + 1.0, torch.tensor([[0, 1, 2]] * 39 + [[3, 4, -1]])
     mask = cand >= 0
-    logits = net.policy(h, z, cand, prep_local(feat, mask), torch.zeros(6, N_GLOBAL), torch.zeros(6, dtype=torch.long))
-    ff = torch.where(mask, feat[..., 0] + feat[..., 3], torch.full((6, 3), 1e9))
-    assert torch.equal(logits.argmax(1), ff.argmin(1))
+    costs = {"ff": feat[..., 0] + feat[..., 3], "app": feat[..., 1] + feat[..., 6],
+             "greedy": feat[..., 1] + feat[..., 6] + 0.5 * (feat[..., 2] + feat[..., 5])}
+    for rule, cost in costs.items():
+        net = RoutingNet(torch.tensor([0, 1]), torch.tensor([1, 2]), torch.zeros(5, 3), hidden=16, layers=2,
+                         prior=prior_weights(rule, 120.0, 0.5)).eval()
+        h, z = net.encode_actor(torch.rand(1, 5, N_DYN_ACTOR))
+        logits = net.policy(h, z, cand, prep_local(feat, mask), torch.zeros(40, N_GLOBAL), torch.zeros(40, dtype=torch.long))
+        assert torch.equal(logits.argmax(1), torch.where(mask, cost, torch.full((40, 3), 1e9)).argmin(1)), rule
 
 
 def test_fleet_ahead_counts_along_the_live_path():
