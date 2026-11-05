@@ -16,6 +16,7 @@ Người dùng ủy quyền: "có gì hợp lý thì bạn chốt luôn hộ tô
 | D10 | Không công bố dữ liệu Mapbox thô. Công bố code, mạng, cấu hình, seed và tham số dẫn xuất, sau khi Mapbox trả lời | Trang công khai không có điều khoản rõ | Mapbox cho phép bằng văn bản |
 | D11 | Báo cáo argmax hay sample chọn trên seed 50000+; v7 đang chọn argmax | Tránh chọn trên seed báo cáo | |
 | D12 | Việc tay chân giao Grok theo `.docs/GROK_TASKS.md`; mọi nhãn Grok điền phải được kiểm mẫu trước khi dùng | Người dùng không làm tay; AI đọc ảnh có thể sai | |
+| D13 | Bài báo trình bày là **phương pháp và cơ chế cho mạng thứ cấp dày đặc**, Quận 4 là mạng thử chứ không phải chủ đề. Thêm phép thử ngoài: giữ nguyên policy đã train, không train lại, đánh giá trên ít nhất một mạng khác dựng từ OSM cùng quy trình. Ứng viên: Bình Thạnh hoặc Quận 8 (TP.HCM, dễ kiểm), Tambora (Jakarta, khác thành phố). Mỗi mạng mới ghi rõ là không hiệu chỉnh và không có nhãn bề rộng | Reviewer sẽ hỏi kết quả có chỉ đúng cho Quận 4 không. Đếm OSM cùng ô 0.02° × 0.02°: Quận 4 1541 đường loại service/residential/living_street, Bình Thạnh 1625, Quận 8 1361, Tambora 1822, Tondo 848 (chỉ đếm số đường, chưa kiểm chất lượng) | Policy không chạy được trên mạng khác về kỹ thuật: khi đó báo là train riêng từng mạng; kết quả xấu vẫn báo |
 
 ## D7. Bề rộng hẻm: đây là giả định bậc nhất, không phải chi tiết phụ
 
@@ -33,9 +34,12 @@ Người dùng ủy quyền: "có gì hợp lý thì bạn chốt luôn hộ tô
 
 Hạn chế, phải nêu trong bài: chỉ 34% có nhãn, mới gán các nơi có ảnh; 15/20 ảnh từ 2020; ước lượng bằng mắt theo nhóm, nhiều dòng ghi "rough" hoặc chưa xác minh khoảng cách tới đúng cạnh; không phải số đo. Mình kiểm tra 3 ảnh Grok lưu: 412 (< 2 m) hợp lý; Hẻm 76 (> 4 m) đúng, có ô tô đỗ; Hẻm 884 (< 2 m) có thể đã ở mức 2–3 m, không có vật so sánh. Không dùng `alley_width_interpolated.csv`: Grok tự suy từ hẻm cùng tên cách tới 194 m, không phải quan sát.
 
+**Nhãn đợt 2 (2026-11-05, `.docs/results_alley/alley_width_sample2.csv`):** 22/40 hẻm có nhãn: `highway=residential` 16 nhãn (2–3 m: 15; 3–4 m: 1), `highway=service` 6 nhãn (< 2 m: 1; 2–3 m: 5). Cộng hai đợt 39/90 nhãn: < 2 m: 4; 2–3 m: 31; 3–4 m: 2; > 4 m: 2. Theo tag: `service` 21 nhãn (< 2 m: 4; 2–3 m: 16; 3–4 m: 1); `residential` 18 nhãn (2–3 m: 15; 3–4 m: 1; > 4 m: 2). Hai nhãn > 4 m đợt 1 hóa ra là ngoại lệ, không phải đặc trưng của tag, nên **tách bề rộng theo tag không còn lý do**.
+
+Kiểm đợt 2: mọi dòng giữ nguyên id và thứ tự, các cột gốc không đổi, không trùng hẻm với đợt 1, mỗi nhãn đều ghi năm ảnh, vật so sánh và khoảng cách. Đã đối chiếu nhãn với ghi chú; **chưa tự xem ảnh đợt này**. Hạn chế thêm: 14/16 nhãn residential nằm ở 3 hẻm cùng trục Đoàn Văn Bơ (500, 538, 576), nên số nhãn độc lập ít hơn con số 39 và không đại diện cho cả quận; 11/22 ảnh từ 2020. `two_way = y` ở cả 22 dòng thực chất là "không thấy biển một chiều", không phải quan sát xe đi hai chiều, và 5 dòng có biển tròn không đọc được: giả định hai chiều chưa bị bác, nhưng cũng chưa được xác nhận. 20/22 dòng có xe đỗ hoặc hàng quán chiếm mặt đường, nên bề rộng hữu dụng nhỏ hơn bề rộng tường tới tường; mô hình chưa tính phần này.
+
 **Chốt:** v7 giữ nguyên 2.5 m để trọn chuỗi. Chuỗi sau:
-1. Cạnh `highway=service`: **1.25 m mỗi chiều**, tức hẻm 2.5 m, nằm trong nhóm phổ biến nhất 2–3 m.
-2. Cạnh `highway=residential` trong lớp hẻm: 2.5 m mỗi chiều, **tạm thời**, vì mới có 2 nhãn. Đang gán thêm (`alley_width_sample2.csv`, Việc 1b).
-3. Độ nhạy bắt buộc: toàn bộ hẻm 2.5 m và 1.75 m mỗi chiều. Kết quả chính nêu thứ hạng controller theo từng trường hợp.
+1. **Toàn bộ cạnh hẻm 1.25 m mỗi chiều**, tức hẻm 2.5 m, thuộc nhóm 2–3 m chiếm 31/39 nhãn. Không tách theo tag.
+2. Độ nhạy bắt buộc: toàn bộ hẻm 2.5 m và 1.75 m mỗi chiều. Kết quả chính nêu thứ hạng controller theo từng trường hợp.
 Giả định hai chiều mỗi hẻm là từ OSM, chưa kiểm được.
-Đảo lại khi: có số đo; hoặc nhóm residential cho nhãn khác; hoặc các lần đo 0.4 m cho thấy 1.25 m cũng là tác dụng của độ phân giải.
+Đảo lại khi: có số đo; hoặc các lần đo 0.4 m cho thấy 1.25 m cũng là tác dụng của độ phân giải.
