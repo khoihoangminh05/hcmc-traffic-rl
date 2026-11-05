@@ -30,6 +30,23 @@ Người dùng ủy quyền: "có gì hợp lý thì bạn chốt luôn hộ tô
 
 **Đính chính (cùng ngày).** Chạy lại ở độ phân giải ngang 0.4 m, 2 seed: 1.25 m: ff 413.5, app 428.4; 1.75 m: ff 499.5, app 506.5. Ở cả hai, `ff` lại nhỉnh hơn `app`, nên câu "thứ tự baseline đảo theo bề rộng" **không còn đứng vững** và đã rút lại. Trong cùng một cấu hình, có seed J khoảng 390, có seed khoảng 610–650 với chỉ 74–77% xe tới đích, tức có hiện tượng tắc lan hẳn xảy ra hoặc không: **2 seed không đủ để so**. Điều chắc hơn: bề rộng và độ phân giải ngang đều làm đổi kết quả rõ rệt, nên phải quét. Đang chạy lại nhiều seed, đổi SUMO seed, tách teleport theo nguyên nhân (`routing2_review/width_multi`, 6 seed cầu 50010–50015, không trùng seed chọn mô hình).
 
+**Đo nhiều seed (2026-11-05, `routing2_review/width_multi`, `width_multi2b`; công cụ `routing2/width_sweep.py`):** 6 seed cầu 50010–50015, SUMO seed theo seed cầu, cùng kịch bản trên. J trung bình (s), % là `app` so với `ff` ghép theo seed, kèm sai số chuẩn:
+
+| Bề rộng mỗi chiều | Độ phân giải ngang | `ff` | `app` | `app` so với `ff` | `app` thắng | Tới đích ff / app | Teleport va chạm / quá hạn |
+|---|---|---|---|---|---|---|---|
+| 2.5 m | 0.8 m | 390.7 | 376.1 | −3.7% ± 3.0 | 4/6 | 1.00 / 1.00 | 70 / 34 |
+| 2.5 m | 0.4 m | 422.1 | 421.1 | +1.0% ± 7.7 | 3/6 | 1.00 / 1.00 | 15 / 87 |
+| 1.75 m | 0.8 m | 714.4 | 653.5 | −6.3% ± 9.4 | 4/6 | 0.79 / 0.85 | 6 / 334 |
+| 1.75 m | 0.4 m | 560.8 | 598.8 | +10.5% ± 10.9 | 2/6 | 0.89 / 0.86 | 2 / 236 |
+| 1.25 m | 0.8 m | 491.4 | 465.9 | −4.3% ± 5.3 | 3/6 | 1.00 / 0.99 | 2 / 49 |
+| 1.25 m | 0.4 m | 447.4 | 416.2 | −6.1% ± 4.8 | 4/6 | 0.98 / 1.00 | 18 / 35 |
+
+Rút ra:
+1. **Không ô nào phân định được `ff` và `app`.** Thứ tự đổi dấu giữa các ô đều nằm trong sai số.
+2. **Bề rộng không đơn điệu, kể cả ở 0.4 m.** So với 2.5 m ở 0.4 m: 1.75 m tệ hơn +35.9% ± 16.3 (`ff`), +42.9% ± 7.9 (`app`); 1.25 m gần như bằng: +6.9% ± 6.3, −0.4% ± 3.8. Giả thuyết "1.75 m tệ chỉ do độ phân giải 0.8 m" **đã bị bác**. Nguyên nhân chưa biết. Giả thuyết chưa kiểm: ở 1.75 m hai xe máy chen ngang hàng, chặn nhau ở nút, còn ở 1.25 m xe đi một hàng. Có thể là hiện tượng thật hoặc là tính chất của mô hình sublane, **chưa phân biệt được**. Vì thế tiêu đề "giả định bậc nhất" vẫn đúng.
+3. **Độ phân giải 0.8 m tạo va chạm giả ở 2.5 m:** teleport do va chạm 70 xuống 15 khi sang 0.4 m. Xe rộng 0.8 m bằng đúng một làn con. Thời gian chạy 0.4 m không cao hơn đáng kể (khoảng 825–1119 s so với 830–1066 s mỗi episode). **Chuỗi sau dùng 0.4 m.** Đang kiểm hội tụ ở 0.2 m (`width_res02`); 0.8 m giữ làm độ nhạy.
+4. 1.75 m mỗi chiều tương ứng hẻm 3.5 m, nhóm chỉ có 2/39 nhãn; 2.5 m mỗi chiều tương ứng hẻm 5 m, cũng chỉ có 2/39 (> 4 m). Nghĩa là v6, v7 đang chạy trên hẻm rộng hơn hầu hết hẻm thật.
+
 **Nhãn Grok (2026-11-05, `.docs/results_alley/alley_width_sample.csv`):** 17/50 hẻm có nhãn bề rộng từ ảnh Street View: < 2 m: 3; 2–3 m: 11; 3–4 m: 1; > 4 m: 2. `two_way` không xác định được ở cả 50 hẻm. Theo tag OSM: `highway=service` (1298 cạnh hẻm): 15 nhãn, toàn ≤ 4 m, 14 nhãn ≤ 3 m; `highway=residential` (162 cạnh): 2 nhãn, đều > 4 m.
 
 Hạn chế, phải nêu trong bài: chỉ 34% có nhãn, mới gán các nơi có ảnh; 15/20 ảnh từ 2020; ước lượng bằng mắt theo nhóm, nhiều dòng ghi "rough" hoặc chưa xác minh khoảng cách tới đúng cạnh; không phải số đo. Mình kiểm tra 3 ảnh Grok lưu: 412 (< 2 m) hợp lý; Hẻm 76 (> 4 m) đúng, có ô tô đỗ; Hẻm 884 (< 2 m) có thể đã ở mức 2–3 m, không có vật so sánh. Không dùng `alley_width_interpolated.csv`: Grok tự suy từ hẻm cùng tên cách tới 194 m, không phải quan sát.
@@ -42,4 +59,5 @@ Kiểm đợt 2: mọi dòng giữ nguyên id và thứ tự, các cột gốc k
 1. **Toàn bộ cạnh hẻm 1.25 m mỗi chiều**, tức hẻm 2.5 m, thuộc nhóm 2–3 m chiếm 31/39 nhãn. Không tách theo tag.
 2. Độ nhạy bắt buộc: toàn bộ hẻm 2.5 m và 1.75 m mỗi chiều. Kết quả chính nêu thứ hạng controller theo từng trường hợp.
 Giả định hai chiều mỗi hẻm là từ OSM, chưa kiểm được.
-Đảo lại khi: có số đo; hoặc các lần đo 0.4 m cho thấy 1.25 m cũng là tác dụng của độ phân giải.
+Việc còn mở: tìm nguyên nhân 1.75 m tệ (xem kẹt ở đâu, chen ngang có phải lý do không), vì reviewer sẽ hỏi nếu bảng độ nhạy không đơn điệu.
+Đảo lại khi: có số đo; hoặc kiểm tra 0.2 m cho thấy 1.25 m chưa hội tụ ở 0.4 m.

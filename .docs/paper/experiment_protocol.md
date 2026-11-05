@@ -58,7 +58,16 @@ Cầu là tổng hợp: báo cáo như vậy, kèm chỉ số tắc nghẽn và 
 | 2% | 212 | 327 |
 | 3% | 94 | 145 |
 | 5% | 34 | 52 |
-30 seed × 6 kịch bản = 180 cặp đủ cho 3%, chưa đủ cho 2%. **Phải đo lại phương sai ở mức seed trước khi chốt số seed.**
+30 seed × 6 kịch bản = 180 cặp đủ cho 3%, chưa đủ cho 2%.
+
+**Đo lại ở mức seed (2026-11-05, `DECISIONS.md` D7).** Một kịch bản khó (8000 chuyến/giờ, p = 0.5), `app` so với `ff`, 6 seed, SUMO seed đổi theo seed cầu. Độ lệch chuẩn của chênh lệch ghép cặp và số seed cần, lực 80%, n = (z_α + z_β)² sd² / δ²:
+| Cấu hình | sd | δ = 5%, α = 0.05 / Holm 6 | δ = 3%, α = 0.05 / Holm 6 |
+|---|---|---|---|
+| 1.25 m, 0.4 m (cấu hình chuỗi sau) | 11.8% | 44 / 68 | 122 / 188 |
+| 2.5 m, 0.4 m | 18.8% | 111 / 170 | 307 / 473 |
+| 2.5 m, 0.8 m (v7) | 7.4% | 17 / 27 | 48 / 74 |
+
+Tương quan `ff`/`app` trên cùng seed chỉ từ −0.36 đến 0.48, nên ghép cặp giúp rất ít: ùn tắc hỗn loạn làm mất lợi ích của số ngẫu nhiên chung. Độ lệch ước từ 6 seed rất rộng (khoảng tin cậy 95% của sd khoảng 0.62–2.45 lần) và cầu thấp có thể khác, nên **đo lại với policy thật trên 30 seed trước khi chốt**. Tạm thời: D2 với 30 seed mỗi kịch bản chỉ đủ phát hiện gain khoảng 6% trong một kịch bản đơn ở 1.25 m, 0.4 m (α = 0.05, chưa hiệu chỉnh Holm); gain nhỏ hơn phải dựa trên gộp kịch bản hoặc tăng seed. Kịch bản khó nên phân phối hai đỉnh (có seed tắc lan, có seed không): báo cả phân phối và tỉ lệ seed tắc lan, không chỉ trung bình.
 
 ## 6. Kiểm chứng chia công (điều kiện để giữ `attrib`)
 Giữ nguyên seed SUMO; đổi hành động hoặc bỏ nhóm xe, đo ΔJ thật; hồi quy theo tổng phí. Đo sàn nhiễu bằng cách lặp với nhóm ngẫu nhiên không bị tính phí. Kiểm riêng ở nút có ưu tiên, nơi thứ tự hàng đợi không phản ánh nhân quả (Psarou 2510.11410 p.4, p.6). Báo cáo cả khi không đạt.
