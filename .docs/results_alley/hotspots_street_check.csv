@@ -1,0 +1,13 @@
+﻿rank,edge_id,name,highway,point,lat,lon,street_view,imagery_found(y/n),"wall_width_class(<2,2-3,3-4,>4)","clear_width_class(<2,2-3,3-4,>4)",two_way(y/n/unknown),parked_or_stalls(none/some/many),note
+0,q4_366467187_5772633636_0,Đoàn Văn Bơ,tertiary,mid,10.758992,106.710881,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.758992,106.710881",,,,,,
+0,q4_366467187_5772633636_0,Đoàn Văn Bơ,tertiary,end_near_junction,10.759151,106.710597,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.759151,106.710597",,,,,,
+1,q4_366369352_5778362217_0,Hẻm 200C Xóm Chiếu,service,mid,10.756053,106.708255,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.756053,106.708255",,,,,,
+1,q4_366369352_5778362217_0,Hẻm 200C Xóm Chiếu,service,end_near_junction,10.755876,106.708559,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.755876,106.708559",,,,,,
+2,q4_12393047251_2312383695_0,Hẻm 772 Đoàn Văn Bơ,service,mid,10.756673,106.713761,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.756673,106.713761",,,,,,
+2,q4_12393047251_2312383695_0,Hẻm 772 Đoàn Văn Bơ,service,end_near_junction,10.756967,106.713926,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.756967,106.713926",,,,,,
+3,q4_5778455230_12179783585_0,Hẻm 670 Đoàn Văn Bơ,service,mid,10.757255,106.711519,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.757255,106.711519",,,,,,
+3,q4_5778455230_12179783585_0,Hẻm 670 Đoàn Văn Bơ,service,end_near_junction,10.75754,106.711684,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.757540,106.711684",,,,,,
+4,q4_5778148641_5772598997_0,Hẻm 576 Đoàn Văn Bơ,residential,mid,10.757918,106.70976,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.757918,106.709760",,,,,,
+4,q4_5778148641_5772598997_0,Hẻm 576 Đoàn Văn Bơ,residential,end_near_junction,10.758171,106.709869,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.758171,106.709869",,,,,,
+5,q4_1987340065_1987339682_0,Hẻm 874/25 Đoàn Văn Bơ,service,mid,10.755864,106.715823,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.755864,106.715823",,,,,,
+5,q4_1987340065_1987339682_0,Hẻm 874/25 Đoàn Văn Bơ,service,end_near_junction,10.75593,106.715696,"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=10.755930,106.715696",,,,,,

@@ -69,3 +69,14 @@ Mở bằng trình duyệt: https://www.iias.asia/the-newsletter/article/vietnam
 ## Việc 6. Google Scholar, chạy lại Việc 3 bằng trình duyệt thường (không gấp)
 
 Việc 3 bị Scholar chặn cả 10 truy vấn. Mở Scholar trong trình duyệt thường, mỗi truy vấn của Việc 3 xem trang đầu, ghi bài liên quan vào `papers\search_vn_scholar.csv`, cùng cột như Việc 3. Gặp captcha thì dừng và báo, không tìm cách vượt.
+
+## Việc 7. Xem ảnh đường phố 6 điểm nghẽn (làm trước Việc 5, 6)
+
+File: `.docs\results_alley\hotspots_street_check.csv` (12 dòng, 2 vị trí mỗi đoạn). Quy tắc giống Việc 1b, với các lưu ý:
+- Mở link ở cột `street_view`. Chỉ điền theo điều thấy trong ảnh. Không thấy thì `unknown`. Không lưu ảnh, không thêm hay xóa dòng, không đổi các cột đã có.
+- `wall_width_class`: bề rộng từ tường tới tường. `clear_width_class`: phần xe còn đi được sau khi trừ xe đỗ, hàng quán. Hai cột này có thể khác nhau, đó là điều cần biết.
+- `two_way`: `y` chỉ khi **thấy xe đi cả hai chiều trong ảnh**; không thấy biển một chiều thì ghi `unknown` và ghi vào `note`.
+- Đoạn hạng 0 có thể là đường chứ không phải hẻm: vẫn điền, và ghi số làn nếu thấy.
+- `note`: năm chụp, vật so sánh, khoảng cách từ ảnh tới đúng vị trí, và có thấy đông xe, kẹt xe, chợ, trường học, hay vật cản cố định gần đó không.
+
+Ảnh không cho biết có tắc thường xuyên hay không. Không suy luận điều đó; chỉ ghi điều thấy trong ảnh đó.
