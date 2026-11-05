@@ -61,3 +61,11 @@ Ghi `papers\search_vn.csv` với các cột `query,source,hits,title,authors,yea
 ## Việc 4. Hỏi Mapbox về quyền công bố (chỉ soạn, không gửi)
 
 Soạn email tiếng Anh ngắn cho Mapbox hỏi: nghiên cứu học thuật đã lưu kết quả Directions API `driving-traffic` của một quận, có được công bố (a) số liệu thô, (b) hồ sơ tốc độ theo giờ đã tổng hợp theo đoạn đường, (c) chỉ các tham số mô hình dẫn xuất không? Ghi vào `papers\mapbox_email_draft.txt`. Không gửi; người dùng sẽ tự gửi.
+
+## Việc 5. Lấy số trong bài Gibert (không gấp)
+
+Mở bằng trình duyệt: https://www.iias.asia/the-newsletter/article/vietnamese-urban-fabric . Chép **nguyên văn** mọi câu có số về bề rộng hẻm, tỉ lệ hẻm, dân số hoặc giao thông trong hẻm của Hà Nội và TP.HCM, kèm nguồn bài đó trích, vào `papers\gibert_numbers.txt`. Không tóm tắt, không suy diễn. Không mở được thì ghi rõ.
+
+## Việc 6. Google Scholar, chạy lại Việc 3 bằng trình duyệt thường (không gấp)
+
+Việc 3 bị Scholar chặn cả 10 truy vấn. Mở Scholar trong trình duyệt thường, mỗi truy vấn của Việc 3 xem trang đầu, ghi bài liên quan vào `papers\search_vn_scholar.csv`, cùng cột như Việc 3. Gặp captcha thì dừng và báo, không tìm cách vượt.

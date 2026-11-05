@@ -185,3 +185,15 @@ Bản thay thế: `.docs/paper/related_work.md` mục 2.8 và `RESEARCH_V4.md` m
 - **G3, thêm:** Jiang 2023 có difference reward không chạy lại, từ NMFD cấp vùng (p.11); Ramos 2020 có toll cục bộ (p.8). Psarou 2510 p.4, p.6 chỉ ra ma trận chi phí biên không FIFO vì ưu tiên ở nút, đe dọa trực tiếp cách quy theo hàng đợi.
 - **G4, thêm:** Kim 2025 có tuân thủ đo thật (p.18), và đo hẻm rất thấp ở ô tô (p.12-13).
 - **G6, xác nhận:** MA-GRL đọc từ trang bài: 100 xe điều khiển, 2847 xe nền, giới hạn khoảng 200 agent, phạt phối hợp đặt tay.
+
+## Tìm tiếng Việt và phản bác (Grok, 2026-11-05, `papers/search_vn.csv`)
+
+Phạm vi thật: **Google Scholar bị chặn ở cả 10 truy vấn** (HTTP 403), nên đây không phải tìm kiếm đầy đủ. Đã chạy được TRID, STDJ, TCSJ và tìm web rồi mở trang nhà xuất bản. Thư viện số ĐH Bách khoa chỉ thử qua `site:`, không ra bài mở được. Không tìm thấy bài nào về định tuyến xe máy trong mạng hẻm bằng RL hay SUMO ở TP.HCM. Chỉ được viết "không tìm thấy trong các nguồn đã tra", **không viết "chưa ai làm"**.
+
+16 bài có trang mở được; phần lớn Grok chỉ đọc trang tóm tắt. Đáng dùng:
+- **Fadilah 2024** (đã có, Ninh Kiều, AIMSUN): vẫn là gần nhất về chọn đường xe máy ở Việt Nam.
+- **Chu Cong Minh, Sano, Matsumoto 2005, EASTS 6** (mình đọc toàn văn, `papers/Minh_2005_MotorcycleFlow.pdf`): 4 điểm ở Hà Nội, rộng 3.27–5.54 m. Xe máy đi song song, nhiều headway bằng 0 (p.9); bề rộng làn con hiệu dụng 1.89 m trên làn riêng và 1.10 m trên đường không dải phân cách (p.10). Không có dữ liệu ở hay trên năng lực (p.6), và không phải hẻm, nên **không dùng để kiểm lưu lượng bão hòa**. Số 1.10 m là chỗ dựa gián tiếp cho 1.25 m mỗi chiều; chưa phải bằng chứng cho hẻm.
+- **Gibert, Phạm 2016, IIAS** (Grok ghi: Hà Nội 90% hẻm < 4 m, có lối 1–1.5 m và 2–2.5 m): **chưa kiểm được**, trang trả 403 với công cụ của mình. Không trích trước khi có văn bản. Nếu đúng thì hợp với nhãn của mình nhưng là Hà Nội.
+- **Vu, Preston 2023** (có trong `papers/`): hiệu chỉnh VISSIM trục đường Hà Nội. **Can et al. 2020, IJARET** (SUMO, Hà Nội): tạp chí không mạnh, chỉ dùng nếu cần.
+- **Nguyễn Bảo Thành, Trần Đông Đông, Tạp chí Xây dựng**: phân loại hẻm ba gác, xe hơi, cụt ở TP.HCM, không có số trên trang. **Khuat 2006** (luận án TU Darmstadt): chưa đọc, có thể có số liệu.
+- Bỏ qua vì lệch chủ đề: giao hàng xe máy bằng RL, mô hình người lái bằng RL, ngập Quận 9, Chen 2019 (mở rộng hẻm cho cứu hỏa, chỉ tham khảo nếu cần).
