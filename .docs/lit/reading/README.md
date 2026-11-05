@@ -88,3 +88,9 @@ Chưa có trong manifest nhưng nên tìm: Psarou 2610.13439 và 2510.11410 toà
 
 **Chưa đọc hết:** Ramos p.12-13, Hosseinzadeh p.5-8 và phần sau chưa liền mạch, Li & Duan chỉ p.1-2, p.10-11, Khulna; Arora 2026 toàn văn chưa có.
 
+## 8. Đợt ba (5 bài trong `papers/`, 2026-11-05, đọc có chọn lọc)
+- **Arora 2026 (Nature Cities, đã đọc):** phí ngoại ứng cố định trên khoảng 100 đoạn tắc theo lịch sử, thí nghiệm switchback, dưới 2% chuyến bị đổi ✓ (p.2), trần vài phần trăm so với đường nhanh nhất, trung bình đi lâu hơn khoảng 30 s (p.6). Tốc độ đoạn được chọn +2%, mọi đoạn bị ảnh hưởng +0.35% (p.3), thời gian đi 0.7% (p.1). Câu "2%" trước đây không nêu rõ chỉ trên đoạn được chọn. Giới hạn: chỉ đổi giữa đường cùng cấp nên không nói gì về hẻm. Hệ quả: thêm baseline `app_ext`.
+- **Ibrahim & Sanik 2007:** critical gap xe máy (s): đường chính một làn 2.8 và 3.0; nhiều làn 3.2, 2.3, 3.3; ô tô 3.2–4.2 (p.8). T-intersection ở Malaysia, không phải hẻm.
+- **Kuncheria 2023, Graf 2024, Wolpert 2001:** mới đọc tóm tắt. Khẳng định "SO làm xấu tải đường dân cư" của Kuncheria chưa kiểm được trên văn bản; phải đọc trước khi trích. Graf: khung cân bằng động có ràng buộc phụ, và phản ví dụ về tồn tại nghiệm.
+- **Còn thiếu:** Khulna, Patil (Grok báo bị chặn), Qian 2012 (cần đăng nhập). Xem `papers/manifest_2.csv`.
+

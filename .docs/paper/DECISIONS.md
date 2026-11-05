@@ -27,8 +27,7 @@ Người dùng ủy quyền: "có gì hợp lý thì bạn chốt luôn hộ tô
 | 1.75 m | 741.2 | 553.6 | 0.76 / 0.92 | 22.9 / 12.0 |
 | 1.25 m | 501.0 | 430.4 | 0.94 / 1.00 | 3.0 / 1.9 |
 
-- J của ff đổi gần gấp đôi theo giả định này. **Chiều so sánh còn đảo**: ở 2.5 m app kém ff, ở hẹp hơn app hơn ff. Nhận định "ba baseline trùng nhau" chỉ đúng ở 2.5 m, nên chưa thể coi là tính chất của mạng hẻm.
-- Không đơn điệu: 1.75 m tệ hơn 1.25 m. Nghi là do mô hình sublane: 1.75 m gần đủ cho hai xe nên xe chen rồi kẹt, 1.25 m là đi một hàng. Chưa kiểm chứng; có thể là tác dụng của độ phân giải ngang 0.8 m. Đang đo lại với 0.4 m.
+**Đính chính (cùng ngày).** Chạy lại ở độ phân giải ngang 0.4 m, 2 seed: 1.25 m: ff 413.5, app 428.4; 1.75 m: ff 499.5, app 506.5. Ở cả hai, `ff` lại nhỉnh hơn `app`, nên câu "thứ tự baseline đảo theo bề rộng" **không còn đứng vững** và đã rút lại. Trong cùng một cấu hình, có seed J khoảng 390, có seed khoảng 610–650 với chỉ 74–77% xe tới đích, tức có hiện tượng tắc lan hẳn xảy ra hoặc không: **2 seed không đủ để so**. Điều chắc hơn: bề rộng và độ phân giải ngang đều làm đổi kết quả rõ rệt, nên phải quét. Đang chạy lại nhiều seed, đổi SUMO seed, tách teleport theo nguyên nhân (`routing2_review/width_multi`, 6 seed cầu 50010–50015, không trùng seed chọn mô hình).
 
 **Nhãn Grok (2026-11-05, `.docs/results_alley/alley_width_sample.csv`):** 17/50 hẻm có nhãn bề rộng từ ảnh Street View: < 2 m: 3; 2–3 m: 11; 3–4 m: 1; > 4 m: 2. `two_way` không xác định được ở cả 50 hẻm. Theo tag OSM: `highway=service` (1298 cạnh hẻm): 15 nhãn, toàn ≤ 4 m, 14 nhãn ≤ 3 m; `highway=residential` (162 cạnh): 2 nhãn, đều > 4 m.
 

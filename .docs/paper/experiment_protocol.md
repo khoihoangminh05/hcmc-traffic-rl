@@ -20,6 +20,7 @@ SUMO seed của lần báo cáo lấy theo seed cầu thay vì cố định 1, �
 ## 3. Controller
 Dùng chung môi trường, chung lịch sự cố, chung giới hạn thông tin, chung `max_detour`:
 - `ff`, `app` (đổi ở mọi nút), `app_chan` (kiểm tra mỗi T s, đổi khi lợi ≥ X s và Y%; chọn T, X, Y trên seed 50000+), `greedy` (q chọn trên seed 50000+).
+- `app_ext`: app + phí cố định ΔT trên cạnh tắc theo lịch sử khi tốc độ dưới ngưỡng, có trần so với đường nhanh nhất (Arora 2026, p.6). Đây là cách đã thử thật, không học, nên reviewer sẽ so với nó. Chọn ΔT, ngưỡng, tập cạnh trên seed 50000+.
 - `dso`: bộ tuyến tốt nhất từ `gate_msa` có ngoại ứng ngã nhập, làm mốc, ghi rõ là tĩnh và có thông tin hoàn hảo về cầu.
 - MARL: `selfish`, `attrib` nếu qua mục 6, nhánh rẻ `selfish + β(f − F)` để đối chiếu, MLP không GNN cho ablation.
 Không được chỉnh baseline theo seed báo cáo. Mọi luật chung mới phải đo tác động lên baseline trước.
@@ -49,5 +50,5 @@ Giữ nguyên seed SUMO; đổi hành động hoặc bỏ nhóm xe, đo ΔJ th�
 ## 7. Tái lập
 Lưu cho mỗi run: commit và trạng thái sạch của cây code, hash mạng SUMO và đồ thị, phiên bản SUMO, toàn bộ tham số. Công bố code, mạng, cấu hình, seed. Dữ liệu Mapbox tùy điều khoản (xem `reviewer_qa.md`).
 
-## Chưa chốt, cần người dùng duyệt
-Dải cầu và p ở mục 4; teleport chính (đề xuất 600 s); số seed train; có dùng baseline `dso` hay không.
+## Đã chốt
+Xem `DECISIONS.md` D1–D4. Mục 4 thu gọn theo D2.
