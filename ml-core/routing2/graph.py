@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -25,7 +26,9 @@ import torch
 
 from .params import DEFAULT_CLASS, ROAD_CLASS, SimConfig
 
-DEFAULT_GRAPH = Path("artifacts/out/quan4/wcc/alley_graph_wcc.json")
+# ROUTING2_GRAPH picks another network for every routing2 tool (worker processes inherit it), e.g.
+# artifacts/out/quan4/full/alley_graph_full.json from data_fusion.build_quan4_full.
+DEFAULT_GRAPH = Path(os.environ.get("ROUTING2_GRAPH", "artifacts/out/quan4/wcc/alley_graph_wcc.json"))
 REPO_SIGNALS = Path(__file__).resolve().parents[2] / "sumo-env" / "quan4_osm_signals.json"
 LAT0 = 10.76
 M_PER_DEG_LAT = 110_574.0
@@ -53,6 +56,7 @@ class MesoGraph:
     sig_offset: torch.Tensor  # [E] s
     scc_nodes: torch.Tensor  # node indices of the largest strongly connected component
     node_xy: torch.Tensor  # [n, 2] m (equirectangular)
+    zone_nodes: torch.Tensor | None = None  # node indices of designed zones (graph JSON "zones"), if any
 
     def to(self, device: torch.device | str) -> MesoGraph:
         kw = {}
@@ -139,6 +143,7 @@ def load_graph(
 
     g = nx.DiGraph(list(zip(src, dst)))
     scc = sorted(max(nx.strongly_connected_components(g), key=len))
+    zl = [nid[str(z)] for z in data.get("zones") or [] if str(z) in nid]
 
     return MesoGraph(
         n_nodes=n,
@@ -160,4 +165,5 @@ def load_graph(
         sig_offset=sig_offset,
         scc_nodes=torch.tensor(scc),
         node_xy=xy,
+        zone_nodes=torch.tensor(zl, dtype=torch.long) if zl else None,
     ).to(device)

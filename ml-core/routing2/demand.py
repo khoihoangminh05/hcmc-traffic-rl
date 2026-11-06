@@ -45,6 +45,10 @@ def pick_zones(g: MesoGraph, n_zones: int, seed: int = 0) -> torch.Tensor:
     cdist (matmul form) is off by kilometres. Before 2026-11-01 this picked 3
     distinct nodes out of 32 zones; every routing2 result before then used that.
     """
+    if g.zone_nodes is not None:  # designed zones stored with the graph (routing2.design_od)
+        if n_zones > len(g.zone_nodes):
+            raise ValueError(f"graph has {len(g.zone_nodes)} designed zones, {n_zones} asked")
+        return g.zone_nodes[:n_zones].to(g.src.device)
     gen = torch.Generator().manual_seed(seed)
     cand = g.scc_nodes.cpu()
     xy = g.node_xy.cpu()[cand].double()

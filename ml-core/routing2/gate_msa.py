@@ -73,13 +73,17 @@ def write_routes(path: Path, routes: dict[str, list[str]], dep: dict[str, float]
         f.write("</routes>\n")
 
 
+SUMO_LATERAL = "0.8"  # set from --lateral; 0.8 and 180 s were the defaults before 2026-11-06
+SUMO_TELEPORT = "180"
+
+
 def run_sumo(wd: Path, net: str, rou: Path, end: float, seed: int) -> tuple[Path, Path]:
     (wd / "ed.add.xml").write_text(EDGEDATA.format(f=int(BIN_S)), encoding="utf-8")
     ti = wd / "tripinfo.xml"
     subprocess.run([
         sumo_binary("sumo"), "-n", net, "-r", rou.name, "-a", "ed.add.xml", "--tripinfo-output", ti.name,
-        "--tripinfo-output.write-unfinished", "true", "--step-length", "0.5", "--lateral-resolution", "0.8",
-        "--time-to-teleport", "180", "--end", str(end), "--seed", str(seed), "--no-step-log", "true",
+        "--tripinfo-output.write-unfinished", "true", "--step-length", "0.5", "--lateral-resolution", SUMO_LATERAL,
+        "--time-to-teleport", SUMO_TELEPORT, "--end", str(end), "--seed", str(seed), "--no-step-log", "true",
         "--no-warnings", "true",
     ], cwd=wd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return ti, wd / "dump.xml"
@@ -315,7 +319,16 @@ def main() -> None:
     ap.add_argument("--tag", default="run")
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/out/quan4/routing2"))
+    ap.add_argument("--lateral", type=float, default=0.8, help="SUMO lateral resolution, m")
+    ap.add_argument("--teleport-s", type=float, default=180.0)
+    ap.add_argument("--alley-width", type=float, default=None, help="m per direction (sumo_net default if unset)")
     args = ap.parse_args()
+    global SUMO_LATERAL, SUMO_TELEPORT
+    SUMO_LATERAL, SUMO_TELEPORT = f"{args.lateral:g}", f"{args.teleport_s:g}"
+    if args.alley_width is not None:
+        from . import sumo_net
+
+        sumo_net.WIDTH_PER_LANE["alley"] = args.alley_width
 
     cfg = replace(SimConfig(), horizon_s=args.horizon)
     g = load_graph(DEFAULT_GRAPH, cfg)

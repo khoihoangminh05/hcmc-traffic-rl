@@ -36,7 +36,7 @@ from data_fusion.match_probe import _edge_polyline, project
 from .graph import DEFAULT_GRAPH, REPO_SIGNALS
 from .params import DEFAULT_CLASS, ROAD_CLASS
 
-WIDTH_PER_LANE = {"alley": 2.5, "service": 3.0, "residential": 4.0, "tertiary": 3.2, "secondary": 3.5}
+WIDTH_PER_LANE = {"alley": 2.5, "service": 3.0, "residential": 4.0, "tertiary": 3.2, "secondary": 3.5, "primary": 3.5}
 ALLOW_ALLEY = "motorcycle moped bicycle pedestrian"
 ALLOW_ROAD = "motorcycle moped bicycle pedestrian passenger bus delivery truck"
 

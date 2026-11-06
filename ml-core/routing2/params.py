@@ -26,6 +26,8 @@ ROAD_CLASS: dict[str, ClassParams] = {
     "residential": ClassParams(v_free=6.0, cap=1.0, k_jam=0.8, priority=3),
     "tertiary": ClassParams(v_free=8.0, cap=2.0, k_jam=1.5, priority=4),
     "secondary": ClassParams(v_free=9.0, cap=3.0, k_jam=2.0, priority=5),
+    # primary and trunk (build_quan4_full, 2026-11-06); same step up as tertiary -> secondary, assumed
+    "primary": ClassParams(v_free=10.0, cap=4.0, k_jam=2.5, priority=6),
 }
 DEFAULT_CLASS = "residential"
 
