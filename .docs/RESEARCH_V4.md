@@ -207,3 +207,40 @@ Thay cho phần tương ứng ở mục 3, 10, 12. Chưa chạy Scopus / WoS. K�
 
 **Đối thủ gần nhất:** Yun 2024 / Kim 2025 (có dữ liệu Kakao thật), nhóm Kucharski (Psarou, Akman), MA-GRL. Theo dõi bản mới của họ trước khi nộp.
 
+## 14. Rà lại luận điểm theo quy trình điểm yếu trước (2026-11-06)
+
+Nguyên tắc người dùng chốt: tìm điểm yếu của baseline → có đáng làm không → ai làm rồi → làm thế nào → khả thi không → có thể tham khảo và kết hợp → triển khai. Không làm thuật toán mạnh rồi chờ thắng. Nếu không còn luận điểm mạnh thì nộp Q2/Q3 với đóng góp thật, rồi sang bài khác.
+
+**Bước 1. Baseline có điểm yếu không (từ toàn bộ nhật ký `PLAN_V4.md`):**
+1. Trung bình: không có điểm yếu hệ thống. ff, app, greedy chênh trong ±1% ở 144 tập (v6, app hơn ff 0.7% ± 1.5), ở v7 (16 seed mới: 507.4 / 508.4 / 506.4) và v10 (thường 401 / 398 / 404). Cổng A: UE ≈ SO_x ≈ ff (chênh dưới 1%). Tập đường tĩnh tốt nhất hơn ff 3–8%, rõ chỉ khi nhu cầu rất dồn (dạng 0.9/2/0.7: 6–11%). MARL v6–v11 chỉ ngang ff đến hơn khoảng 1%, và lợi giảm khi p tăng (v7).
+2. **Theo từng tập (mới, v7 cuối, 64 tập 50008–50023, teleport 300 s, các file `diag_v6/v7f/t300/*/heldout_eval*.json`):** tập xấu của controller nào cũng được controller khác cứu với mức như nhau. Lợi của X so với Y trên 25% tập xấu nhất của Y: ff hơn app 78.4 s, ff hơn greedy 77.7, app hơn greedy 80.0, greedy hơn app 75.6, app hơn ff 38.7, greedy hơn ff 54.6. Tương quan J giữa hai controller trên cùng kịch bản chỉ 0.27–0.54. Độ lệch chuẩn của chênh lệch ghép cặp khoảng 80 s (khoảng 16% J). Chọn tốt nhất trong 3 heuristic theo từng tập hơn ff 40.5 s, nhưng phần lớn chỉ là chọn may trong nhiễu.
+   - Đọc: **greedy không sai ở một tình huống đoán trước được.** Mỗi tập là một lần "lật" tắc cục bộ ở vài nút hẻm, xảy ra hoặc không, và controller nào cũng gặp. Lưu ý: ở v7, SUMO seed chưa theo seed kịch bản (sửa từ v8, A1/A5), nên một phần nhiễu là RNG của SUMO. Phải đo lại trên thiết lập v10.
+3. Lựa chọn mô hình hoá làm đổi thứ hạng mạnh hơn controller: bề rộng 1.75 m gây kẹt ở nút 5778362217; độ phân giải ngang 0.2 m so với 0.4 m làm app lệch 10%; teleport 180/300/600 s đổi dấu kết quả (v6: argmax thua ff 17.5% ở 600 s; v7: greedy tốt nhất ở 600 s).
+4. Kịch bản dồn xe v10: app và greedy thua ff (725, 741 so với 714). Nhưng ở một điểm nóng đã khai thác thì app thắng ff (665 so với 744). Chưa tách theo từng điểm nóng.
+
+**Kết luận bước 1:** điểm yếu chung của mọi heuristic, và của MARL, là **đuôi do tắc lật cục bộ**, không phải trung bình. Luận điểm §13 ("giảm J bao nhiêu so với app tốt nhất") không đứng được. Đóng góp 3 (`attrib`) bỏ.
+
+**Bước 2. Có đáng làm không:** kẹt cứng hẻm là chuyện thật ở TP.HCM. Nhưng trong twin, hiện tượng này dính với deadlock và teleport của SUMO và với giả định bề rộng. Chỉ đáng làm nếu việc lật có thể điều khiển được: phát hiện sớm và chuyển một phần đội xe thì giảm được xác suất lật.
+
+**Bước 3. Đã có ai làm chưa (tìm nhanh, chưa đọc toàn văn):**
+- Gating hoặc perimeter control bằng đèn: Keyvan-Ekbatani và cộng sự 2013, gating ở thượng nguồn; perimeter control kết hợp route guidance (arXiv 2508.08617, T-ITS). Các nút không có đèn (nút ưu tiên) **bị loại khỏi điều khiển** trong các bài này.
+- Thông tin trễ gây phản ứng quá mức và tắc; giấu bớt thông tin thì tránh được (Bittihn và Schadschneider, arXiv 2105.11790). Gợi ý đường thời gian thực có thể gây hại (arXiv 2303.17923).
+- Ví dụ UXsim: gridlock ở nút nhập, đổi quyền ưu tiên thì hết tắc (arXiv 2309.17114).
+- Khuyến nghị 10–20 lần lặp mỗi cấu hình và dùng chung seed (arXiv 2604.23240).
+- Chưa thấy bài nào gating nút hẻm không đèn bằng chính chỉ dẫn của nhà cung cấp dẫn đường. Mới tìm nông, phải kiểm thêm.
+
+**Bước 4–5. Cách làm ứng viên và khả thi:** kết hợp, không cần học. Cảnh báo sớm từ báo cáo probe ở các nút dễ lật (danh sách đã khai thác) + bộ điều khiển phản hồi kiểu gating (PI trên số xe đứng ở nút), chuyển một phần xe đội sang nhánh khác. MARL hoặc greedy là baseline. Rủi ro:
+- (a) lật có thể không báo trước được;
+- (b) đội xe nhỏ có thể không đủ để chặn;
+- (c) kết quả có thể không giữ qua SUMO seed, bề rộng, độ phân giải;
+- (d) reviewer có thể gọi đây là artifact deadlock của SUMO.
+
+**Cổng H (khoảng 1–2 ngày CPU, không train):**
+- Trên thiết lập v10 (SUMO seed theo kịch bản), mỗi controller chạy K = 5 SUMO seed để tách phần nhiễu hỗn loạn khỏi phần controller.
+- Thử luật gating đơn giản so với ff, app, greedy đã tune.
+- **Đạt** khi luật giảm J trung bình của 25% tập xấu nhất (chọn theo trung bình các controller, không theo chính nó) ít nhất 10%, khoảng tin cậy 95% không chứa 0, không làm tệ trung bình quá 1%, và giữ được ở 0.2 m và ở hẻm 2.5 m.
+- **Đạt** → luận điểm mới: nhà cung cấp dẫn đường chặn tắc lật ở nút hẻm không đèn. Nhắm TR-C, dự phòng T-ITS.
+- **Trượt** → nộp Q2/Q3, rồi sang bài khác. Bài Q2/Q3 gồm:
+    - twin hẻm Q4 từ dữ liệu miễn phí và nhãn bề rộng;
+    - kết quả trung thực: điều phối và học chỉ ngang heuristic khoảng 1% trên mạng hẻm xe máy;
+    - kết quả bị chi phối bởi tắc lật cục bộ và giả định mô hình (bề rộng, độ phân giải, teleport), kèm khuyến nghị đánh giá.
