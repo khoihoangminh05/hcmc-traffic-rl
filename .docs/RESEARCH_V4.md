@@ -244,3 +244,31 @@ Nguyên tắc người dùng chốt: tìm điểm yếu của baseline → có �
     - twin hẻm Q4 từ dữ liệu miễn phí và nhãn bề rộng;
     - kết quả trung thực: điều phối và học chỉ ngang heuristic khoảng 1% trên mạng hẻm xe máy;
     - kết quả bị chi phối bởi tắc lật cục bộ và giả định mô hình (bề rộng, độ phân giải, teleport), kèm khuyến nghị đánh giá.
+
+**Cập nhật 2026-11-06 tối: nguyên nhân gốc là mạng twin, không phải Quận 4.**
+
+Đo bằng OSM (osmnx 2.1.1 trên sol1; script và log ở `diag_v6/cand*.py`, `cand.log`, `cand2.log`). Ô khoảng 2.7 km, cùng bộ lọc đường. "Có lựa chọn" nghĩa là chuyến có đường thay thế dài tối đa 1.3 lần thời gian free-flow và trùng không quá 50% chiều dài.
+
+| Mạng | Nút | Đoạn cắt là tách mạng | Vùng có vòng lớn nhất | Đường không trùng ≤1.3× |
+|---|---|---|---|---|
+| Twin Q4 đang dùng | 886 | 67% | 16% | 13% |
+| Q4, OSM đầy đủ | 2950 | 26% | 67% | 24% |
+| Q1 + Q4 | 5496 | 24% | 68% | 28% |
+| Q10 | 4312 | 16% | 77% | 38% |
+| Q8 | 3104 | 23% | 64% | 14% |
+| Bình Thạnh | 2704 | 32% | 60% | 9% |
+
+Tỉ lệ chuyến có lựa chọn ≤1.3×: twin cũ 0.20; Q4 OSM đầy đủ 0.49–0.55, tuỳ cách chọn vùng đích (điểm xa nhau nhất trên mọi nút, trên nút giao, hoặc cổng biên + nút giao).
+
+Nguyên nhân:
+1. Bộ lọc của `build_quan4_map` không có `primary` và loại `trunk`.
+2. `export_wcc_subgraph` chỉ giữ hẻm cộng các đường cách hẻm 1 bước, nên mất các đường lớn nối các hẻm.
+
+Cách chọn vùng đích chỉ ảnh hưởng ít. **Chốt: giữ Quận 4, dựng lại mạng từ OSM đầy đủ.**
+
+Các cổng trước khi làm phương pháp:
+1. Mạng SUMO mới: đo tỉ lệ chuyến có lựa chọn và thời gian chạy.
+2. Còn đất: `gate_msa` tập đường tốt nhất so với ff, UE–SO, ở mức tắc vừa.
+3. Cổng H (đuôi do tắc lật).
+
+Mọi kết quả v1–v11 chạy trên mạng thiếu đường lớn. Chúng được giữ lại để báo cáo và không dùng làm kết quả chính.
