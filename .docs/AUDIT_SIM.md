@@ -60,4 +60,11 @@ Mọi kết quả trước khi C1 đạt chỉ là chỉ báo, gồm: thông tin
   Với v3, tỉ lệ cạnh kẹt chết giảm từ 11.5% xuống 5% và tới đích tăng từ 0.73 lên 0.83. Nhưng đường lớn vẫn có TTI 1.0–1.06 và Spearman vẫn khoảng 0.1. Chống kẹt là cần, nhưng chưa đủ.
 - Số liệu Mapbox mới ở đường lớn và cổng (M10, 1188 cạnh có TTI): primary 1.68, secondary 1.47, tertiary 1.36. Nặng nhất: Nguyễn Tất Thành 2.39, cầu Ông Lãnh 1.96, Võ Văn Kiệt 1.67, Khánh Hội 1.51, Tôn Thất Thuyết 1.47, Bến Vân Đồn 1.47. Ở thực tế, đường lớn của cả quận đều chậm vừa phải, nên lượng xe đi xuyên qua cầu lớn hơn nhiều so với mức đã thử. Mục tiêu gộp số liệu cũ và mới: 1145 cạnh (575 cal / 570 test).
 - Dò lần 2 (`cal_s60`, `cal_s90`): luồng ở cổng 1000–12000 mỗi phía, nội quận 2000–10000, chống kẹt v3. Chạy theo cặp cùng tham số với chu kỳ đèn 60 s và 90 s (`ROUTING2_TLS_CYCLE`; mạng giống nhau trừ tlLogic). Mỗi lượt có tham chiếu lúc vắng trên cùng mạng.
+  - **Kết quả (2026-11-07 17:40), 15 bộ × 2 chu kỳ đèn, 1145 cạnh mục tiêu:**
+    - Spearman test của mọi bộ nằm trong khoảng −0.02 đến 0.11.
+    - TTI trung vị theo lớp trong mô phỏng là 1.02–1.20; Mapbox là primary 1.75, secondary 1.47, tertiary 1.33.
+    - Tăng luồng ở cổng chỉ làm kẹt chết thêm: tới đích giảm từ 0.77 xuống 0.45, teleport tăng từ 340 lên 1430. Đường lớn không chậm đều lên như ngoài thực tế.
+    - Đèn 90 s không khác đèn 60 s (một bộ có primary 1.53, nhưng Spearman vẫn 0.10).
+
+    **Luật dừng bị kích hoạt. Kết luận C1: không đạt.** Mô phỏng SUMO này tạo tắc theo kiểu kẹt chết ở nút, không theo kiểu đường chậm đều. Thêm xe không đổi được kiểu tắc đó, nên ước lượng OD theo từng cổng khó sửa được, vì vấn đề nằm ở mô hình nút giao và mô hình xe máy chứ không ở mức nhu cầu.
   - **Luật dừng của vòng này:** nếu bộ tốt nhất chưa đạt Spearman đường lớn ≥ 0.4 trên nửa test và TTI trung vị mỗi lớp lệch ≤ 25%, thì không hiệu chỉnh tiếp bằng tham số chung. Khi đó phải chọn giữa hai hướng: (a) ước lượng OD theo từng cổng (SPSA, nhiều ngày máy, không chắc thành công), hoặc (b) chấp nhận hướng Q2/Q3 theo `RESEARCH_V4` §14.
