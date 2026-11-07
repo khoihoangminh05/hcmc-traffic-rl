@@ -289,3 +289,14 @@ MARL có điều phối chỉ được kỳ vọng thắng ở nơi hội đủ 
 - Mọi kiểm chứng chỉ chạy sau khi C1 đạt mức "hợp lý nhất có thể" (người dùng chấp nhận số liệu chưa hoàn hảo, 2026-11-07).
 
 **Rủi ro:** greedy có tải bắt buộc và hệ số tải đội xe đã chia luồng phần nào. Ở dữ liệu cũ, chia luồng cố định chưa từng thắng greedy ở 8 điểm nóng, nhưng đó là cặp điểm chưa được thiết kế để có lựa chọn. K2 trả lời rủi ro này.
+
+### 15.1 Sửa lại luận điểm và cách trình bày (người dùng chốt, 2026-11-07)
+
+- **Sửa §15:** MARL không có thêm thông tin nào. Việc học ra "xe kia chắc chắn vào hẻm cụt" nếu có thì là lợi thế rất nhỏ, không phải luận điểm. Giá trị chính của MARL là **ổn định tốt trên mọi kịch bản**, và lợi lớn nhất nằm ở các **hẻm thông ra đường chính**.
+- **Cách so sánh:**
+  - Báo cáo đủ ff, app (kiểu Google Maps: mỗi xe tự đi đường nhanh nhất theo tình trạng hiện tại), greedy_load, MAPPO và IPPO (đối chứng MARL).
+  - Với greedy_load: nói rõ nó mạnh trong hầu hết trường hợp và vì sao, rồi chỉ ra các kịch bản cụ thể nó kém hơn, nơi MAPPO vẫn tốt.
+  - Với app / Google Maps: chỉ ra MAPPO tốt hơn hẳn.
+  - Không làm yếu và không giấu greedy_load.
+- **Đóng góp:** thuật toán, cùng pipeline bản sao số (OSM → SUMO đầy đủ, cổng xe từ quận khác, hiệu chỉnh theo Mapbox và camera) và bộ dữ liệu (Mapbox probe/typical, camera Q4 đếm bằng YOLO, bộ cặp OD v3).
+- **Ràng buộc:** "MAPPO luôn tốt" phải là kết quả đo, chủ yếu ở nhóm 25% episode xấu nhất và độ lệch giữa các kịch bản. Các kịch bản greedy_load kém phải được tìm ra **trước khi train** (khai thác kịch bản + oracle, theo quy trình điểm yếu trước).
