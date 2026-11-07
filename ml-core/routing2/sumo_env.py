@@ -145,6 +145,8 @@ class SumoEnvConfig:
     # This share of background trips uses another navigation app (SUMO rerouting device).
     bg_reroute_share: float = 0.0
     bg_reroute_period_s: float = 120.0
+    # extra SUMO command-line arguments, e.g. ("-a", "edgedata.add.xml") for per-link speeds (audits only)
+    extra_args: tuple[str, ...] = ()
     # Measure vehicle-seconds standing per link, for routing2.scenarios. Not for controllers.
     record_link_wait: bool = False
 
@@ -399,6 +401,7 @@ class SumoRoutingEnv:
             "--time-to-teleport", str(cfg.teleport_s), "--no-step-log", "true",
             "--no-warnings", "true", "--end", str(cfg.horizon_s), "--seed", str(cfg.sumo_seed),
             "--device.rerouting.period", str(cfg.bg_reroute_period_s),
+            *cfg.extra_args,
         ])
 
     def _features(self, node: int, cand: list[int], z: int) -> list[list[float]]:
