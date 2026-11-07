@@ -30,6 +30,8 @@ def ev(d,rid,refid):
     return o,med,round(R[rid]["arr"],2)
 runs=[("cal_meso",f"{d}_m{m}",f"ref_m{m}") for m in (1,2,3) for d in ("c20","c4","d14","d3")]
 runs+=[("cal_sd",f"s{i}","ref") for i in range(31)]
+import os
+if os.path.exists(D+"/cal_sdlin/rows.json"): runs=[("cal_sdlin",r["id"],"ref") for r in json.load(open(D+"/cal_sdlin/rows.json")) if r["id"]!="ref"]
 res=[]
 for r in runs:
     try: o,med,arr=ev(*r); res.append((o["cal"],r,o,med,arr))

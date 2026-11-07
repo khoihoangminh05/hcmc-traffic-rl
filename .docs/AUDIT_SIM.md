@@ -78,6 +78,11 @@ Mọi kết quả trước khi C1 đạt chỉ là chỉ báo, gồm: thông tin
       - Không đặc trưng cục bộ nào giải thích được TTI trong cùng lớp: đèn, độ dài, số làn, betweenness, khoảng cách tới cổng đều cho |ρ| ≤ 0.33.
     - **Mục tiêu sửa lại: khúc đường khoảng 300 m** (cùng tên đường, ô lưới 300 m, ≥ 3 đoạn): 131 khúc, Spearman giữa hai nửa đoạn (trần dữ liệu) 0.74. Ở mức này, mô phỏng meso m3 có Spearman 0.31–0.39 (cal) và 0.56–0.70 (test, chỉ 65 khúc nên nhiễu). Nhưng **trong cùng lớp gần 0** (primary 0.24, secondary −0.11, tertiary 0.1), và mọi khúc đều có TTI khoảng 1.0. Mô phỏng chỉ đúng chỗ "đường lớn chậm hơn đường nhỏ".
     - **Chẩn đoán:** thứ còn thiếu là **lưu lượng và phân bố không gian của nhu cầu**. Chỉ có tốc độ thì không suy ra được: nhiều phân bố OD cho cùng một bức tranh tốc độ. Camera đang thu là 8 camera ở quận khác (Thủ Đức, Tân Bình), Q4 không có camera nào.
+    - **Lớp tốc độ tuyến tính** (`cal_sdlin`, b = 1, a ∈ {0.3, 0.6, 1}, k0 ∈ {0.05, 0.1}, mức c20/c4), chấm theo khúc 300 m:
+      - Tốt nhất về mức tắc: c4, a = 1, k0 = 0.05, đường lớn 1.33 / 1.29 / 1.23 (Mapbox 1.67 / 1.47 / 1.33), nhưng tới đích chỉ 0.51.
+      - Các bộ yếu hơn tới đích 0.78–0.83 nhưng TTI chỉ 1.02–1.09.
+      - Spearman trong tertiary là −0.34 đến −0.51 ở **mọi** bộ: mô phỏng làm chậm các tertiary gom xe từ hẻm (Đoàn Văn Bơ, Tôn Đản), còn Mapbox cho thấy tertiary chậm ở chỗ khác.
+      - Kết luận: lớp tốc độ làm đúng việc của nó; **vị trí của xe trong mô phỏng sai**. Điểm xuất phát theo chiều dài hẻm dồn quá nhiều xe vào khu dày hẻm, trục xuyên quận thì thiếu xe. Cần số đếm lưu lượng để sửa.
   - **Kế hoạch sửa (thay luật dừng cũ):**
     1. Mục tiêu theo khúc đường 300 m. Cổng: Spearman toàn bộ ≥ 0.5 và trong đường lớn ≥ 0.4; TTI trung vị mỗi lớp lệch ≤ 15%; tới đích ≥ 0.8 (tham chiếu lúc vắng là 0.87).
     2. Dữ liệu lưu lượng: thêm camera của cổng giaothong.hochiminhcity.gov.vn ở các cầu và đường lớn của Q4, đếm xe trên ảnh chụp mỗi 5 phút bằng pipeline CV có sẵn, ra luồng theo từng cổng.

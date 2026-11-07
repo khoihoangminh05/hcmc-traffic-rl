@@ -109,7 +109,17 @@ if __name__=="__main__":
     saved.update(burst_n=0,hotspots="",net_dir=NET,zones=len(gj["zones"]),horizon=H,incident_rate=2.0,school_rate=1.0)
     conf=worker_conf(saved,O/"work"); T=target()
     print("targets",len(T),{h:sum(1 for t in T.values() if t["half"]==h) for h in("cal","test")},flush=True)
-    if mode=="sd":   # meso m3 + speed-density layer: random search over (a, b, k0) and demand
+    if mode=="sdlin":   # stable layer: b = 1, weak a, two k0, two demand levels, meso m3
+        m3=("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1","--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7")
+        dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},"c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09}}
+        P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}]
+        for d in dem:
+            for a_ in (.3,.6,1.):
+                for k0 in (.05,.1):
+                    P.append({"id":f"{d}_a{a_}_k{k0}","p":dem[d],"sd":{"every":30.0,"a":a_,"b":1.0,"k0":k0}})
+        for c in P: c.update(sumo=m3,teleport=300)
+        seeds=[40000]
+    elif mode=="sd":   # meso m3 + speed-density layer: random search over (a, b, k0) and demand
         rnd=random.Random(int(sys.argv[3])); m3=("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1",
             "--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7")
         P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}]
