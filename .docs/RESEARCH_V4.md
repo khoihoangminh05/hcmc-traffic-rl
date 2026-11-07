@@ -272,3 +272,20 @@ Các cổng trước khi làm phương pháp:
 3. Cổng H (đuôi do tắc lật).
 
 Mọi kết quả v1–v11 chạy trên mạng thiếu đường lớn. Chúng được giữ lại để báo cáo và không dùng làm kết quả chính.
+
+## 15. Luận điểm điều phối có chọn lọc (người dùng, 2026-11-07)
+
+MARL có điều phối chỉ được kỳ vọng thắng ở nơi hội đủ ba điều kiện. Ở những nơi còn lại, kết quả của MARL được phép bằng greedy.
+
+1. **Có lựa chọn để chia luồng.** Cặp điểm có nhiều đường gần tương đương (bộ C/X ở `AUDIT_SIM.md`, mục v3).
+   - Điểm yếu của greedy: chọn cứng. Mọi xe cùng thấy một thông tin nên dồn cùng một đường (bầy đàn), rồi đổi qua đổi lại.
+2. **Cái giá phải trả nhỏ hơn cái lợi.** Chênh lệch giữa các đường nhỏ (≤ 1.2 lần, trung vị 1.17), nhỏ hơn chi phí của một xe bị dồn vào hẻm tắc. Hẻm rộng khoảng 1.25 m mỗi chiều, chỉ cần một xe đứng là chặn cả hẻm.
+3. **Biết trước tải bắt buộc.** Xe có điểm đến trong hẻm cụt (túi chiếm 47% chiều dài hẻm) chắc chắn sẽ vào chuỗi cạnh dẫn tới túi, kể cả các hẻm thông nằm trên đường vào. MARL học được điều này để tránh trước. Greedy chỉ thấy thời gian hiện tại nên chỉ biết khi hẻm đã tắc.
+
+**Kiểm chứng trước khi train** (quy trình điểm yếu trước, §14):
+- **K1 (bầy đàn):** trên các cặp C/X, đo tỉ lệ xe đội của greedy và app dồn vào cùng một đường, và số lần đổi đường.
+- **K2 (còn đất):** chạy split oracle và SO (`gate_msa`) trên chính các cặp này, so với greedy. Cần lợi ít nhất 5% ở nhóm 25% episode khó nhất; nếu không thì luận điểm 1–2 không đứng được.
+- **K3 (tải bắt buộc):** chạy greedy có và không có đặc trưng tải bắt buộc. **Greedy cũng phải được dùng đặc trưng này** (luật công bằng). Vì vậy phần thắng của MARL phải đến từ điều phối (chia luồng) và từ dự báo động học (khi nào xe bắt buộc tới, khi nào hẻm thông bị chặn), không phải từ có thêm thông tin.
+- Mọi kiểm chứng chỉ chạy sau khi C1 đạt mức "hợp lý nhất có thể" (người dùng chấp nhận số liệu chưa hoàn hảo, 2026-11-07).
+
+**Rủi ro:** greedy có tải bắt buộc và hệ số tải đội xe đã chia luồng phần nào. Ở dữ liệu cũ, chia luồng cố định chưa từng thắng greedy ở 8 điểm nóng, nhưng đó là cặp điểm chưa được thiết kế để có lựa chọn. K2 trả lời rủi ro này.
