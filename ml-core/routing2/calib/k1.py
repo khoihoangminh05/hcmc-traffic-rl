@@ -26,10 +26,13 @@ def _run(t):
     ok=car_ok(env,g); d.cars[0]=[c for c in d.cars[0] if ok(c[1],c[2])]
     env.cfg.extra_args=M3; env.cfg.lateral_m=-1; env.cfg.bg_route="informed"; env.cfg.teleport_s=300
     env.cfg.sd_every_s=30.; env.cfg.sd_a=.6; env.cfg.sd_b=1.; env.cfg.sd_k0=.1
-    env.cfg.sumo_seed=t["seed"]; env.cfg.horizon_s=H+300; env.cfg.incident_seed=t["seed"]; env.cfg.compliance=.9; env.cfg.record_link_wait=False
+    env.cfg.sumo_seed=t["seed"]; env.cfg.horizon_s=H+300; env.cfg.incident_seed=t["seed"]; env.cfg.compliance=.9; env.cfg.record_link_wait=True
     pol=M._Score(live=t["policy"] in("app","greedy"),queue_s=.5 if t["policy"]=="greedy" else 0.)
     t0=time.time(); ep=env.run(d,0,pol,record=False)
-    return {**t,"metrics":ep.metrics,"n_ctrl":ep.n_ctrl,"tt_ctrl":ep.ttt_ctrl_s/max(1,ep.n_ctrl),"wall":time.time()-t0,"tele":ep.teleports}
+    w=np.asarray(ep.link_wait_s,dtype=np.float64); al=g.is_alley.cpu().numpy()
+    top=np.argsort(-w)[:15]
+    mech={"wait_alley_s":float(w[al].sum()),"wait_road_s":float(w[~al].sum()),"top":[[g.edge_ids[i],bool(al[i]),round(float(w[i]))] for i in top]}
+    return {**t,"mech":mech,"metrics":ep.metrics,"n_ctrl":ep.n_ctrl,"tt_ctrl":ep.ttt_ctrl_s/max(1,ep.n_ctrl),"wall":time.time()-t0,"tele":ep.teleports}
 def car_ok(env,g):
     from routing2 import sumo_marl as M
     if "car_ok" in M._W: return M._W["car_ok"]
@@ -56,18 +59,21 @@ if __name__=="__main__":
     gj=json.load(open(NET+"/graph/alley_graph_full_v3.json"))
     saved.update(burst_n=0,hotspots="",net_dir=NET,zones=len(gj["zones"]),horizon=H,incident_rate=2.0,school_rate=1.0)
     conf=worker_conf(saved,O/"work")
-    ts=[{"policy":p,"fleet":f,"seed":s} for s in (40000,40001) for f in (1500.,3000.,6000.) for p in ("ff","app","greedy")]
+    FL=[float(x) for x in sys.argv[3].split(",")] if len(sys.argv)>3 else [1500.,3000.,6000.]
+    SD=[int(x) for x in sys.argv[4].split(",")] if len(sys.argv)>4 else [40000,40001]
+    ts=[{"policy":p,"fleet":f,"seed":s} for s in SD for f in FL for p in ("ff","app","greedy")]
     with mp.get_context("spawn").Pool(16,init,(conf,)) as pool: rows=pool.map(run,ts,chunksize=1)
     for r in rows:
         if "err" in r: print("ERR",r["policy"],r["fleet"],r["err"],flush=True)
     rows=[r for r in rows if "err" not in r]; json.dump(rows,open(O/"rows.json","w"))
-    for f in (1500.,3000.,6000.):
+    for f in FL:
         out={}
         for p in ("ff","app","greedy"):
             m=[r for r in rows if r["fleet"]==f and r["policy"]==p]
             if not m: continue
             out[p]={"J":round(float(np.mean([objective(r["metrics"],.5) for r in m])),1),"T_cust":round(float(np.mean([r["metrics"].get("mean_tt_cust_s",r["tt_ctrl"]) for r in m])),1),
                      "T_all":round(float(np.mean([r["metrics"].get("mean_tt_all_s",0) for r in m])),1),"arr":round(float(np.mean([r["metrics"]["arrived_share_all"] for r in m])),3),
-                     "n_ctrl":int(np.mean([r["n_ctrl"] for r in m])),"wall":round(float(np.mean([r["wall"] for r in m])))}
+                     "n_ctrl":int(np.mean([r["n_ctrl"] for r in m])),"J_seeds":[round(objective(r["metrics"],.5)) for r in sorted(m,key=lambda r:r["seed"])],
+                     "wait_alley_ks":round(float(np.mean([r["mech"]["wait_alley_s"] for r in m]))/1000),"wait_road_ks":round(float(np.mean([r["mech"]["wait_road_s"] for r in m]))/1000),"wall":round(float(np.mean([r["wall"] for r in m])))}
         print(json.dumps({"fleet_tph":f,**out}),flush=True)
     print("K1_DONE",flush=True)

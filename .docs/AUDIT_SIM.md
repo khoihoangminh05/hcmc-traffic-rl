@@ -120,3 +120,20 @@ Script: `routing2/calib/od3.py`, `od3b.py`; kết quả ở sol1 `diag_v6/od_v3.
 - **Còn phải làm:**
   1. Đưa bộ cặp vào phần sinh nhu cầu: xe đội chạy theo các cặp C và X; xe nền vẫn theo nhu cầu đã hiệu chỉnh.
   2. Đặc trưng **"tải bắt buộc"**: mỗi xe có điểm đến trong túi buộc phải đi qua chuỗi cạnh nối vào túi. Hệ thống tính trước số xe sẽ vào mỗi cạnh trong H giây tới: xe đội lấy theo điểm đến đã biết, xe nền lấy theo tốc độ vào túi điển hình đo được. Mọi bộ điều khiển (greedy, app, MARL) đều được dùng đặc trưng này, để công bằng.
+
+## K1: so sánh baseline trên cặp v3 (2026-11-07 đêm)
+
+Mô phỏng: meso m3, lớp tốc độ tuyến tính (a 0.6, b 1, k0 0.1), xe nền mức c4 có xe từ quận khác, thêm 600 chuyến/giờ buộc vào hẻm cụt (F). Xe đội chạy trên các cặp C/X. Script: `routing2/calib/k1.py`.
+
+- **Lượt 1** (seed 40000–40001): ở cỡ đội 6000, ff 502, app 631, greedy 633. Nhìn thì như app/greedy sụp vì dồn đường.
+- **Lượt 2** (seed 40002–40004) **không xác nhận lượt 1**:
+
+  | Cỡ đội | ff | app | greedy |
+  |---|---|---|---|
+  | 4500 | 503 | 503 | 503 |
+  | 6000 | 544 (503 / 510 / 620) | 535 (516 / 579 / 510) | 515 (520 / 509 / 518) |
+  | 9000 | 737 | 632 | 666 (592–736) |
+
+  Gần ngưỡng năng lực, mỗi episode có thể "sụp" hoặc không, và chuyện đó xảy ra ngẫu nhiên với **bất kỳ** chính sách nào. Kết quả lượt 1 chỉ là do sụp rơi đúng vào app/greedy. **Không có thứ hạng ổn định.** Muốn so phải đo xác suất sụp trên nhiều seed (cổng H).
+- **Cơ chế:** thời gian chờ ở hẻm chỉ chiếm 1–3% tổng (15–70 nghìn s so với 1–2.3 triệu s trên đường). Xe đội gần như không đi hẻm thông. Các cạnh chờ nhiều nhất giống nhau ở mọi chính sách: **Võ Văn Kiệt, mô hình 1 làn** (616 m và 367 m), sau đó là Hoàng Diệu. Làn xe máy của Võ Văn Kiệt ngoài thực tế là đường song hành rộng, nên mô hình 1 làn **rất có thể là lỗi số làn trong OSM hoặc lúc dựng mạng**. Nút cổ chai giả này chi phối cả mạng, không chính sách nào tránh được.
+- **Việc tiếp theo:** (1) kiểm tra và sửa số làn (bề rộng) của Võ Văn Kiệt và các trục 1 làn khác; (2) đo xác suất sụp theo chính sách trên khoảng 20 seed ở cỡ đội 6000–7500; (3) xem vì sao xe đội không dùng hẻm thông dù cặp C có đường qua hẻm (chi phí thời gian của hẻm trong mô phỏng có hợp lý không).
