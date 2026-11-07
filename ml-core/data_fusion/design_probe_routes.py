@@ -29,6 +29,7 @@ import numpy as np
 
 from .match_probe import M_PER_DEG_LAT, M_PER_DEG_LON, _edge_polyline
 
+MAJOR = {"primary", "secondary", "tertiary"}
 DEFAULT_GRAPH = Path("artifacts/out/quan4/wcc/alley_graph_wcc.json")
 DEFAULT_OUT = Path("../ingestion-worker/config/probe_routes.quan4.json")
 
@@ -36,15 +37,21 @@ DEFAULT_OUT = Path("../ingestion-worker/config/probe_routes.quan4.json")
 def load_graph(path: Path) -> tuple[nx.DiGraph, dict[str, tuple[float, float]]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     alleys = data["alleys"]
+    gates = {str(n) for n in data.get("gates_in", []) + data.get("gates_out", [])}
     g = nx.DiGraph()
     for e in data["edge_list"]:
         a = alleys[e["alley_id"]]
+        cls = a.get("road_class")
         g.add_edge(
             str(e["u"]),
             str(e["v"]),
             alley_id=e["alley_id"],
             length_m=float(a["length_m"]),
-            is_alley=(a.get("road_class") == "alley" or a.get("layer") == "alley"),
+            is_alley=(cls == "alley" or a.get("layer") == "alley"),
+            # focus "major" (network v2): main roads, bridges and boundary gate links
+            is_target=(cls == "alley" or a.get("layer") == "alley"),
+            is_major=cls in MAJOR,
+            is_gate=str(e["u"]) in gates or str(e["v"]) in gates,
         )
     geo = {str(n): (float(p["lon"]), float(p["lat"])) for n, p in data["nodes_geo"].items()}
     return g, geo
@@ -62,7 +69,7 @@ def candidate_routes(
     max_m: float,
 ) -> list[dict[str, Any]]:
     """Origin → via → destination, via on an alley edge, both legs shortest by length."""
-    alley_edges = [(u, v) for u, v, d in g.edges(data=True) if d["is_alley"]]
+    alley_edges = [(u, v) for u, v, d in g.edges(data=True) if d["is_target"]]
     nodes = list(g.nodes())
     out: list[dict[str, Any]] = []
     tries = 0
@@ -94,7 +101,7 @@ def greedy_cover(
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
     covered: set[tuple[str, str]] = set()
     chosen: list[dict[str, Any]] = []
-    weight = {e: (1.0 if g.edges[e]["is_alley"] else 0.5) for e in g.edges()}
+    weight = {e: g.edges[e]["w"] for e in g.edges()}
     remaining = list(cands)
     for _ in range(n_routes):
         best, best_gain = None, 0.0
@@ -128,7 +135,7 @@ def edge_midpoint(graph: dict[str, Any], aid: str, u: str, v: str) -> tuple[floa
 
 def pick_vias(g: nx.DiGraph, edges: list[tuple[str, str]], n_via: int, min_m: float) -> list[tuple[str, str]]:
     """Up to n_via alley edges spread evenly along the path."""
-    alley = [e for e in edges if g.edges[e]["is_alley"] and g.edges[e]["length_m"] >= min_m]
+    alley = [e for e in edges if g.edges[e]["is_target"] and g.edges[e]["length_m"] >= min_m]
     if len(alley) <= n_via:
         return alley
     idx = np.linspace(0, len(alley) - 1, n_via).round().astype(int)
@@ -141,6 +148,7 @@ def to_probe(
     geo: dict[str, tuple[float, float]],
     k: int,
     c: dict[str, Any],
+    prefix: str,
     n_via: int,
     via_min_m: float,
 ) -> dict[str, Any]:
@@ -158,7 +166,7 @@ def to_probe(
     coords.append(fmt(*geo[end]))
     bearings.append("")
     return {
-        "routeId": f"q4p_{k:03d}",
+        "routeId": f"{prefix}_{k:03d}",
         "coordinates": coords,
         "bearings": bearings,
         "nodes": [c["origin"], *[u for u, _ in vias], end],
@@ -179,26 +187,35 @@ def main() -> None:
     ap.add_argument("--n-via", type=int, default=8, help="via points per probe (25 coords max)")
     ap.add_argument("--via-min-m", type=float, default=10.0, help="skip shorter alley edges as vias")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--focus", choices=["alley", "major"], default="alley",
+                    help="major: vias and coverage weight on main roads and boundary gates (network v2)")
+    ap.add_argument("--prefix", default="q4p", help="routeId prefix")
     ap.add_argument("--cycles-per-day", type=int, default=28, help="for the request budget printout")
     args = ap.parse_args()
 
     g, geo = load_graph(args.graph)
+    for u, v, d in g.edges(data=True):
+        if args.focus == "major":
+            d["is_target"] = d["is_major"] or d["is_gate"]
+            d["w"] = 2.0 if d["is_gate"] else (1.0 if d["is_major"] else 0.0)
+        else:
+            d["w"] = 1.0 if d["is_alley"] else 0.5
     rng = np.random.default_rng(args.seed)
     cands = candidate_routes(g, rng, args.n_candidates, args.min_m, args.max_m)
     chosen, covered = greedy_cover(g, cands, args.n_routes)
     assert 0 <= args.n_via <= 23
     graph = json.loads(args.graph.read_text(encoding="utf-8"))
-    probes = [to_probe(g, graph, geo, k, c, args.n_via, args.via_min_m) for k, c in enumerate(chosen)]
+    probes = [to_probe(g, graph, geo, k, c, args.prefix, args.n_via, args.via_min_m) for k, c in enumerate(chosen)]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(probes, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    n_alley = sum(1 for e in g.edges() if g.edges[e]["is_alley"])
-    cov_alley = sum(1 for e in covered if g.edges[e]["is_alley"])
+    n_alley = sum(1 for e in g.edges() if g.edges[e]["is_target"])
+    cov_alley = sum(1 for e in covered if g.edges[e]["is_target"])
     per_month = len(probes) * args.cycles_per_day * 31
     print(
         f"[probe] {len(cands)} candidates -> {len(probes)} routes | "
         f"edges covered {len(covered)}/{g.number_of_edges()} "
-        f"(alley {cov_alley}/{n_alley}) | "
+        f"(target {cov_alley}/{n_alley}) | "
         f"median length {np.median([p['length_m'] for p in probes]):.0f} m | "
         f"budget {per_month} requests / 31 days at {args.cycles_per_day} cycles/day",
         flush=True,

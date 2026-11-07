@@ -127,7 +127,7 @@ def build_net(graph_path: Path, out_dir: Path) -> Path:
             "--default.junctions.radius", "1.5",
             "--junctions.corner-detail", "0",
             "--tls.default-type", "static",
-            "--tls.cycle.time", "60",
+            "--tls.cycle.time", os.environ.get("ROUTING2_TLS_CYCLE", "60"),  # assumed; audit N6 sweeps it
             "--no-warnings", "true",
         ]
         subprocess.run(cmd, check=True)
