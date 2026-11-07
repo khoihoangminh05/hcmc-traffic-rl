@@ -154,6 +154,15 @@ class SumoEnvConfig:
     # each trip at departure on its smoothed current link times (drivers who know the usual traffic),
     # and the bg_reroute_share keeps rerouting on the way (audit B1)
     bg_route: str = "ff"
+    # Speed-density layer (audit C1, 2026-11-07): every sd_every_s seconds each link's speed limit is set to
+    # v_free / (1 + sd_a * (k / sd_k0) ** sd_b), k = vehicles per lane-metre now on the link, floor sd_vmin
+    # x v_free. Mixed motorcycle traffic slows long before it jams; SUMO (micro or meso) keeps the free
+    # speed until a queue forms. sd_a, sd_b, sd_k0 are calibrated to Mapbox. 0 = off (the default).
+    sd_every_s: float = 0.0
+    sd_a: float = 1.0
+    sd_b: float = 2.0
+    sd_k0: float = 0.1
+    sd_vmin: float = 0.2
     # Measure vehicle-seconds standing per link, for routing2.scenarios. Not for controllers.
     record_link_wait: bool = False
 
@@ -373,6 +382,21 @@ class SumoRoutingEnv:
 
     # ----------------------------------------------------------- episode
 
+    def _speed_density(self) -> None:
+        """Speed-density layer (SumoEnvConfig.sd_*). An event limit in force still caps the speed."""
+        cfg, ed = self.cfg, self.sumo.edge
+        if getattr(self, "_sd_cap", None) is None:
+            self._sd_cap = [
+                max(1.0, float(self.length[e]) * ed.getLaneNumber(self.eid[e])) for e in range(self.g.n_edges)
+            ]
+        for e in range(self.g.n_edges):
+            k = ed.getLastStepVehicleNumber(self.eid[e]) / self._sd_cap[e]
+            vf = float(self.g.v_free[e])
+            v = max(cfg.sd_vmin, 1.0 / (1.0 + cfg.sd_a * (k / cfg.sd_k0) ** cfg.sd_b)) * vf
+            if e in self._limit:
+                v = min(v, self._limit[e])
+            ed.setMaxSpeed(self.eid[e], v)
+
     def _incident_schedule(self, rt: list[list[int]], dep: torch.Tensor) -> list[tuple[float, list[int], float, float]]:
         """(start, links, speed, duration), places drawn in proportion to free-flow use among alleys."""
         cfg = self.cfg
@@ -588,6 +612,7 @@ class SumoRoutingEnv:
         self.live_tt = self.ff_edge.clone()
         self.live_D = self.Dz.clone()
         next_live = 0.0
+        next_sd = 0.0
         schedule = self._incident_schedule(rt, dep)
         ending: list[tuple[float, int]] = []
         slow: dict[int, int] = {}
@@ -636,6 +661,10 @@ class SumoRoutingEnv:
                     if slow[item[1]] == 0:  # overlapping events: free flow only after the last one
                         self._limit.pop(item[1], None)
                         self.sumo.edge.setMaxSpeed(self.eid[item[1]], float(self.g.v_free[item[1]]))
+                        # with the speed-density layer on, the next layer update restores its own limit
+                if cfg.sd_every_s > 0 and t >= next_sd:
+                    self._speed_density()
+                    next_sd = t + cfg.sd_every_s
                 if cfg.live_every_s > 0 and t >= next_live:
                     self._refresh_live(t)
                     next_live = t + cfg.live_every_s
@@ -685,7 +714,8 @@ class SumoRoutingEnv:
                     if vid in self._due and e == self._due[vid][1]:
                         # a link shorter than one step is due in the step it is entered
                         # the lane length, not the graph's: netconvert shortens lanes at junctions
-                        rem = self.sumo.lane.getLength(sv.getLaneID(vid)) - sv.getLanePosition(vid)
+                        lid = sv.getLaneID(vid) or f"{self.eid[e]}_0"  # SUMO meso has no lanes
+                        rem = self.sumo.lane.getLength(lid) - sv.getLanePosition(vid)
                         if rem <= max(cfg.decide_ahead_m, sv.getSpeed(vid) * cfg.decide_ahead_s):
                             n, _, z = self._due.pop(vid)
                             reqs.append((vid, n, e, z))

@@ -22,7 +22,11 @@ def _run(t):
     add.write_text(f'<additional><edgeData id="ed" begin="{W0}" end="{H}" period="{H-W0}" file="{out}" excludeEmpty="true"/></additional>')
     env.cfg.extra_args=("-a",str(add))+tuple(t.get("sumo",())); env.cfg.bg_route="informed"
     M._W.setdefault("tele0",env.cfg.teleport_s); env.cfg.teleport_s=t.get("teleport",M._W["tele0"])   # workers are reused: always reset
-    d=make_demand_v2(g,zones,[t["seed"]],H,.15,p["internal"],tuple(p["gate"]),p["thr"],p["car"])
+    sd=t.get("sd",{}); env.cfg.sd_every_s=sd.get("every",0.0); env.cfg.sd_a=sd.get("a",1.0); env.cfg.sd_b=sd.get("b",2.0); env.cfg.sd_k0=sd.get("k0",.1)
+    M._W.setdefault("lat0",env.cfg.lateral_m); env.cfg.lateral_m=-1 if "--mesosim" in t.get("sumo",()) else M._W["lat0"]   # meso has no sublanes
+    import torch
+    gw=torch.tensor(p["gin_w"]) if p.get("gin_w") else None; xw=torch.tensor(p["exit_w"]) if p.get("exit_w") else None
+    d=make_demand_v2(g,zones,[t["seed"]],H,.15,p["internal"],tuple(p["gate"]),p["thr"],p["car"],gate_in_w=gw,exit_w=xw)
     ok=car_ok(env,g); n0=len(d.cars[0]); d.cars[0]=[c for c in d.cars[0] if ok(c[1],c[2])]; dropped=n0-len(d.cars[0])
     env.cfg.sumo_seed=t["seed"]; env.cfg.horizon_s=H; env.cfg.incident_seed=t["seed"]; env.cfg.compliance=.9; env.cfg.record_link_wait=False
     t0=time.time(); ep=env.run(d,0,M._Score(live=True),record=False)
@@ -31,7 +35,7 @@ def _run(t):
         ss=float(e.get("sampledSeconds",0)); v=float(e.get("speed",0))
         if ss>30 and v>0: sp[e.get("id")]=v
     os.remove(out)
-    return {"id":t["id"],"seed":t["seed"],"p":p,"speed":sp,"n_moto":int(d.dep_t.shape[1]),"n_car":len(d.cars[0]),
+    return {"id":t["id"],"seed":t["seed"],"p":p,"sd":t.get("sd",{}),"speed":sp,"n_moto":int(d.dep_t.shape[1]),"n_car":len(d.cars[0]),
             "tele":ep.teleports,"car_dropped":dropped,"arr":ep.metrics.get("arrived_share_all"),"wall":time.time()-t0}
 def car_ok(env,g):
     """(entry node, exit node) -> can a car drive from the link the env picks to the one it picks (SUMO passenger)."""
@@ -105,7 +109,27 @@ if __name__=="__main__":
     saved.update(burst_n=0,hotspots="",net_dir=NET,zones=len(gj["zones"]),horizon=H,incident_rate=2.0,school_rate=1.0)
     conf=worker_conf(saved,O/"work"); T=target()
     print("targets",len(T),{h:sum(1 for t in T.values() if t["half"]==h) for h in("cal","test")},flush=True)
-    if mode=="search2":   # wide gate flows (bridges), anti-deadlock v3, plus the low-demand reference on the same net
+    if mode=="sd":   # meso m3 + speed-density layer: random search over (a, b, k0) and demand
+        rnd=random.Random(int(sys.argv[3])); m3=("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1",
+            "--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7")
+        P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}]
+        for i in range(int(sys.argv[4])):
+            P.append({"id":f"s{i}","p":{"internal":rnd.uniform(2000,10000),"gate":[rnd.uniform(1000,10000) for _ in range(4)],
+                      "thr":rnd.uniform(.3,.9),"car":rnd.uniform(.05,.25)},
+                      "sd":{"every":30.0,"a":rnd.uniform(.3,3.0),"b":rnd.uniform(1.0,3.0),"k0":math.exp(rnd.uniform(math.log(.01),math.log(.2)))}})
+        for c in P: c.update(sumo=m3,teleport=300)
+        seeds=[int(sys.argv[5]) if len(sys.argv)>5 else 40000]
+    elif mode=="meso":   # SUMO mesoscopic edges (speed falls with density, no lane-level junction deadlock)
+        dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},
+             "c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09},
+             "d14":{"internal":9662.,"gate":[2660.,2938.,3552.,3567.],"thr":.59,"car":.15},
+             "d3":{"internal":2373.,"gate":[10443.,4186.,2587.,2296.],"thr":.49,"car":.15},
+             "ref":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}
+        base=("--mesosim","true","--meso-junction-control","true")
+        half=("--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7")
+        V={"m1":base,"m2":base+half,"m3":("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1")+half}
+        P=[{"id":f"{d}_{v}","p":dem[d],"sumo":V[v],"teleport":300} for v in V for d in dem]; seeds=[40000]
+    elif mode=="search2":   # wide gate flows (bridges), anti-deadlock v3, plus the low-demand reference on the same net
         rnd=random.Random(int(sys.argv[3])); P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}]
         for i in range(int(sys.argv[4])):
             P.append({"id":f"d{i}","p":{"internal":rnd.uniform(2000,10000),"gate":[rnd.uniform(1000,12000) for _ in range(4)],

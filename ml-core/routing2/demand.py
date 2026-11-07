@@ -149,6 +149,8 @@ def make_demand_v2(
     car_share: float,
     hot_share: float = 0.0,
     n_hot: int = 4,
+    gate_in_w: torch.Tensor | None = None,
+    exit_w: torch.Tensor | None = None,
 ) -> Demand:
     """Demand with traffic from other districts (audit D1, D3, V1), departures uniform over the horizon.
 
@@ -158,6 +160,8 @@ def make_demand_v2(
     from the core through that side's exits (the peak is not assumed one-way). A `car_share` of the
     side flows are cars (entry and exit gates only, routed by SUMO), the rest motorcycles. Fleet
     vehicles (`penetration`) are drawn among motorcycle trips. All numbers are to be calibrated.
+    `gate_in_w` (one weight per g.gate_in) and `exit_w` (one per zone; only exit zones matter) split a
+    side's flow among its gates; default uniform (audit C1: real through traffic uses a few corridors).
     """
     if g.gate_in is None or g.zone_exit is None:
         raise ValueError("graph has no gates or exit zones: build it with data_fusion.build_quan4_full v2")
@@ -168,6 +172,7 @@ def make_demand_v2(
     exits_by = [torch.nonzero(zx == k).squeeze(1) for k in range(4)]
     gin, gside = g.gate_in.cpu(), g.gate_in_side.cpu()
     gin_by = [gin[gside == k] for k in range(4)]
+    gin_pos = [torch.nonzero(gside == k).squeeze(1) for k in range(4)]  # positions in g.gate_in
     zc = zones.cpu()
     hot = hot_zone_index(g, zones[internal.to(zones.device)], n_hot) if hot_share > 0 else None
     dep, org, dz, ctrl, cars = [], [], [], [], []
@@ -179,6 +184,11 @@ def make_demand_v2(
 
         def pick(t: torch.Tensor, n: int) -> torch.Tensor:
             return t[torch.randint(len(t), (n,), generator=gen)]
+
+        def wpick(t: torch.Tensor, n: int, wt: torch.Tensor | None, pos: torch.Tensor) -> torch.Tensor:
+            if wt is None or n == 0:
+                return pick(t, n)
+            return t[torch.multinomial(wt[pos].double(), n, replacement=True, generator=gen)]
 
         o_l, z_l, c_l = [], [], []
         n = count(internal_tph)
@@ -192,7 +202,7 @@ def make_demand_v2(
         for k in range(4):
             if gate_tph[k] <= 0 or len(gin_by[k]) == 0:
                 continue
-            other = torch.cat([exits_by[j] for j in range(4) if j != k])
+            other = torch.cat([exits_by[j] for j in range(4) if j != k])  # zone indices
             for inbound in (True, False):
                 m = count(gate_tph[k])
                 # cars only enter through gates and leave through a gate of another side (they cannot
@@ -200,13 +210,13 @@ def make_demand_v2(
                 is_car = (torch.rand(m, generator=gen) < car_share) & torch.tensor(inbound).expand(m)
                 thr = torch.rand(m, generator=gen) < through_share if inbound else torch.zeros(m, dtype=torch.bool)
                 if inbound:
-                    o = pick(gin_by[k], m)
-                    z = torch.where(thr, pick(other, m) if len(other) else pick(internal, m), pick(internal, m))
+                    o = wpick(gin_by[k], m, gate_in_w, gin_pos[k])
+                    z = torch.where(thr, wpick(other, m, exit_w, other) if len(other) else pick(internal, m), pick(internal, m))
                 else:
                     if len(exits_by[k]) == 0:
                         continue
                     o = cand[torch.multinomial(w, m, replacement=True, generator=gen)]
-                    z = pick(exits_by[k], m)
+                    z = wpick(exits_by[k], m, exit_w, exits_by[k])
                 t_car = torch.rand(int(is_car.sum()), generator=gen) * horizon_s
                 for ti, oi, zi_ in zip(t_car.tolist(), o[is_car].tolist(), z[is_car].tolist()):
                     exit_node = int(zc[zi_]) if int(zx[zi_]) >= 0 else int(zc[pick(other, 1)]) if len(other) else -1
