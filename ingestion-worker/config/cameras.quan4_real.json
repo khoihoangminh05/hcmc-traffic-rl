@@ -1,0 +1,348 @@
+[
+  {
+    "cameraId": "cam_vvn_dvb",
+    "name": "Vo Van Ngan - Dang Van Bi",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd542766c880017188948"
+  },
+  {
+    "cameraId": "cam_vvn_kvc",
+    "name": "Vo Van Ngan - Kha Van Can",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd653766c88001718894c"
+  },
+  {
+    "cameraId": "cam_hvt_thl",
+    "name": "Hoang Van Thu - Tran Huy Lieu",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdb9f766c880017188968"
+  },
+  {
+    "cameraId": "cam_tc_xh",
+    "name": "Truong Chinh - Xuan Hong",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdb0a766c880017188964"
+  },
+  {
+    "cameraId": "cam_ltk_llq",
+    "name": "Ly Thuong Kiet - Lac Long Quan",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdc57766c88001718896e"
+  },
+  {
+    "cameraId": "cam_tc_tktq",
+    "name": "Truong Chinh - Tan Ky Tan Quy",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=586e25e1f9fab7001111b0ae"
+  },
+  {
+    "cameraId": "cam_lqd_ntl",
+    "name": "Le Quang Dinh - No Trang Long",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cd614766c88001718894a"
+  },
+  {
+    "cameraId": "cam_llq_ac",
+    "name": "Lac Long Quan - Au Co",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5d8cdc9d766c880017188970"
+  },
+  {
+    "cameraId": "q4_huynh_tan_phat_cau_tan_thuan_1",
+    "name": "Huỳnh Tấn Phát - Cầu Tân Thuận 1",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=665861d864f11e00173c73a9",
+    "lon": 106.7233747,
+    "lat": 10.7554702,
+    "graphNode": "5780564401",
+    "roads": [
+      "Huỳnh Tấn Phát"
+    ],
+    "portalCode": "TTH 309"
+  },
+  {
+    "cameraId": "q4_pasteur_ham_nghi",
+    "name": "Pasteur - Hàm Nghi",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5deb576d1dc17d7c5515ad1e",
+    "lon": 106.702639,
+    "lat": 10.770674,
+    "graphNode": "6789206020",
+    "roads": [
+      "Pasteur"
+    ],
+    "portalCode": "ITS 9.5"
+  },
+  {
+    "cameraId": "q4_ton_duc_thang_ham_nghi",
+    "name": "Tôn Đức Thắng - Hàm Nghi",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=649da72ca6068200171a6dbb",
+    "lon": 106.7063534,
+    "lat": 10.7710748,
+    "graphNode": "5735511410",
+    "roads": [
+      "Hàm Nghi",
+      "Tôn Đức Thắng"
+    ],
+    "portalCode": "TTH 247"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_cau_ong_lanh_1",
+    "name": "Võ Văn Kiệt - Cầu Ông Lãnh 1",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=56de42f611f398ec0c481288",
+    "lon": 106.6976523,
+    "lat": 10.7637917,
+    "graphNode": "6791194856",
+    "roads": [
+      "Võ Văn Kiệt",
+      "primary"
+    ],
+    "portalCode": "TTH 7.1"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_nguyen_van_cu_1",
+    "name": "Võ Văn Kiệt - Nguyễn Văn Cừ 1",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=56de42f611f398ec0c48128b",
+    "lon": 106.6869128,
+    "lat": 10.7543213,
+    "graphNode": "3338020108",
+    "roads": [
+      "Võ Văn Kiệt"
+    ],
+    "portalCode": "TTH 9.1"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_cau_ong_lanh_2",
+    "name": "Võ Văn Kiệt - Cầu Ông Lãnh 2",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=56de42f611f398ec0c481289",
+    "lon": 106.6982853,
+    "lat": 10.7639024,
+    "graphNode": "1996655847",
+    "roads": [
+      "Nguyễn Thái Học",
+      "Võ Văn Kiệt"
+    ],
+    "portalCode": "TTH 7.2"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_ky_con",
+    "name": "Võ Văn Kiệt - Ký Con",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=56de42f611f398ec0c481287",
+    "lon": 106.7001468,
+    "lat": 10.7654781,
+    "graphNode": "6789155350",
+    "roads": [
+      "Võ Văn Kiệt"
+    ],
+    "portalCode": "TTH 6.1"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_pasteur",
+    "name": "Võ Văn Kiệt - Pasteur",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=662b85481afb9c00172dd0f1",
+    "lon": 106.7030919,
+    "lat": 10.7687192,
+    "graphNode": "2358070584",
+    "roads": [
+      "Võ Văn Kiệt",
+      "primary"
+    ],
+    "portalCode": "TTH 399"
+  },
+  {
+    "cameraId": "q4_vo_van_kiet_tran_dinh_xu_2",
+    "name": "Võ Văn Kiệt - Trần Đình Xu 2",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=56de42f611f398ec0c48128a",
+    "lon": 106.6925454,
+    "lat": 10.7587799,
+    "graphNode": "14180704852",
+    "roads": [
+      "Võ Văn Kiệt"
+    ],
+    "portalCode": "TTH 8.2"
+  },
+  {
+    "cameraId": "q4_khanh_hoi_cau_kenh_te",
+    "name": "Khánh Hội - Cầu Kênh Tẻ",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae7669bfd3d90017e8f0d9",
+    "lon": 106.7021799,
+    "lat": 10.752872,
+    "graphNode": "1767909453",
+    "roads": [
+      "Khánh Hội",
+      "Tôn Thất Thuyết"
+    ],
+    "portalCode": "TTH 183.1"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_cau_khanh_hoi",
+    "name": "Nguyễn Tất Thành - Cầu Khánh Hội",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae7759bfd3d90017e8f162",
+    "lon": 106.7060369,
+    "lat": 10.7675071,
+    "graphNode": "1769173767",
+    "roads": [
+      "Nguyễn Tất Thành"
+    ],
+    "portalCode": "TTH 187.1"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_doan_nhu_hai",
+    "name": "Nguyễn Tất Thành - Đoàn Như Hài",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae777cbfd3d90017e8f177",
+    "lon": 106.7064553,
+    "lat": 10.7667746,
+    "graphNode": "366404537",
+    "roads": [
+      "Nguyễn Tất Thành",
+      "Đoàn Như Hài"
+    ],
+    "portalCode": "TTH 187.2"
+  },
+  {
+    "cameraId": "q4_hoang_dieu_doan_van_bo_2",
+    "name": "Hoàng Diệu - Đoàn Văn Bơ 2",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae7727bfd3d90017e8f14a",
+    "lon": 106.7037195,
+    "lat": 10.7635072,
+    "graphNode": "2034589338",
+    "roads": [
+      "Đoàn Văn Bơ"
+    ],
+    "portalCode": "TTH 186.2"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_cau_tan_thuan_2",
+    "name": "Nguyễn Tất Thành - Cầu Tân Thuận 2",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae77bfbfd3d90017e8f18f",
+    "lon": 106.7177689,
+    "lat": 10.7570407,
+    "graphNode": "6757761589",
+    "roads": [
+      "Nguyễn Tất Thành",
+      "Đoàn Văn Bơ"
+    ],
+    "portalCode": "TTH 188.1"
+  },
+  {
+    "cameraId": "q4_hoang_dieu_doan_van_bo_1",
+    "name": "Hoàng Diệu - Đoàn Văn Bơ 1",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae7709bfd3d90017e8f135",
+    "lon": 106.7038107,
+    "lat": 10.7632542,
+    "graphNode": "6772729948",
+    "roads": [
+      "Đoàn Văn Bơ"
+    ],
+    "portalCode": "TTH 186.1"
+  },
+  {
+    "cameraId": "q4_khanh_hoi_hoang_dieu",
+    "name": "Khánh Hội -  Hoàng Diệu",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae76ddbfd3d90017e8f11b",
+    "lon": 106.6984892,
+    "lat": 10.7596389,
+    "graphNode": "11924024814",
+    "roads": [
+      "Hoàng Diệu",
+      "Khánh Hội"
+    ],
+    "portalCode": "TTH 185"
+  },
+  {
+    "cameraId": "q4_khanh_hoi_vinh_hoi",
+    "name": "Khánh Hội - Vĩnh Hội",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae768dbfd3d90017e8f0f1",
+    "lon": 106.7012787,
+    "lat": 10.7560025,
+    "graphNode": "2348761055",
+    "roads": [
+      "Khánh Hội",
+      "Vĩnh Hội"
+    ],
+    "portalCode": "TTH 183.2"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_le_van_linh",
+    "name": "Nguyễn Tất Thành - Lê Văn Linh",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae7893bfd3d90017e8f1e1",
+    "lon": 106.7073458,
+    "lat": 10.7643451,
+    "graphNode": "2370077648",
+    "roads": [
+      "Nguyễn Tất Thành",
+      "tertiary"
+    ],
+    "portalCode": "TTH 189"
+  },
+  {
+    "cameraId": "q4_khanh_hoi_duong_so_41",
+    "name": "Khánh Hội - Đường số 41",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63ae76afbfd3d90017e8f106",
+    "lon": 106.6997766,
+    "lat": 10.7579525,
+    "graphNode": "5778272141",
+    "roads": [
+      "Khánh Hội",
+      "Đường số 41"
+    ],
+    "portalCode": "TTH 184"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_ton_dan",
+    "name": "Nguyễn Tất Thành - Tôn Đản",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=5b19d34faf4ff60011d6ea52",
+    "lon": 106.7084724,
+    "lat": 10.7625638,
+    "graphNode": "1769173984",
+    "roads": [
+      "Nguyễn Tất Thành",
+      "Tôn Đản"
+    ],
+    "portalCode": "TTH 120.2"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_cang_sg_q7_q4",
+    "name": "Nguyễn Tất Thành - Cảng SG (Q7-Q4)",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63b6617ebfd3d90017eaa50b",
+    "lon": 106.7139173,
+    "lat": 10.7592437,
+    "graphNode": "2487607607",
+    "roads": [
+      "Nguyễn Tất Thành"
+    ],
+    "portalCode": "TTH 242.3"
+  },
+  {
+    "cameraId": "q4_nguyen_tat_thanh_cang_sg_q4_q7",
+    "name": "Nguyễn Tất Thành - Cảng SG (Q4-Q7)",
+    "mode": "snapshot",
+    "url": "https://giaothong.hochiminhcity.gov.vn/render/ImageHandler.ashx?id=63b661a3bfd3d90017eaa520",
+    "lon": 106.7133218,
+    "lat": 10.7596126,
+    "graphNode": "6757761588",
+    "roads": [
+      "Nguyễn Tất Thành"
+    ],
+    "portalCode": "TTH 242.4"
+  }
+]

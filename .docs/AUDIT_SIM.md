@@ -87,4 +87,12 @@ Mọi kết quả trước khi C1 đạt chỉ là chỉ báo, gồm: thông tin
     1. Mục tiêu theo khúc đường 300 m. Cổng: Spearman toàn bộ ≥ 0.5 và trong đường lớn ≥ 0.4; TTI trung vị mỗi lớp lệch ≤ 15%; tới đích ≥ 0.8 (tham chiếu lúc vắng là 0.87).
     2. Dữ liệu lưu lượng: thêm camera của cổng giaothong.hochiminhcity.gov.vn ở các cầu và đường lớn của Q4, đếm xe trên ảnh chụp mỗi 5 phút bằng pipeline CV có sẵn, ra luồng theo từng cổng.
     3. Mô hình: nền meso m3 (vị trí tắc tốt nhất, không kẹt chết). Lớp tốc độ theo mật độ phải ổn định (b ≈ 1, có giới hạn), để làm chậm mà không làm sập năng lực thông qua. OD theo cổng lấy từ số đếm, rồi chạy vòng hành lang (`ipf.py`) cho phần còn lại.
+  - **Dữ liệu lưu lượng: camera Q4 (2026-11-07 19:40)**
+    - Danh sách camera công khai lấy đúng như trang Map.aspx tải: phiên ẩn danh của trang, `FolderAjax.SearchQuery` với `Publish:true`, một request. Có 796 camera toàn thành phố, 71 camera trong và quanh Q4.
+    - Gắn vào mạng v2 (≤ 40 m): 29 camera, trong đó 22 đang hoạt động. Phủ cầu Tân Thuận 1 và 2, Kênh Tẻ, Khánh Hội, Ông Lãnh, Nguyễn Văn Cừ; 8 camera trên Nguyễn Tất Thành; Khánh Hội ×4, Hoàng Diệu ×2, Võ Văn Kiệt ×6.
+    - Danh mục: `ingestion-worker/config/cameras.quan4_real.json` (8 camera cũ + 22 camera Q4). Script: `routing2/calib/parse_cams.py`, `snapcam.py`.
+    - Crawler trên sol1 chạy từ 19:40 ngày 7/11, chụp mỗi 5 phút.
+    - Đếm xe: `cv_tracker/count_snapshots.py` (YOLO11, COCO, env riêng `/mnt/data8tb/minhkhoi/cv-env`). Một ảnh chụp cho **mật độ** (số xe trong khung hình), không phải lưu lượng; lưu lượng = mật độ × tốc độ Mapbox.
+    - **Độ chính xác chưa đạt.** Kiểm tra bằng mắt ảnh đêm 19:40: cầu Khánh Hội đếm 0 xe máy, trong khi thấy được khoảng 4–5 chiếc. Đổi model hoặc ngưỡng làm số đếm lệch nhiều (Ông Lãnh: ô tô 4–22, xe máy 6–14). Phải kiểm tra trên ảnh ban ngày và lúc chạng vạng (17–18h) bằng đếm tay khoảng 20 ảnh, rồi mới dùng. So cùng một camera theo giờ đáng tin hơn so giữa các camera.
+    - Kế hoạch: thu ít nhất 3 ngày thường (9–11/11). Đếm tay để chọn cấu hình detector. Dùng tỉ lệ mật độ cao điểm/vắng theo từng camera và thứ hạng mật độ giữa các cổng để ràng buộc luồng theo từng cổng trong `ipf.py`.
   - **Luật dừng cũ của vòng này:** nếu bộ tốt nhất chưa đạt Spearman đường lớn ≥ 0.4 trên nửa test và TTI trung vị mỗi lớp lệch ≤ 25%, thì không hiệu chỉnh tiếp bằng tham số chung. Khi đó phải chọn giữa hai hướng: (a) ước lượng OD theo từng cổng (SPSA, nhiều ngày máy, không chắc thành công), hoặc (b) chấp nhận hướng Q2/Q3 theo `RESEARCH_V4` §14.
