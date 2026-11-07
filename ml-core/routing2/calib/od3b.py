@@ -48,6 +48,7 @@ if __name__=="__main__":
     print("median free-flow s C %.0f X %.0f"%(sorted(x[1][0] for x in Cs)[len(Cs)//2],sorted(x[1][0] for x in Xs)[len(Xs)//2]))
     spread=lambda L:max(f for f,_ in L[1][1])
     print("median slowest/fastest among kept routes C %.2f"%sorted(spread(x) for x in Cs)[len(Cs)//2])
+    json.dump({"C_all":[[p[0],p[1],r[0],r[1]] for p,r in C],"X_all":[[p[0],p[1],r[0],r[1]] for p,r in X]},open(D+"/od_v3_all.json","w"))
     json.dump({"C":[{"o":p[0],"z":p[1],"t_ff":r[0],"routes":r[1]} for p,r in Cs],"X":[{"o":p[0],"z":p[1],"t_ff":r[0],"routes":r[1]} for p,r in Xs],
                "F":[{"o":a,"z":b} for a,b in F],"pocket":sorted(pocket),
                "criteria":{"ratio":1.2,"overlap":.5,"min_tt_s":120,"alley_route_share":.2,"road_route_share":.05,"max_pairs_per_node":3,"max_pairs_per_gate":8,"overlap_excludes_shared_head_tail":True}},

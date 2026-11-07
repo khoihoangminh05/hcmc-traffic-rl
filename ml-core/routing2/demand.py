@@ -137,6 +137,23 @@ def make_demand(
 SIDES = ("E", "N", "W", "S")
 
 
+def load_od_v3(g: MesoGraph, path: str | None = None) -> dict[str, list[tuple[int, int]]]:
+    """OD design v3 pairs (graph JSON "od_v3", routing2/calib/od3c.py) as (origin node index, zone index)."""
+    import json
+    import os
+
+    from .graph import DEFAULT_GRAPH
+
+    data = json.load(open(path or os.environ.get("ROUTING2_GRAPH", str(DEFAULT_GRAPH)), encoding="utf-8"))
+    nid = {n: i for i, n in enumerate(g.node_ids)}
+    zi = {int(n): k for k, n in enumerate(g.zone_nodes.tolist())}
+    out = {}
+    for key in ("C", "X", "F"):
+        out[key] = [(nid[str(p[0])], zi[nid[str(p[1])]]) for p in data["od_v3"][key]
+                    if str(p[0]) in nid and str(p[1]) in nid and nid[str(p[1])] in zi]
+    return out
+
+
 def make_demand_v2(
     g: MesoGraph,
     zones: torch.Tensor,
@@ -151,6 +168,11 @@ def make_demand_v2(
     n_hot: int = 4,
     gate_in_w: torch.Tensor | None = None,
     exit_w: torch.Tensor | None = None,
+    fleet_pairs: list[tuple[int, int]] | None = None,
+    fleet_tph: float = 0.0,
+    forced_pairs: list[tuple[int, int]] | None = None,
+    forced_tph: float = 0.0,
+    bg_zones: int | None = None,
 ) -> Demand:
     """Demand with traffic from other districts (audit D1, D3, V1), departures uniform over the horizon.
 
@@ -162,13 +184,19 @@ def make_demand_v2(
     vehicles (`penetration`) are drawn among motorcycle trips. All numbers are to be calibrated.
     `gate_in_w` (one weight per g.gate_in) and `exit_w` (one per zone; only exit zones matter) split a
     side's flow among its gates; default uniform (audit C1: real through traffic uses a few corridors).
+    OD design v3: `fleet_tph` controlled trips per hour drawn uniformly from `fleet_pairs` (origin node, zone
+    index), on top of the background (set `penetration` 0 to control only these); `forced_tph` background
+    trips from `forced_pairs` (destinations inside dead-end alley pockets: they must enter). `bg_zones`:
+    background trips use only the first k zones (the v2 zones), the rest are v3 pair destinations.
     """
     if g.gate_in is None or g.zone_exit is None:
         raise ValueError("graph has no gates or exit zones: build it with data_fusion.build_quan4_full v2")
     cand = g.scc_nodes.cpu()
     w = origin_weights(g)
-    zx = g.zone_exit.cpu()[: len(zones)]
-    internal = torch.nonzero(zx < 0).squeeze(1)
+    zx = g.zone_exit.cpu()[: len(zones)].clone()
+    if bg_zones is not None:
+        zx[bg_zones:] = -2  # neither internal (-1) nor an exit side (0-3): background never picks them
+    internal = torch.nonzero(zx == -1).squeeze(1)
     exits_by = [torch.nonzero(zx == k).squeeze(1) for k in range(4)]
     gin, gside = g.gate_in.cpu(), g.gate_in_side.cpu()
     gin_by = [gin[gside == k] for k in range(4)]
@@ -228,12 +256,21 @@ def make_demand_v2(
         z = torch.cat(z_l)
         same = zc[z] == o
         z = torch.where(same, internal[(torch.searchsorted(internal, z) + 1) % len(internal)], z)
+        extra = bool((fleet_pairs and fleet_tph > 0) or (forced_pairs and forced_tph > 0))
+        c = torch.rand(len(o), generator=gen) < penetration if extra else None
+        for pairs_, tph_, is_ctrl in ((fleet_pairs, fleet_tph, True), (forced_pairs, forced_tph, False)):
+            if pairs_ and tph_ > 0:
+                m = count(tph_)
+                pp = torch.tensor(pairs_, dtype=torch.long)[torch.randint(len(pairs_), (m,), generator=gen)]
+                o, z = torch.cat([o, pp[:, 0]]), torch.cat([z, pp[:, 1]])
+                c = torch.cat([c, torch.full((m,), is_ctrl)])
         t = torch.rand(len(o), generator=gen) * horizon_s
         order = torch.argsort(t)
         dep.append(t[order])
         org.append(o[order])
         dz.append(z[order])
-        ctrl.append(torch.rand(len(o), generator=gen) < penetration)
+        # without v3 streams: the original draw, after the departures (same random stream as before)
+        ctrl.append(c[order] if extra else torch.rand(len(o), generator=gen) < penetration)
         cars.append(sorted(car_list))
     L = max(len(x) for x in dep)
     pad = lambda xs, v: torch.stack([torch.cat([x, torch.full((L - len(x),), v, dtype=x.dtype)]) for x in xs])  # noqa: E731
