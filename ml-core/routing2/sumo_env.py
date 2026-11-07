@@ -52,6 +52,9 @@ from .demand import Demand
 from .graph import MesoGraph
 from .objectives import trip_metrics
 from .sumo_check import MOTO_VTYPE
+
+# Cars on roads (demand v2, audit V1); SUMO's passenger defaults except a shorter gap in town traffic.
+CAR_VTYPE = '<vType id="car" vClass="passenger" length="4.5" width="1.8" minGap="1.5" maxSpeed="15" sigma="0.5"/>'
 from .sumo_net import sumo_binary
 
 N_FEAT = 8  # per candidate exit
@@ -147,6 +150,10 @@ class SumoEnvConfig:
     bg_reroute_period_s: float = 120.0
     # extra SUMO command-line arguments, e.g. ("-a", "edgedata.add.xml") for per-link speeds (audits only)
     extra_args: tuple[str, ...] = ()
+    # Background motorcycles: "ff" = fixed free-flow route (before 2026-11-07); "informed" = SUMO routes
+    # each trip at departure on its smoothed current link times (drivers who know the usual traffic),
+    # and the bg_reroute_share keeps rerouting on the way (audit B1)
+    bg_route: str = "ff"
     # Measure vehicle-seconds standing per link, for routing2.scenarios. Not for controllers.
     record_link_wait: bool = False
 
@@ -534,18 +541,39 @@ class SumoRoutingEnv:
         bg_u = torch.rand(N, generator=torch.Generator().manual_seed(cfg.incident_seed + 2))
         self._rng = random.Random(cfg.incident_seed + 3)
         pending = []  # controlled trips, by departure time
+        lines: list[tuple[float, str]] = []
+        for i in order:
+            r = [self.eid[e] for e in rt[i]]
+            if not r:
+                continue
+            if bool(ctrl[i]):
+                pending.append(i)
+                continue
+            rer = float(bg_u[i]) < cfg.bg_reroute_share
+            if cfg.bg_route == "informed":
+                hab = "" if rer else '<param key="device.rerouting.period" value="0"/>'
+                lines.append((float(dep[i]), f'  <trip id="v{i}" type="moto" depart="{float(dep[i]):.2f}" departLane="best" '
+                              f'departSpeed="max" from="{r[0]}" to="{r[-1]}"><param key="has.rerouting.device" '
+                              f'value="true"/>{hab}</trip>\n'))
+            else:
+                app = '<param key="has.rerouting.device" value="true"/>' if rer else ""
+                lines.append((float(dep[i]), f'  <vehicle id="v{i}" type="moto" depart="{float(dep[i]):.2f}" departLane="best" '
+                              f'departSpeed="max">{app}<route edges="{" ".join(r)}"/></vehicle>\n'))
+        cars = demand.cars[b] if demand.cars is not None else []
+        road = self.g.priority.cpu() >= 3  # links cars may use (not alley, not service)
+        for j, (t_c, a, z) in enumerate(cars):
+            src = [e for e in self.out_edges[a].tolist() if e >= 0 and bool(road[e])]
+            dst = [k for k in torch.nonzero((self.dst == z) & road).squeeze(1).tolist()]
+            if src and dst:
+                lines.append((t_c, f'  <trip id="k{j}" type="car" depart="{t_c:.2f}" departLane="best" departSpeed="max" '
+                              f'from="{self.eid[src[0]]}" to="{self.eid[dst[0]]}"><param key="has.rerouting.device" '
+                              f'value="true"/><param key="device.rerouting.period" value="0"/></trip>\n'))
+        lines.sort(key=lambda x: x[0])
         with rou.open("w", encoding="utf-8") as f:
             f.write("<routes>\n  " + MOTO_VTYPE + "\n")
-            for i in order:
-                r = [self.eid[e] for e in rt[i]]
-                if not r:
-                    continue
-                if bool(ctrl[i]):
-                    pending.append(i)
-                    continue
-                app = '<param key="has.rerouting.device" value="true"/>' if float(bg_u[i]) < cfg.bg_reroute_share else ""
-                f.write(f'  <vehicle id="v{i}" type="moto" depart="{float(dep[i]):.2f}" departLane="best" '
-                        f'departSpeed="max">{app}<route edges="{" ".join(r)}"/></vehicle>\n')
+            if cars:
+                f.write("  " + CAR_VTYPE + "\n")
+            f.writelines(x for _, x in lines)
             f.write("</routes>\n")
         n_trips = sum(1 for i in order if rt[i])
         self._start(rou)

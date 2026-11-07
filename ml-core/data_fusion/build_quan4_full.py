@@ -5,7 +5,12 @@ dropped `trunk`, and kept only alleys plus roads one hop from an alley. Alleys c
 other through those main roads, so the twin was a tree: 886 nodes, 67% of links were cut edges, and
 only about 20% of trips had a second route within 1.3x free-flow time (2026-11-06, RESEARCH_V4 §14).
 
-Here:
+Here (v2, 2026-11-07, after the audit in .docs/AUDIT_SIM.md):
+- Ways with motorcycle=no are dropped (N2): the network is the one motorcycles may use.
+- The strongly connected core plus the one-way approaches into it and exits out of it (N3); nodes
+  on tertiary-or-higher roads within 40 m of the area edge are the gates for traffic from other
+  districts (`gates_in`, `gates_out`).
+- Free speed per class from Mapbox at 05h (S1), written per edge as `v_free`.
 - Area: the OSM boundary of Quận 4, buffered by `--buffer-m` so the bridges and their far ends are
   in (through traffic between Q1, Q7 and Q8 crosses Q4).
 - Every drivable class from trunk down to service, plus footways that allow motorcycles. Excluded:
@@ -51,6 +56,12 @@ CLASS_OF_HW = {
     "living_street": "alley", "service": "service",
 }
 DEFAULT_LANES = {"primary": 2, "secondary": 2}
+# Free speed per class, m/s (audit S1): median per-edge Mapbox driving-traffic speed at 05h VN time,
+# 30/10-07/11 (diag_v6/probe_full, 783 matched edges). Alley and service: Mapbox drives cars there
+# (3.05 and 3.25 m/s); motorcycles are faster, so the old assumed values stay, marked as assumptions.
+V_FREE = {"primary": 8.86, "secondary": 7.17, "tertiary": 5.54, "residential": 5.27,
+          "service": 5.0, "alley": 4.5}
+MAJOR = {"primary", "secondary", "tertiary"}
 OVERPASS = ["https://overpass-api.de/api", "https://overpass.private.coffee/api",
             "https://overpass.kumi.systems/api"]
 
@@ -63,6 +74,8 @@ def _first(v: Any) -> str:
 def road_class(data: dict[str, Any]) -> str | None:
     """routing2 class of an OSM way, or None to drop it."""
     hw = _first(data.get("highway"))
+    if _first(data.get("motorcycle")) == "no":  # e.g. Võ Văn Kiệt main lanes, Hầm Sông Sài Gòn (audit N2)
+        return None
     if hw in FOOT:
         moto = _first(data.get("motorcycle"))
         return "alley" if moto in {"yes", "designated", "permissive"} else None
@@ -118,8 +131,22 @@ def build(place: str, out: Path, buffer_m: float) -> dict[str, Any]:
     for _, _, d in raw.edges(data=True):
         d["cls"] = road_class(d)
     g = ox.simplify_graph(raw, node_attrs_include=["sig"], edge_attrs_differ=["cls"])
-    scc = max(nx.strongly_connected_components(g), key=len)
-    g = g.subgraph(scc).copy()
+    core = max(nx.strongly_connected_components(g), key=len)
+    # Keep the one-way approaches into the core and the exits out of it (audit N3): divided roads and
+    # bridge ramps cut at the area boundary are dead ends that a strong component would drop, yet
+    # they are where traffic from other districts enters and leaves.
+    c0 = next(iter(core))
+    keep = core | nx.ancestors(g, c0) | nx.descendants(g, c0)
+    g = g.subgraph(keep).copy()
+    ring = area.to_crs(crs).buffer(buffer_m).iloc[0].exterior
+    from shapely.geometry import Point
+    from pyproj import Transformer
+
+    to_m = Transformer.from_crs(4326, crs, always_xy=True).transform
+    near_edge = {n for n, d in g.nodes(data=True) if ring.distance(Point(*to_m(d["x"], d["y"]))) < 40.0}
+    major_at = {n for u, v, d in g.edges(data=True) if _first(d["cls"]) in MAJOR for n in (u, v)}
+    gates_in = sorted(str(n) for n in near_edge & major_at if g.out_degree(n) > 0 and (n not in core or g.in_degree(n) <= 1))
+    gates_out = sorted(str(n) for n in near_edge & major_at if g.in_degree(n) > 0 and (n not in core or g.out_degree(n) <= 1))
 
     nodes_geo = {str(n): {"lon": float(d["x"]), "lat": float(d["y"])} for n, d in g.nodes(data=True)}
     alleys: dict[str, dict[str, Any]] = {}
@@ -140,13 +167,14 @@ def build(place: str, out: Path, buffer_m: float) -> dict[str, Any]:
             "alley_id": aid, "u": su, "v": sv, "length_m": float(d["length"]), "road_class": cls,
             "layer": "alley" if cls == "alley" else cls, "highway": _first(d.get("highway")),
             "name": _name(d), "lanes": lanes_per_dir(d, cls), "coordinates": coords,
+            "v_free": V_FREE[cls],
         }
         edge_list.append({"u": su, "v": sv, "alley_id": aid})
         stats[cls] = stats.get(cls, 0) + 1
-    # the dedup can only drop parallel edges, so the SCC still holds; check anyway
+    # the dedup can only drop parallel edges, so the core stays strongly connected; check anyway
     h = nx.DiGraph([(e["u"], e["v"]) for e in edge_list])
-    if not nx.is_strongly_connected(h):
-        raise SystemExit("graph lost strong connectivity after dedup")
+    if len(max(nx.strongly_connected_components(h), key=len)) != len(core):
+        raise SystemExit("core lost strong connectivity after dedup")
 
     signals = []
     for n, d in g.nodes(data=True):
@@ -155,13 +183,15 @@ def build(place: str, out: Path, buffer_m: float) -> dict[str, Any]:
             signals.append({"osm_id": int(n), "node": str(n), "lat": float(d["y"]), "lon": float(d["x"]),
                             "dist_m": 0.0, "offset_s": float(off)})
     out.mkdir(parents=True, exist_ok=True)
-    payload = {"place": place, "buffer_m": buffer_m, "build_profile": "full_osm_v1", "stats": stats,
-               "nodes_geo": nodes_geo, "alleys": alleys, "edge_list": edge_list}
+    payload = {"place": place, "buffer_m": buffer_m, "build_profile": "full_osm_v2", "stats": stats,
+               "nodes_geo": nodes_geo, "alleys": alleys, "edge_list": edge_list,
+               "gates_in": gates_in, "gates_out": gates_out, "core_nodes": len(core)}
     (out / "alley_graph_full.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     (out / "osm_signals_snapped.json").write_text(json.dumps(
         {"source": "overpass", "place": place, "cycle_s": 60.0, "red_s": 30.0, "signals": signals},
         indent=1), encoding="utf-8")
-    meta = {"nodes": len(nodes_geo), "edges": len(edge_list), "classes": stats, "signals": len(signals),
+    meta = {"nodes": len(nodes_geo), "core_nodes": len(core), "edges": len(edge_list), "classes": stats,
+            "signals": len(signals), "gates_in": len(gates_in), "gates_out": len(gates_out),
             "area_bounds": [round(float(b), 5) for b in poly.bounds]}
     (out / "build_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

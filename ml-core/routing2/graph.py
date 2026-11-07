@@ -57,6 +57,9 @@ class MesoGraph:
     scc_nodes: torch.Tensor  # node indices of the largest strongly connected component
     node_xy: torch.Tensor  # [n, 2] m (equirectangular)
     zone_nodes: torch.Tensor | None = None  # node indices of designed zones (graph JSON "zones"), if any
+    zone_exit: torch.Tensor | None = None  # [Z] long: -1 internal zone, else side 0-3 (E, N, W, S) of an exit gate
+    gate_in: torch.Tensor | None = None  # node indices where traffic from other districts enters
+    gate_in_side: torch.Tensor | None = None  # side 0-3 (E, N, W, S) of each entry gate
 
     def to(self, device: torch.device | str) -> MesoGraph:
         kw = {}
@@ -90,7 +93,7 @@ def load_graph(
         src.append(nid[str(e["u"])])
         dst.append(nid[str(e["v"])])
         length.append(L)
-        vf.append(p.v_free)
+        vf.append(float(a.get("v_free") or p.v_free))  # per-edge value from build_quan4_full, else class
         cap.append(p.cap * lanes)
         sto.append(max(cfg.min_storage, L * p.k_jam * lanes))
         alley.append(cls == "alley")
@@ -144,6 +147,15 @@ def load_graph(
     g = nx.DiGraph(list(zip(src, dst)))
     scc = sorted(max(nx.strongly_connected_components(g), key=len))
     zl = [nid[str(z)] for z in data.get("zones") or [] if str(z) in nid]
+    core_xy = xy[torch.tensor(scc)].mean(0)
+
+    def side(i: int) -> int:  # 0 E, 1 N, 2 W, 3 S, by bearing from the core's centre
+        dx, dy = (xy[i] - core_xy).tolist()
+        return int(((math.degrees(math.atan2(dy, dx)) + 45.0) % 360.0) // 90.0)
+
+    exits = {str(n) for n in data.get("gates_out") or []}
+    zexit = [side(i) if node_ids[i] in exits else -1 for i in zl]
+    gin = [nid[str(n)] for n in data.get("gates_in") or [] if str(n) in nid]
 
     return MesoGraph(
         n_nodes=n,
@@ -166,4 +178,7 @@ def load_graph(
         scc_nodes=torch.tensor(scc),
         node_xy=xy,
         zone_nodes=torch.tensor(zl, dtype=torch.long) if zl else None,
+        zone_exit=torch.tensor(zexit, dtype=torch.long) if zl else None,
+        gate_in=torch.tensor(gin, dtype=torch.long) if gin else None,
+        gate_in_side=torch.tensor([side(i) for i in gin], dtype=torch.long) if gin else None,
     ).to(device)

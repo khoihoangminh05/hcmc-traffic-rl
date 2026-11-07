@@ -111,6 +111,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--zones", type=int, default=32)
     ap.add_argument("--max-gateways", type=int, default=8)
+    ap.add_argument("--internal", type=int, default=24, help="network v2: internal zones beside the exit gates")
     ap.add_argument("--origins", type=int, default=150)
     ap.add_argument("--cands", type=int, default=240)
     ap.add_argument("--spacing-m", type=float, default=250.0)
@@ -124,10 +125,11 @@ def main() -> None:
     data = json.loads(args.graph.read_text(encoding="utf-8"))
     g = node_graph(data)
     scc = max(nx.strongly_connected_components(g), key=len)
-    g = g.subgraph(scc).copy()
+    if not data.get("gates_out"):
+        g = g.subgraph(scc).copy()
     xy = xy_of(data)
     und = g.to_undirected()
-    junc = [n for n in g if und.degree(n) >= 3]
+    junc = [n for n in g if und.degree(n) >= 3 and n in scc]
     major_nodes = {n for a, b, d in g.edges(data=True) if d["cls"] in MAJOR for n in (a, b)}
 
     # origins weighted like routing2.demand.origin_weights: half the incident alley length + 1 m
@@ -137,13 +139,19 @@ def main() -> None:
             w[a] += 0.5 * d["L"]
             w[b] += 0.5 * d["L"]
     rnd = random.Random(args.seed)
-    nodes = list(g)
+    nodes = [n for n in g if n in scc]  # origins in the core, as routing2.demand does
     origins = rnd.choices(nodes, weights=[w[n] for n in nodes], k=args.origins)
 
-    out_nodes = outside_q4(data, nodes)
-    gw_all = sorted(n for n in major_nodes & out_nodes if und.degree(n) >= 2)
+    out_nodes = outside_q4(data, list(g))
+    if data.get("gates_out"):  # network v2: every exit gate is a zone (through traffic ends there)
+        gw_all = sorted(str(n) for n in data["gates_out"] if str(n) in g)
+        args.max_gateways = len(gw_all)
+        args.zones = len(gw_all) + args.internal
+        junc = [n for n in junc if n not in out_nodes]  # internal zones inside Quận 4
+    else:
+        gw_all = sorted(n for n in major_nodes & out_nodes if und.degree(n) >= 2)
     cands = sorted(set(farthest_point(junc, xy, min(args.cands, len(junc)), args.seed)) | set(gw_all))
-    old = farthest_point(sorted(scc), xy, args.zones, args.seed)  # the old rule, for comparison
+    old = farthest_point(sorted(scc), xy, min(args.zones, 32), args.seed)  # the old rule, for comparison
 
     pairs = sorted({(o, z) for z in set(cands) | set(old) for o in origins if o != z})
     with ProcessPoolExecutor(args.jobs, initializer=_init, initargs=(g,)) as ex:
@@ -160,7 +168,7 @@ def main() -> None:
     for n in gws:
         if len(zones) >= args.max_gateways:
             break
-        if all(math.dist(xy[n], xy[m]) >= args.spacing_m for m in zones):
+        if data.get("gates_out") or all(math.dist(xy[n], xy[m]) >= args.spacing_m for m in zones):
             zones.append(n)
     n_gw = len(zones)
     for n in sorted(set(cands) - set(gw_all), key=lambda n: -score[n]):

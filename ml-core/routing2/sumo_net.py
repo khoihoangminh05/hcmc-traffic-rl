@@ -95,7 +95,7 @@ def write_plain(graph_path: Path, out_dir: Path, signals_path: Path | None = Non
             shape = " ".join(f"{x - x0:.2f},{y - y0:.2f}" for x, y in _edge_polyline(a, u, v, geo))
             f.write(
                 f"  <edge id={quoteattr(aid)} from={quoteattr(u)} to={quoteattr(v)} "
-                f'priority="{p.priority}" numLanes="{lanes}" speed="{p.v_free:.2f}" '
+                f'priority="{p.priority}" numLanes="{lanes}" speed="{float(a.get("v_free") or p.v_free):.2f}" '
                 f'width="{width:.2f}" allow="{allow}" shape="{shape}"/>\n'
             )
         f.write("</edges>\n")
