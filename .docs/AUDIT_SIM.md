@@ -96,3 +96,27 @@ Mọi kết quả trước khi C1 đạt chỉ là chỉ báo, gồm: thông tin
     - **Độ chính xác chưa đạt.** Kiểm tra bằng mắt ảnh đêm 19:40: cầu Khánh Hội đếm 0 xe máy, trong khi thấy được khoảng 4–5 chiếc. Đổi model hoặc ngưỡng làm số đếm lệch nhiều (Ông Lãnh: ô tô 4–22, xe máy 6–14). Phải kiểm tra trên ảnh ban ngày và lúc chạng vạng (17–18h) bằng đếm tay khoảng 20 ảnh, rồi mới dùng. So cùng một camera theo giờ đáng tin hơn so giữa các camera.
     - Kế hoạch: thu ít nhất 3 ngày thường (9–11/11). Đếm tay để chọn cấu hình detector. Dùng tỉ lệ mật độ cao điểm/vắng theo từng camera và thứ hạng mật độ giữa các cổng để ràng buộc luồng theo từng cổng trong `ipf.py`.
   - **Luật dừng cũ của vòng này:** nếu bộ tốt nhất chưa đạt Spearman đường lớn ≥ 0.4 trên nửa test và TTI trung vị mỗi lớp lệch ≤ 25%, thì không hiệu chỉnh tiếp bằng tham số chung. Khi đó phải chọn giữa hai hướng: (a) ước lượng OD theo từng cổng (SPSA, nhiều ngày máy, không chắc thành công), hoặc (b) chấp nhận hướng Q2/Q3 theo `RESEARCH_V4` §14.
+
+## Thiết kế cặp điểm v3 (2026-11-07 tối, theo yêu cầu)
+
+Tiêu chí của người dùng:
+1. Có nhiều lựa chọn đường đi.
+2. Các lựa chọn tương đương nhau.
+3. Có lựa chọn qua hẻm và có lựa chọn không qua hẻm.
+4. Hẻm dùng làm đường thay thế phải thông ra đường chính.
+5. Xe buộc vào hẻm cụt thì các xe khác phải ước tính trước được.
+
+Script: `routing2/calib/od3.py`, `od3b.py`; kết quả ở sol1 `diag_v6/od_v3.json`.
+
+- **Hẻm cụt:** "túi" là phần mạng chỉ nối với đường chính qua cầu nối (bridge) của đồ thị vô hướng. Túi chiếm 592 nút (32%) và 52.8 / 112.6 km hẻm (47%). Có 990 cạnh hẻm thông.
+- **Lựa chọn tương đương:** tối đa 6 đường, sinh bằng phạt các cạnh đã dùng (×1.6 mỗi lần). Mỗi đường chậm hơn đường nhanh nhất ≤ 1.2 lần, trùng nhau ≤ 50% theo chiều dài; đoạn chung bắt buộc ở hai đầu (ví dụ đầu cầu) không tính là trùng. Chuyến ≥ 120 s.
+- **Đường qua hẻm:** ≥ 20% chiều dài là hẻm. **Đường không qua hẻm:** ≤ 5%.
+- **Tỉ lệ thỏa trên cặp ngẫu nhiên:** ≥ 3 đường là 15%; đủ cả bốn tiêu chí là 6%. Vì vậy phải chọn từng cặp, không chọn theo vùng.
+- **Kết quả từ 21620 cặp mẫu:**
+  - C: 857 cặp đạt, giữ 240. Mỗi cặp có 4–6 đường; thời gian tự do trung vị 299 s; đường chậm nhất / nhanh nhất có trung vị 1.17.
+  - X (qua cổng hoặc cầu): 169 cặp đạt, giữ 80, mỗi cặp 3–6 đường, trung vị 405 s.
+  - F (điểm đi hoặc đến trong túi hẻm cụt, buộc vào): 160 cặp.
+  - Giới hạn số cặp mỗi nút: 3, riêng nút cổng 8.
+- **Còn phải làm:**
+  1. Đưa bộ cặp vào phần sinh nhu cầu: xe đội chạy theo các cặp C và X; xe nền vẫn theo nhu cầu đã hiệu chỉnh.
+  2. Đặc trưng **"tải bắt buộc"**: mỗi xe có điểm đến trong túi buộc phải đi qua chuỗi cạnh nối vào túi. Hệ thống tính trước số xe sẽ vào mỗi cạnh trong H giây tới: xe đội lấy theo điểm đến đã biết, xe nền lấy theo tốc độ vào túi điển hình đo được. Mọi bộ điều khiển (greedy, app, MARL) đều được dùng đặc trưng này, để công bằng.
