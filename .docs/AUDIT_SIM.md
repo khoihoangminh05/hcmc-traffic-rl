@@ -200,3 +200,17 @@ Số làn Võ Văn Kiệt: OSM ghi làn xe máy riêng (`motorcar=no`, `motorcyc
   - Nếu greedy (0.5) tránh được 2 lần sụp của chính nó (thay bằng trung vị các episode không sụp, 516), thì J trung bình 539 và CVaR25 612. Chỉ tốt hơn **2.3% / 3.4%**.
   - Con số "best-of-3 hơn 12%" chủ yếu do lấy min trên nhiễu.
 - **Kết luận tạm:** đất từ việc tránh sụp ở cỡ đội 6000 nhỏ hơn cổng 5% ở CVaR25. Cần cận đúng nghĩa (SO hoặc oracle chia luồng) mới kết luận được K2.
+
+## K2 đúng nghĩa: UE so với SO trên OD v3, meso m3 (2026-11-08, `msa13`)
+
+`gate_msa --demand v3`, mọi xe được gán đường (p = 1, cận cho cả hệ thống), 15 vòng, chạy lại trên seed mới.
+
+| Đội xe | free-flow (xe-giờ) | UE | SO_x cuối | UE − tốt nhất biết được |
+|---|---|---|---|---|
+| 6000 | 3121 | 1882 | 1952 (**tệ hơn UE 3.7%**) | 0% |
+| 9000 | 3698 | 2247 | 2319 (**tệ hơn UE 3.2%**) | 0% |
+
+- Định tuyến theo tình trạng giao thông (UE) giảm 40% tổng thời gian so với đi đường tự do. Định tuyến có tác động lớn.
+- **Không tìm được cách chia luồng nào tốt hơn UE.** Trên mô phỏng này, phối hợp gần như không có đất so với app và greedy.
+- **Lý do có thể:** m3 tắt kiểm soát nút (`--meso-junction-control false`), nên mất ngoại ứng nhập dòng ở nút. Đó chính là nguồn của khoảng cách UE–SO 8.9% trên mạng micro hôm 7/11 (thành phần so_x). Ở meso m3, tắc chỉ còn theo cạnh, và UE xấp xỉ SO.
+- **Hệ quả:** đất cho phối hợp nằm ở **tương tác tại nút**, nhất là chỗ xe từ hẻm nhập ra đường chính. Mô hình m3 đã bỏ đúng phần này để hết kẹt chết. Phải thử meso có kiểm soát nút (m1) hoặc micro có chống kẹt v3.
