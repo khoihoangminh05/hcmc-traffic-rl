@@ -90,6 +90,18 @@ def _worker_init(conf: dict) -> None:
                                                  bg_reroute_share=conf["bg_reroute"],
                                                  incident_rate_per_h=conf["incident_rate"],
                                                  school_rate_per_h=conf["school_rate"]))
+    if conf.get("demand") == "v3":  # audit C1 / OD v3 setting (2026-11-08)
+        from .demand import load_od_v3
+
+        env.cfg.extra_args = tuple(conf.get("sumo_extra", "").split())
+        if "--mesosim" in env.cfg.extra_args:
+            env.cfg.lateral_m = -1.0  # SUMO meso has no sublanes
+        env.cfg.bg_route = "informed"
+        sd = conf.get("sd") or {}
+        env.cfg.sd_every_s, env.cfg.sd_a = sd.get("every", 0.0), sd.get("a", 1.0)
+        env.cfg.sd_b, env.cfg.sd_k0 = sd.get("b", 1.0), sd.get("k0", 0.1)
+        _W["od3"] = load_od_v3(g)
+        _W["car_ok"] = _car_ok(env, g, conf["net"])
     _W.update(g=g, zones=zones, env=env, conf=conf,
               net=RoutingNet.from_env(env, conf["hidden"], conf["layers"], prior=conf.get("prior")))
     _W["net"].eval()
@@ -194,16 +206,67 @@ class _SplitOracle:
         return torch.where(req.cand >= 0, torch.where(go, around, direct), torch.full_like(direct, math.inf)).argmin(1)
 
 
+def _car_ok(env, g, net_path: str):
+    """(entry node, exit node) -> can a SUMO passenger car drive from the link the env picks to the one it picks."""
+    import networkx as nx
+    import sumolib
+
+    net = sumolib.net.readNet(net_path)
+    G = nx.DiGraph()
+    for e in net.getEdges():
+        if e.isSpecial() or not e.allows("passenger"):
+            continue
+        for f in e.getOutgoing():
+            if f.allows("passenger"):
+                G.add_edge(e.getID(), f.getID())
+    road = g.priority.cpu() >= 3
+    cache: dict = {}
+
+    def ok(a: int, z: int) -> bool:
+        src = [e for e in env.out_edges[a].tolist() if e >= 0 and bool(road[e])]
+        dst = torch.nonzero((env.dst == z) & road).squeeze(1).tolist()
+        if not src or not dst:
+            return False
+        u, v = env.eid[src[0]], env.eid[dst[0]]
+        if (u, v) not in cache:
+            cache[(u, v)] = u in G and v in G and nx.has_path(G, u, v)
+        return cache[(u, v)]
+
+    return ok
+
+
+def _demand_v3(task: dict, H: float):
+    """Demand v2 background + OD v3 fleet (task["tph"] = fleet trips/h) + forced dead-end entries, with the
+    episode's scenario multipliers (task["scen"]): gate surge on one side, forced-entry factor."""
+    from .demand import make_demand_v2
+
+    bg, sc, od = _W["conf"]["bg"], task.get("scen") or {}, _W["od3"]
+    gate = list(bg["gate"])
+    if sc.get("surge_side") is not None:
+        gate[sc["surge_side"]] *= sc.get("surge", 1.0)
+    d = make_demand_v2(_W["g"], _W["zones"], [task["seed"]], H, 0.0, bg["internal"], tuple(gate), bg["thr"],
+                       bg.get("car", 0.1), fleet_pairs=od["C"] + od["X"], fleet_tph=task["tph"],
+                       forced_pairs=od["F"], forced_tph=bg.get("forced", 600.0) * sc.get("forced", 1.0),
+                       bg_zones=bg.get("bg_zones", 47))
+    ok = _W["car_ok"]
+    d.cars[0] = [c for c in d.cars[0] if ok(c[1], c[2])]
+    return d
+
+
 def _worker_run(task: dict) -> dict:
     from .demand import make_demand
     from .sumo_env import N_FEAT
 
     conf, env = _W["conf"], _W["env"]
     H = conf["horizon"]
-    d = make_demand(_W["g"], _W["zones"], [task["seed"]], task["tph"], H, task["pen"],
-                    depart_window_s=conf["depart_window"], hot_share=conf["hot_share"], n_hot=conf["hot_zones"],
-                    peak_sd=conf["peak_sd"])
-    pen = task["pen"]
+    if conf.get("demand") == "v3":
+        d = _demand_v3(task, H)
+        pen = float(d.ctrl.float().mean())  # the true fleet share of this episode
+    else:
+        d = make_demand(_W["g"], _W["zones"], [task["seed"]], task["tph"], H, task["pen"],
+                        depart_window_s=conf["depart_window"], hot_share=conf["hot_share"], n_hot=conf["hot_zones"],
+                        peak_sd=conf["peak_sd"])
+        pen = task["pen"]
     spot = None
     if task.get("burst_n", conf.get("burst_n", 0)) > 0:
         from .scenarios import add_burst, hotspot_of
@@ -447,6 +510,15 @@ def main() -> None:
     ap.add_argument("--net-dir", type=Path, default=Path("../sumo-env/networks/v4"))
     ap.add_argument("--runs-dir", type=Path, default=Path("artifacts/out/quan4/routing2_runs"))
     ap.add_argument("--tag", default="")
+    ap.add_argument("--demand", default="v1", choices=["v1", "v3"],
+                    help="v3: demand v2 (other districts) + OD v3 pairs; --tph and --eval-tph are fleet trips/h")
+    ap.add_argument("--bg", default='{"internal": 3307, "gate": [2503, 2699, 1372, 920], "thr": 0.74, "car": 0.15, "forced": 600}',
+                    help="v3 background (JSON)")
+    ap.add_argument("--sumo-extra", default="", help="v3: extra SUMO options (e.g. meso)")
+    ap.add_argument("--sd", default="{}", help='v3: speed-density layer, e.g. {"every": 30, "a": 0.6, "b": 1, "k0": 0.1}')
+    ap.add_argument("--surge-prob", type=float, default=0.0, help="v3: share of episodes with a gate surge on one side")
+    ap.add_argument("--surge", type=float, nargs=2, default=[1.3, 1.8], help="v3: surge factor range")
+    ap.add_argument("--forced-mult", type=float, nargs=2, default=[1.0, 1.0], help="v3: forced-entry factor range")
     ap.add_argument("--smoke", action="store_true", help="2 workers, 5-min episodes, 2 updates, CPU")
     args = ap.parse_args()
     if args.smoke:
@@ -454,6 +526,8 @@ def main() -> None:
         args.tph, args.eval_tph, args.eval_seeds, args.eval_every = [2000.0, 3000.0], [2000.0], 1, 2
         args.eval_drain = 60.0
         args.device, args.ticks_per_batch = "cpu", 16
+    if args.demand == "v3":
+        args.eval_pen = [1.0]  # v3: the fleet share follows from --tph (fleet trips/h); pen is not used
     E = args.episodes or args.workers
     args.prior_w = prior_weights(args.prior_rule, args.prior, args.greedy_queue) if args.prior > 0 else None
 
@@ -483,7 +557,8 @@ def main() -> None:
             "peak_sd": args.peak_sd, "greedy_queue": args.greedy_queue, "report_drop": args.report_drop,
             "report_noise": args.report_noise, "compliance": args.compliance, "bg_reroute": args.bg_reroute,
             "teleport_s": args.teleport_s, "prior": args.prior_w, "lateral": args.lateral,
-            "burst_n": args.burst_n, "burst_fleet": args.burst_fleet, "hotspots": args.hotspots, "work_dir": str(run / "work")}
+            "burst_n": args.burst_n, "burst_fleet": args.burst_fleet, "hotspots": args.hotspots, "work_dir": str(run / "work"),
+            "demand": args.demand, "bg": json.loads(args.bg), "sumo_extra": args.sumo_extra, "sd": json.loads(args.sd)}
     net = _learner_net(conf, run).to(dev)
     opt = torch.optim.Adam(net.param_groups(args.lr_actor, args.lr_critic), weight_decay=1e-5)
     ctx = mp.get_context("spawn")
@@ -549,7 +624,12 @@ def main() -> None:
             ep_seed += 1
             stress = args.burst_n > 0 and float(rng.random()) < args.burst_prob
             pen = float(rng.uniform(*args.pen)) * (args.burst_pen if stress else 1.0)
-            tasks.append({"seed": ep_seed, "tph": float(rng.uniform(*args.tph)), "pen": pen,
+            scen = None
+            if args.demand == "v3":  # scenario family of the episode (PREREG_SCENARIOS.md, draft)
+                scen = {"forced": float(rng.uniform(*args.forced_mult))}
+                if float(rng.random()) < args.surge_prob:
+                    scen.update(surge_side=int(rng.integers(0, 4)), surge=float(rng.uniform(*args.surge)))
+            tasks.append({"seed": ep_seed, "tph": float(rng.uniform(*args.tph)), "pen": pen, "scen": scen,
                           "policy": "rl", "record": True, "state": st,
                           "compliance": float(rng.uniform(*args.compliance_train)),
                           "burst_n": args.burst_n if stress else 0,

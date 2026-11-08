@@ -263,3 +263,18 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
 - [ ] Người dùng: kiểm tra trang giá + ToS Mapbox, chạy thử 1 lượt, xem tỉ lệ Mapbox thực sự đi vào hẻm (`designed_alley_share_driven_median`).
 - [ ] P1.2 TomTom (kiểm định), P1.3 YOLO camera, P1.4 nhu cầu, P1.5 fusion Bayesian.
 - [ ] P2 trở đi.
+
+## 2026-11-08: train MAPPO v13 trên mạng đầy đủ + OD v3
+
+- Lý do: người dùng yêu cầu train thật thay vì chỉ so baseline và tính cận. Cận UE–SO chỉ nói về trung bình khi mọi xe được điều phối, không nói về nhóm episode xấu.
+- Cận UE–SO trên OD v3, đội xe 6000:
+  - meso m3 (không kiểm soát nút): 0%, không tìm được cách chia nào tốt hơn UE;
+  - meso m1 (có kiểm soát nút): 3.44% (theo seed 0% và 6.87%), SO_x cuối 1.62%. Đất cho phối hợp nằm ở tương tác tại nút.
+  - Bản micro v3 đang chạy.
+- **Hai lượt train song song** (`routing2/calib/train13.sh`), sol1 `diag_v6/runs13`:
+  - Mô hình: v13_m3 (meso, không kiểm soát nút) và v13_m1 (meso, có kiểm soát nút).
+  - Nhu cầu: v2 nền mức c20, có xe từ quận khác; đội xe 1500–9000 chuyến/giờ trên cặp C/X; forced × 1–3; 30% episode có luồng dâng ở một phía (× 1.3–1.8); tai nạn ẩn 2/h, tan trường 1/h.
+  - Lớp tốc độ: a 0.6, b 1, k0 0.1. Horizon 1800 s, đánh giá thêm 900 s.
+  - Train: reward attrib; khởi đầu từ greedy (prior 60); baseline greedy queue_s 0.5 (giá trị tốt nhất sau tinh chỉnh, `k4`).
+  - Quy mô: 16 episode mỗi lượt cập nhật, 200 lượt; đánh giá mỗi 25 lượt trên seed 50000–50007, cỡ đội 3000 / 6000 / 9000.
+- Code: `sumo_marl --demand v3 --bg --sumo-extra --sd --surge-prob --surge --forced-mult`, mặc định không đổi; smoke chạy thông.
