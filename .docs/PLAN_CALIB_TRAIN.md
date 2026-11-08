@@ -77,3 +77,7 @@ Nếu B3 không đạt sau 2 vòng dò, ghi "C1 đạt một phần" kèm số �
   - **Ô tô đếm dùng được** (cao hơn đếm tay khoảng 25–40%).
   - **Xe máy không dùng được**: YOLO COCO trên ảnh 512×288 bỏ sót cụm dày và xe ở xa.
   - **Quyết định:** camera chỉ dùng cho tỉ lệ ô tô và hình dạng theo giờ trên từng camera, có ghi sai số. Model xe máy huấn luyện riêng là việc tùy chọn, làm sau.
+- `msa14` (UE so với SO_x, đội xe 6000, 2 seed):
+  - meso có kiểm soát nút, xe máy cũ: UE → tốt nhất biết được 3.44% (theo seed 0 / 6.87).
+  - **micro chống kẹt v3: 0%** (UE 1823, SO_x 1843, tệ hơn 1.1%).
+  - Đến giờ chỉ meso có kiểm soát nút cho thấy còn đất. Đang chờ `msa15` (cùng mô hình, xe máy 3 hàng, 6 seed).
