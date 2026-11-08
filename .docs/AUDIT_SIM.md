@@ -157,3 +157,30 @@ Cách sửa:
 3. Báo cáo sai số đếm trong bài.
 
 Số làn Võ Văn Kiệt: OSM ghi làn xe máy riêng (`motorcar=no`, `motorcycle=designated`, `lanes=1`), nên **không phải lỗi gắn nhãn**. Mạng còn 42 đoạn primary và 183 đoạn secondary 1 làn mỗi chiều. Nút cổ chai có thể do luồng phía tây dồn vào. Sẽ kiểm tra bằng 6 camera trên Võ Văn Kiệt; trong lúc đó coi số làn của làn chỉ dành cho xe máy là tham số của tập mô phỏng E (`PREREG_SCENARIOS.md`).
+
+## K2: dùng hẻm và xác suất sụp (2026-11-08)
+
+**Dùng hẻm** (`k2.py`, nền c20, đội 3000 và 6000, 3 seed):
+- Ở lớp tốc độ nhẹ, quãng đường xe đội đi trong hẻm: ff 6%, app và greedy 7–7.5%.
+- Ở lớp tốc độ thực tế (a 1, k0 0.05): 6–10%, nhưng mô phỏng sụp (tới đích 0.50–0.63).
+- Thời gian chờ trong hẻm bằng 5–8% thời gian chờ trên đường.
+- **Cơ chế "dồn vào hẻm thông" yếu trong mô phỏng này.** Mức chậm thực tế trên đường chính chỉ đạt được khi mô phỏng sụp; ngoài đời đường chậm 1.3–1.7 lần mà vẫn chảy. Đây là giới hạn của động lực học mô phỏng.
+
+**Xác suất sụp** (`k3.py`, lớp tốc độ nhẹ, đội 6000, 20 seed 40010–40029):
+
+| Chính sách | J trung bình | trung vị | CVaR25 | sụp (tới đích < 0.75) |
+|---|---|---|---|---|
+| ff | 582 | 553 | 704 | 4/20 |
+| app | 553 | 544 | 636 | 2/20 |
+| greedy (queue_s 0.5) | 552 | 536 | 633 | 2/20 |
+
+- So theo cặp seed: greedy − ff = −30.6 (thắng 13/20); app − ff = −29.6 (thắng 11/20); greedy − app = −1.1 (thắng 10/20).
+- **Sụp phụ thuộc chính sách, không phụ thuộc seed.** Không seed nào cả ba cùng sụp, và các seed sụp của từng chính sách khác nhau. Định tuyến **có** ảnh hưởng tới việc tắc lan thành sụp.
+- **Đất cho phối hợp:**
+  - Lấy chính sách tốt nhất trên từng seed: J 514, CVaR25 555. So với greedy: tốt hơn 6.9% ở trung bình và **12.3% ở CVaR25**.
+  - Đây là cận lạc quan, vì lấy min của 3 kết quả có nhiễu.
+  - Episode không sụp có J trung vị 540; episode sụp 662. Một chính sách tránh được sụp sẽ lấy được phần lớn khoảng cách ở nhóm episode xấu.
+- **Việc phải làm trước khi tin vào kết quả này:**
+  1. Tinh chỉnh queue_s của greedy (0.25 / 0.5 / 1 / 2) trên seed 40000+. Nếu một greedy chỉnh tốt đã tránh được sụp thì không còn đất (luật không làm yếu heuristic).
+  2. Tìm cơ chế khởi phát sụp: cạnh nào tắc trước, xe đội có góp phần không.
+  3. Chạy split oracle hoặc SO trên cùng các seed.
