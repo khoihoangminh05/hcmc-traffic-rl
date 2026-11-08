@@ -65,3 +65,15 @@ Nếu B3 không đạt sau 2 vòng dò, ghi "C1 đạt một phần" kèm số �
   - B2: `cal_b2`, 48 bộ, có ô tô nội quận (`make_demand_v2 internal_car_tph`, mặc định 0; kiểm tra nhu cầu mặc định giống hệt bản cũ) và lớp tốc độ.
 - C1: lọc xe đỗ tự động (`cv_tracker/moving_counts.py`, loại khung đứng yên qua nhiều ảnh) **không dùng được**, vì nó loại luôn hàng chờ đèn đỏ (Khánh Hội – Hoàng Diệu: 22 xe máy đếm tay, còn 1–4 sau lọc). Quay lại vẽ ROI bằng tay.
 - Đã đếm toàn bộ 6116 ảnh Q4 bằng YOLO11x (khoảng 30 ảnh/giây trên GPU 1), kèm khung của từng xe: `cv/all_counts.csv`, `cv/all_boxes.jsonl`.
+- 2026-11-08 19h, C1: vẽ ROI tay cho 22 camera (`cv_tracker/roi_q4.json`, lưới 8×6, một xe được tính khi điểm giữa đáy khung nằm trong ô thuộc ROI; `cv_tracker/roi_counts.py`). So với đếm tay 4 ảnh (xe máy / ô tô):
+
+  | Camera | Đếm tay | YOLO trong ROI |
+  |---|---|---|
+  | Hoàng Diệu – Đoàn Văn Bơ 1 | 12 / 4 | 17 / 5 |
+  | Khánh Hội – Hoàng Diệu | 22 / 7 | 6 / 10 |
+  | Nguyễn Tất Thành – Tôn Đản | 10 / 6 | 15 / 9 |
+  | Võ Văn Kiệt – Ông Lãnh 1 | 6 / 8 | 0 / 11 |
+
+  - **Ô tô đếm dùng được** (cao hơn đếm tay khoảng 25–40%).
+  - **Xe máy không dùng được**: YOLO COCO trên ảnh 512×288 bỏ sót cụm dày và xe ở xa.
+  - **Quyết định:** camera chỉ dùng cho tỉ lệ ô tô và hình dạng theo giờ trên từng camera, có ghi sai số. Model xe máy huấn luyện riêng là việc tùy chọn, làm sau.
