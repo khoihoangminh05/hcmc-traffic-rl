@@ -110,7 +110,17 @@ if __name__=="__main__":
     saved.update(burst_n=0,hotspots="",net_dir=NET,zones=len(gj["zones"]),horizon=H,incident_rate=2.0,school_rate=1.0)
     conf=worker_conf(saved,O/"work"); T=target()
     print("targets",len(T),{h:sum(1 for t in T.values() if t["half"]==h) for h in("cal","test")},flush=True)
-    if mode=="b2":   # step B2: meso + junction control + motorcycles 3 files; demand, cars inside Q4, speed-density layer
+    if mode=="fac":   # why B2 fails: chosen model at c20 / c4, speed-density layer off / weak, cars inside Q4 0 / 1500 / 3000 per hour
+        J1=("--mesosim","true","--meso-junction-control","true")
+        dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},"c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09}}
+        P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1,"icar":300.}}]
+        for d in dem:
+            for sn,sd in (("off",{}),("weak",{"every":30.0,"a":.6,"b":1.0,"k0":.1})):
+                for ic in (0.,1500.,3000.):
+                    P.append({"id":f"{d}_{sn}_ic{int(ic)}","p":{**dem[d],"icar":ic},"sd":sd})
+        for c in P: c.update(sumo=J1,teleport=300,moto_len=.5,moto_gap=.2)
+        seeds=[40000]
+    elif mode=="b2":   # step B2: meso + junction control + motorcycles 3 files; demand, cars inside Q4, speed-density layer
         rnd=random.Random(int(sys.argv[3])); J1=("--mesosim","true","--meso-junction-control","true")
         P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1,"icar":300.}}]
         for i in range(int(sys.argv[4])):

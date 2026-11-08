@@ -81,3 +81,12 @@ Nếu B3 không đạt sau 2 vòng dò, ghi "C1 đạt một phần" kèm số �
   - meso có kiểm soát nút, xe máy cũ: UE → tốt nhất biết được 3.44% (theo seed 0 / 6.87).
   - **micro chống kẹt v3: 0%** (UE 1823, SO_x 1843, tệ hơn 1.1%).
   - Đến giờ chỉ meso có kiểm soát nút cho thấy còn đất. Đang chờ `msa15` (cùng mô hình, xe máy 3 hàng, 6 seed).
+- 2026-11-08 23h30, **đính chính "còn đất"**.
+  - `msa15` (mô hình đã chọn, 6 seed) báo `gap_ue_best_known` 4.49%, nhưng con số này **do chọn lọc**: nó so UE ở vòng cuối (nhiễu, ví dụ seed 40010: 2091 trong khi vòng tốt nhất của UE là 1923) với tốt nhất của mọi vòng.
+  - So công bằng: tốt nhất với tốt nhất, SO_x **tệ hơn** UE 4.2% (theo seed +2.0, −5.6, −5.2, −8.8, +0.9, −8.7); trung bình 5 vòng cuối, tệ hơn 2.8%.
+  - Con số 3.44% của `msa14` m1 có cùng lỗi. Câu "đất cho phối hợp nằm ở tương tác tại nút" **chưa có bằng chứng**.
+  - Bước "chạy lại trên seed mới" trong `gate_msa` không chống được chọn lọc ở meso: ba lần chạy lại cho kết quả giống hệt nhau (meso tất định với cùng tuyến).
+  - SO_x là heuristic, không tìm được không có nghĩa là không có. UE cũng chưa hội tụ (vòng cuối dao động 1868–2091).
+  - Lựa chọn mô hình ở bước A vẫn đứng vì các tiêu chí tới đích, teleport, ρ.
+- `k5` (mô hình đã chọn, lớp tốc độ nhẹ, đội xe 6000, 20 seed): ff 890, app 834, greedy 836, greedy q1 828. CVaR25: 933 / 880 / 866 / 864. Quãng đi hẻm 6–9%. Cả 20 seed đều có tới đích dưới 0.75 ở mọi chính sách (0.68–0.70), nên ngưỡng "sụp" 0.75 không còn phân biệt được gì ở đây.
+- `cal_b2` (48 bộ): **0/48 đạt tới đích ≥ 0.7**; tốt nhất 0.67 (TTI primary 1.04). Cổng C1 không đạt ở vòng 1. Đang chạy `cal_fac` tách riêng tác dụng của lớp tốc độ và ô tô nội quận.
