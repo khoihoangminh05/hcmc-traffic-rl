@@ -75,6 +75,32 @@ def write_routes(path: Path, routes: dict[str, list[str]], dep: dict[str, float]
 
 SUMO_LATERAL = "0.8"  # set from --lateral; 0.8 and 180 s were the defaults before 2026-11-06
 SUMO_TELEPORT = "180"
+SUMO_EXTRA: list[str] = []  # set from --sumo-extra, e.g. the mesoscopic options of the calibration
+
+
+def write_trips_v3(path: Path, g, zones, fleet_tph: float, seed: int, horizon: float, bg: dict) -> int:
+    """Demand v2 background (other districts included) + OD v3 fleet and forced streams, every trip a
+    motorcycle and every trip assignable (p = 1: a whole-system bound). Cars of demand v2 are left out."""
+    from .demand import load_od_v3, make_demand_v2
+
+    od = load_od_v3(g)
+    d = make_demand_v2(g, zones, [seed], horizon, 0.0, bg["internal"], tuple(bg["gate"]), bg["thr"], 0.0,
+                       fleet_pairs=od["C"] + od["X"], fleet_tph=fleet_tph, forced_pairs=od["F"],
+                       forced_tph=bg.get("forced", 600.0), bg_zones=bg.get("bg_zones", 47))
+    dep, orig, dz = d.dep_t[0].tolist(), d.orig[0].tolist(), d.dest_zone[0].tolist()
+    zn = zones.tolist()
+    n = 0
+    with path.open("w", encoding="utf-8") as f:
+        f.write("<routes>\n  " + MOTO_VTYPE + "\n")
+        for i in sorted(range(len(dep)), key=lambda k: dep[k]):
+            o, t = g.node_ids[orig[i]], g.node_ids[zn[dz[i]]]
+            if o == t or dep[i] >= horizon:
+                continue
+            f.write(f'  <trip id="v{i}" type="moto" depart="{dep[i]:.2f}" fromJunction="{o}" '
+                    f'toJunction="{t}" departLane="best" departSpeed="max"/>\n')
+            n += 1
+        f.write("</routes>\n")
+    return n
 
 
 def run_sumo(wd: Path, net: str, rou: Path, end: float, seed: int) -> tuple[Path, Path]:
@@ -84,7 +110,7 @@ def run_sumo(wd: Path, net: str, rou: Path, end: float, seed: int) -> tuple[Path
         sumo_binary("sumo"), "-n", net, "-r", rou.name, "-a", "ed.add.xml", "--tripinfo-output", ti.name,
         "--tripinfo-output.write-unfinished", "true", "--step-length", "0.5", "--lateral-resolution", SUMO_LATERAL,
         "--time-to-teleport", SUMO_TELEPORT, "--end", str(end), "--seed", str(seed), "--no-step-log", "true",
-        "--no-warnings", "true",
+        "--no-warnings", "true", *SUMO_EXTRA,
     ], cwd=wd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return ti, wd / "dump.xml"
 
@@ -322,9 +348,14 @@ def main() -> None:
     ap.add_argument("--lateral", type=float, default=0.8, help="SUMO lateral resolution, m")
     ap.add_argument("--teleport-s", type=float, default=180.0)
     ap.add_argument("--alley-width", type=float, default=None, help="m per direction (sumo_net default if unset)")
+    ap.add_argument("--sumo-extra", default="", help="extra SUMO options, space separated (e.g. meso)")
+    ap.add_argument("--demand", default="v1", choices=["v1", "v3"], help="v3: demand v2 + OD v3; --tph = fleet trips/h")
+    ap.add_argument("--bg", default='{"internal": 3307, "gate": [2503, 2699, 1372, 920], "thr": 0.74}',
+                    help="v3 background (JSON): internal, gate per side, thr, forced, bg_zones")
     args = ap.parse_args()
-    global SUMO_LATERAL, SUMO_TELEPORT
+    global SUMO_LATERAL, SUMO_TELEPORT, SUMO_EXTRA
     SUMO_LATERAL, SUMO_TELEPORT = f"{args.lateral:g}", f"{args.teleport_s:g}"
+    SUMO_EXTRA = args.sumo_extra.split()
     if args.alley_width is not None:
         from . import sumo_net
 
@@ -332,7 +363,7 @@ def main() -> None:
 
     cfg = replace(SimConfig(), horizon_s=args.horizon)
     g = load_graph(DEFAULT_GRAPH, cfg)
-    zones = pick_zones(g, args.zones, seed=0)
+    zones = pick_zones(g, len(g.zone_nodes) if args.demand == "v3" else args.zones, seed=0)
     net = str(build_net(DEFAULT_GRAPH, args.net_dir).resolve())
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     # pid and exist_ok=False: two runs started in the same second must not share a directory
@@ -351,7 +382,10 @@ def main() -> None:
             for s in args.seeds:
                 d = root / f"v{vi}_tph{int(tph)}_seed{s}"
                 d.mkdir(parents=True, exist_ok=True)
-                write_trips(d / "trips0.xml", g, zones, tph, s, args.horizon)
+                if args.demand == "v3":
+                    write_trips_v3(d / "trips0.xml", g, zones, tph, s, args.horizon, json.loads(args.bg))
+                else:
+                    write_trips(d / "trips0.xml", g, zones, tph, s, args.horizon)
                 for mode in args.modes:
                     jobs.append({"mode": mode, "tph": tph, "seed": s, "iters": args.iters, "horizon": args.horizon,
                                  "drain": args.drain, "dir": str(d / mode), "trips": str(d / "trips0.xml"), "net": net,
