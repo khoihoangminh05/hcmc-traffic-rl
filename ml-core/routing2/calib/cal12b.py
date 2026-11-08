@@ -22,11 +22,12 @@ def _run(t):
     add.write_text(f'<additional><edgeData id="ed" begin="{W0}" end="{H}" period="{H-W0}" file="{out}" excludeEmpty="true"/></additional>')
     env.cfg.extra_args=("-a",str(add))+tuple(t.get("sumo",())); env.cfg.bg_route="informed"
     M._W.setdefault("tele0",env.cfg.teleport_s); env.cfg.teleport_s=t.get("teleport",M._W["tele0"])   # workers are reused: always reset
+    env.cfg.moto_length_m=t.get("moto_len"); env.cfg.moto_mingap_m=t.get("moto_gap"); env.cfg.moto_extra=t.get("moto_extra","")
     sd=t.get("sd",{}); env.cfg.sd_every_s=sd.get("every",0.0); env.cfg.sd_a=sd.get("a",1.0); env.cfg.sd_b=sd.get("b",2.0); env.cfg.sd_k0=sd.get("k0",.1)
     M._W.setdefault("lat0",env.cfg.lateral_m); env.cfg.lateral_m=-1 if "--mesosim" in t.get("sumo",()) else M._W["lat0"]   # meso has no sublanes
     import torch
     gw=torch.tensor(p["gin_w"]) if p.get("gin_w") else None; xw=torch.tensor(p["exit_w"]) if p.get("exit_w") else None
-    d=make_demand_v2(g,zones,[t["seed"]],H,.15,p["internal"],tuple(p["gate"]),p["thr"],p["car"],gate_in_w=gw,exit_w=xw)
+    d=make_demand_v2(g,zones,[t["seed"]],H,.15,p["internal"],tuple(p["gate"]),p["thr"],p["car"],gate_in_w=gw,exit_w=xw,internal_car_tph=p.get("icar",0.0))
     ok=car_ok(env,g); n0=len(d.cars[0]); d.cars[0]=[c for c in d.cars[0] if ok(c[1],c[2])]; dropped=n0-len(d.cars[0])
     env.cfg.sumo_seed=t["seed"]; env.cfg.horizon_s=H; env.cfg.incident_seed=t["seed"]; env.cfg.compliance=.9; env.cfg.record_link_wait=False
     t0=time.time(); ep=env.run(d,0,M._Score(live=True),record=False)
@@ -35,7 +36,7 @@ def _run(t):
         ss=float(e.get("sampledSeconds",0)); v=float(e.get("speed",0))
         if ss>30 and v>0: sp[e.get("id")]=v
     os.remove(out)
-    return {"id":t["id"],"seed":t["seed"],"p":p,"sd":t.get("sd",{}),"speed":sp,"n_moto":int(d.dep_t.shape[1]),"n_car":len(d.cars[0]),
+    return {"id":t["id"],"seed":t["seed"],"p":p,"sd":t.get("sd",{}),"n_car_all":len(d.cars[0]),"speed":sp,"n_moto":int(d.dep_t.shape[1]),"n_car":len(d.cars[0]),
             "tele":ep.teleports,"car_dropped":dropped,"arr":ep.metrics.get("arrived_share_all"),"wall":time.time()-t0}
 def car_ok(env,g):
     """(entry node, exit node) -> can a car drive from the link the env picks to the one it picks (SUMO passenger)."""
@@ -109,7 +110,38 @@ if __name__=="__main__":
     saved.update(burst_n=0,hotspots="",net_dir=NET,zones=len(gj["zones"]),horizon=H,incident_rate=2.0,school_rate=1.0)
     conf=worker_conf(saved,O/"work"); T=target()
     print("targets",len(T),{h:sum(1 for t in T.values() if t["half"]==h) for h in("cal","test")},flush=True)
-    if mode=="sdlin":   # stable layer: b = 1, weak a, two k0, two demand levels, meso m3
+    if mode=="b2":   # step B2: meso + junction control + motorcycles 3 files; demand, cars inside Q4, speed-density layer
+        rnd=random.Random(int(sys.argv[3])); J1=("--mesosim","true","--meso-junction-control","true")
+        P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1,"icar":300.}}]
+        for i in range(int(sys.argv[4])):
+            P.append({"id":f"b{i}","p":{"internal":rnd.uniform(2000,10000),"gate":[rnd.uniform(1000,6000) for _ in range(4)],
+                      "thr":rnd.uniform(.3,.9),"car":rnd.uniform(.05,.3),"icar":rnd.uniform(1000,6000)},
+                      "sd":{"every":30.0,"a":rnd.uniform(0,1.5),"b":1.0,"k0":math.exp(rnd.uniform(math.log(.03),math.log(.2)))}})
+        for c in P: c.update(sumo=J1,teleport=300,moto_len=.5,moto_gap=.2)
+        seeds=[40000]
+    elif mode=="vn":   # micro, sublane, local driving: weave and push in at junctions (vType), anti-deadlock v3
+        dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},
+             "c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09},
+             "d14":{"internal":9662.,"gate":[2660.,2938.,3552.,3567.],"thr":.59,"car":.15},
+             "ref":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}
+        V={"polite":"",
+           "vn1":'lcAssertive="3" lcImpatience="1" minGapLat="0.1" jmIgnoreFoeProb="0.2" jmIgnoreFoeSpeed="2" jmTimegapMinor="0.5"',
+           "vn2":'lcAssertive="5" lcImpatience="1" lcPushy="1" minGapLat="0.05" jmIgnoreFoeProb="0.5" jmIgnoreFoeSpeed="4" jmTimegapMinor="0.2" jmIgnoreJunctionFoeProb="0.3"'}
+        P=[{"id":f"{d}_{v}","p":dem[d],"sumo":("--ignore-junction-blocker","5","--time-to-impatience","20"),"teleport":120,"moto_extra":V[v]}
+           for v in V for d in dem]
+        seeds=[40000]
+    elif mode=="moto":   # meso motorcycle storage fix: 1.9/0.5 (one file per lane) vs 0.5/0.2 (about 3 files)
+        dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},
+             "c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09},
+             "d14":{"internal":9662.,"gate":[2660.,2938.,3552.,3567.],"thr":.59,"car":.15},
+             "ref":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}
+        J={"j0":("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1","--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7"),
+           "j1":("--mesosim","true","--meso-junction-control","true")}
+        MO={"old":(None,None),"new":(.5,.2)}
+        P=[{"id":f"{d}_{j}_{m}","p":dem[d],"sumo":J[j],"teleport":300,"moto_len":MO[m][0],"moto_gap":MO[m][1]}
+           for j in J for m in MO for d in dem]
+        seeds=[40000]
+    elif mode=="sdlin":   # stable layer: b = 1, weak a, two k0, two demand levels, meso m3
         m3=("--mesosim","true","--meso-junction-control","false","--meso-tls-penalty","1","--meso-tauff","0.57","--meso-taufj","0.57","--meso-taujf","0.87","--meso-taujj","0.7")
         dem={"c20":{"internal":3307.,"gate":[2503.,2699.,1372.,920.],"thr":.74,"car":.15},"c4":{"internal":8693.,"gate":[3126.,1629.,1616.,1547.],"thr":.48,"car":.09}}
         P=[{"id":"ref","p":{"internal":1500.,"gate":[150.]*4,"thr":.5,"car":.1}}]
@@ -164,7 +196,7 @@ if __name__=="__main__":
                       "thr":rnd.uniform(.2,.8),"car":rnd.uniform(0,.3)}})
         seeds=[40000,40001]
     ts=[{**c,"seed":s} for c in P for s in seeds]
-    with mp.get_context("spawn").Pool(min(16,len(ts)),init,(conf,)) as pool: rows=pool.map(run,ts,chunksize=1)
+    with mp.get_context("spawn").Pool(min(int(os.environ.get("CAL_POOL","16")),len(ts)),init,(conf,)) as pool: rows=pool.map(run,ts,chunksize=1)
     for r in rows:
         if "err" in r: print("ERR",r["id"],r["err"],flush=True)
     rows=[r for r in rows if "err" not in r]

@@ -173,6 +173,7 @@ def make_demand_v2(
     forced_pairs: list[tuple[int, int]] | None = None,
     forced_tph: float = 0.0,
     bg_zones: int | None = None,
+    internal_car_tph: float = 0.0,
 ) -> Demand:
     """Demand with traffic from other districts (audit D1, D3, V1), departures uniform over the horizon.
 
@@ -188,6 +189,8 @@ def make_demand_v2(
     index), on top of the background (set `penetration` 0 to control only these); `forced_tph` background
     trips from `forced_pairs` (destinations inside dead-end alley pockets: they must enter). `bg_zones`:
     background trips use only the first k zones (the v2 zones), the rest are v3 pair destinations.
+    `internal_car_tph`: cars between road nodes inside the district (never alleys), routed by SUMO; audit
+    2026-11-08: cameras show 24-38% cars on main roads, demand v2 alone gives about 5%.
     """
     if g.gate_in is None or g.zone_exit is None:
         raise ValueError("graph has no gates or exit zones: build it with data_fusion.build_quan4_full v2")
@@ -204,6 +207,7 @@ def make_demand_v2(
     zc = zones.cpu()
     hot = hot_zone_index(g, zones[internal.to(zones.device)], n_hot) if hot_share > 0 else None
     dep, org, dz, ctrl, cars = [], [], [], [], []
+    road_nodes = None
     for s in seeds:
         gen = torch.Generator().manual_seed(int(s))
 
@@ -271,6 +275,15 @@ def make_demand_v2(
         dz.append(z[order])
         # without v3 streams: the original draw, after the departures (same random stream as before)
         ctrl.append(c[order] if extra else torch.rand(len(o), generator=gen) < penetration)
+        if internal_car_tph > 0:  # drawn last: the other streams keep their random numbers
+            if road_nodes is None:
+                rn = g.src[g.priority >= 3].cpu()
+                road_nodes = torch.tensor(sorted(set(rn.tolist()) & set(cand.tolist())), dtype=torch.long)
+            m = count(internal_car_tph)
+            a = road_nodes[torch.randint(len(road_nodes), (m,), generator=gen)]
+            b = road_nodes[torch.randint(len(road_nodes), (m,), generator=gen)]
+            tc = torch.rand(m, generator=gen) * horizon_s
+            car_list += [(ti, int(x), int(y)) for ti, x, y in zip(tc.tolist(), a.tolist(), b.tolist()) if x != y]
         cars.append(sorted(car_list))
     L = max(len(x) for x in dep)
     pad = lambda xs, v: torch.stack([torch.cat([x, torch.full((L - len(x),), v, dtype=x.dtype)]) for x in xs])  # noqa: E731

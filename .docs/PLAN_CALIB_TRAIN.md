@@ -54,3 +54,14 @@ Nếu B3 không đạt sau 2 vòng dò, ghi "C1 đạt một phần" kèm số �
 ## Nhật ký thay đổi kế hoạch
 
 - 2026-11-08: lập kế hoạch.
+- 2026-11-08 19h, **A xong**. Kết quả micro (`cal_vn`):
+  - Kiểu lái "lịch sự": tới đích 0.85 / 0.83 / 0.74, teleport 50 / 68 / 324, ρ 0.24 / 0.01 / −0.01.
+  - Kiểu lái Việt Nam (vn1, vn2: lcAssertive, minGapLat 0.05–0.1, jmIgnoreFoeProb 0.2–0.5): teleport 24–36 ở c20 và 224–233 ở d14; ρ ≤ 0.19; 1100–1900 s mỗi episode.
+  - So với meso có kiểm soát nút + xe máy 3 hàng: 0.87 / 0.81 / 0.63, 0 teleport, ρ 0.51 / 0.37 / 0.39, 620–1500 s.
+  - **Chọn mô hình: meso có kiểm soát nút, xe máy 3 hàng.**
+- Song song đang chạy:
+  - D1 sớm: `msa15`, UE so với SO_x, 6 seed, đội xe 6000, trên mô hình đã chọn.
+  - D2 sớm: `k5`, ff / app / greedy 0.5 / greedy 1 trên 20 seed.
+  - B2: `cal_b2`, 48 bộ, có ô tô nội quận (`make_demand_v2 internal_car_tph`, mặc định 0; kiểm tra nhu cầu mặc định giống hệt bản cũ) và lớp tốc độ.
+- C1: lọc xe đỗ tự động (`cv_tracker/moving_counts.py`, loại khung đứng yên qua nhiều ảnh) **không dùng được**, vì nó loại luôn hàng chờ đèn đỏ (Khánh Hội – Hoàng Diệu: 22 xe máy đếm tay, còn 1–4 sau lọc). Quay lại vẽ ROI bằng tay.
+- Đã đếm toàn bộ 6116 ảnh Q4 bằng YOLO11x (khoảng 30 ảnh/giây trên GPU 1), kèm khung của từng xe: `cv/all_counts.csv`, `cv/all_boxes.jsonl`.

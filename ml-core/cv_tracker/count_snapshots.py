@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,7 @@ def main() -> None:
     ap.add_argument("--device", default="0")
     ap.add_argument("--save-vis", type=Path, default=None, help="write annotated images for the first N files")
     ap.add_argument("--n-vis", type=int, default=0)
+    ap.add_argument("--boxes", type=Path, default=None, help="also write every box (JSONL) for the parked-vehicle filter")
     args = ap.parse_args()
 
     done: set[str] = set()
@@ -59,6 +61,12 @@ def main() -> None:
                 cls = r.boxes.cls.int().tolist() if r.boxes is not None else []
                 n = {c: cls.count(k) for k, c in CLASSES.items()}
                 ok = int(r.orig_img is not None and r.orig_img.std() > 3)  # grey "no image" placeholders
+                if args.boxes is not None:
+                    with args.boxes.open("a") as fb:
+                        b = r.boxes
+                        fb.write(json.dumps({"file": fn, "camera": Path(fn).parts[-3], "utc": utc.isoformat() if utc else "",
+                                             "cls": b.cls.int().tolist(), "conf": [round(x, 3) for x in b.conf.tolist()],
+                                             "xyxy": [[round(v, 1) for v in bb] for bb in b.xyxy.tolist()]}) + "\n")
                 w.writerow([fn, Path(fn).parts[-3], utc.isoformat() if utc else "", vn.hour if vn else "",
                             vn.weekday() if vn else "", *n.values(), ok])
                 if args.save_vis and args.n_vis > 0:

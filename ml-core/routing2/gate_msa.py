@@ -61,7 +61,14 @@ EDGEDATA = '<a><edgeData id="d" freq="{f}" file="dump.xml" excludeEmpty="true" m
 
 
 def vtype(extra: str) -> str:
-    return MOTO_VTYPE.replace("/>", f" {extra}/>") if extra else MOTO_VTYPE
+    """The motorcycle vType with `extra` attributes: one already present is replaced (e.g. length for the
+    meso three-files-per-lane setting), a new one appended."""
+    import re
+
+    vt = MOTO_VTYPE
+    for k, v in re.findall(r'(\w+)="([^"]*)"', extra or ""):
+        vt = re.sub(rf' {k}="[^"]*"', f' {k}="{v}"', vt) if f' {k}="' in vt else vt.replace("/>", f' {k}="{v}"/>')
+    return vt
 
 
 def write_routes(path: Path, routes: dict[str, list[str]], dep: dict[str, float], vt: str) -> None:
