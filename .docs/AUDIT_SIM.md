@@ -184,3 +184,19 @@ Số làn Võ Văn Kiệt: OSM ghi làn xe máy riêng (`motorcar=no`, `motorcyc
   1. Tinh chỉnh queue_s của greedy (0.25 / 0.5 / 1 / 2) trên seed 40000+. Nếu một greedy chỉnh tốt đã tránh được sụp thì không còn đất (luật không làm yếu heuristic).
   2. Tìm cơ chế khởi phát sụp: cạnh nào tắc trước, xe đội có góp phần không.
   3. Chạy split oracle hoặc SO trên cùng các seed.
+
+**Tinh chỉnh greedy** (`k4.py`, cùng 20 seed):
+
+| queue_s | J trung bình | CVaR25 | sụp |
+|---|---|---|---|
+| 0.25 | 566 | 659 | 4 |
+| 0.5 | 552 | 633 | 2 |
+| 1 | 557 | 629 | 3 |
+| 2 | 671 | 838 | 10 |
+
+- greedy tốt nhất ở queue_s 0.5–1. Không giá trị nào hết sụp.
+- queue_s 2 (rải đội xe quá mạnh) làm sụp tới 10/20. Phân tán quá cũng gây sụp, nên có một điểm cân bằng không tầm thường.
+- **Ước lượng đất trung thực hơn:**
+  - Nếu greedy (0.5) tránh được 2 lần sụp của chính nó (thay bằng trung vị các episode không sụp, 516), thì J trung bình 539 và CVaR25 612. Chỉ tốt hơn **2.3% / 3.4%**.
+  - Con số "best-of-3 hơn 12%" chủ yếu do lấy min trên nhiễu.
+- **Kết luận tạm:** đất từ việc tránh sụp ở cỡ đội 6000 nhỏ hơn cổng 5% ở CVaR25. Cần cận đúng nghĩa (SO hoặc oracle chia luồng) mới kết luận được K2.
