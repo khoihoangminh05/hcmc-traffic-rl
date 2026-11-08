@@ -137,3 +137,23 @@ Mô phỏng: meso m3, lớp tốc độ tuyến tính (a 0.6, b 1, k0 0.1), xe n
   Gần ngưỡng năng lực, mỗi episode có thể "sụp" hoặc không, và chuyện đó xảy ra ngẫu nhiên với **bất kỳ** chính sách nào. Kết quả lượt 1 chỉ là do sụp rơi đúng vào app/greedy. **Không có thứ hạng ổn định.** Muốn so phải đo xác suất sụp trên nhiều seed (cổng H).
 - **Cơ chế:** thời gian chờ ở hẻm chỉ chiếm 1–3% tổng (15–70 nghìn s so với 1–2.3 triệu s trên đường). Xe đội gần như không đi hẻm thông. Các cạnh chờ nhiều nhất giống nhau ở mọi chính sách: **Võ Văn Kiệt, mô hình 1 làn** (616 m và 367 m), sau đó là Hoàng Diệu. Làn xe máy của Võ Văn Kiệt ngoài thực tế là đường song hành rộng, nên mô hình 1 làn **rất có thể là lỗi số làn trong OSM hoặc lúc dựng mạng**. Nút cổ chai giả này chi phối cả mạng, không chính sách nào tránh được.
 - **Việc tiếp theo:** (1) kiểm tra và sửa số làn (bề rộng) của Võ Văn Kiệt và các trục 1 làn khác; (2) đo xác suất sụp theo chính sách trên khoảng 20 seed ở cỡ đội 6000–7500; (3) xem vì sao xe đội không dùng hẻm thông dù cặp C có đường qua hẻm (chi phí thời gian của hẻm trong mô phỏng có hợp lý không).
+
+## Kiểm tra bộ đếm YOLO trên ảnh ban ngày (2026-11-08 10h, Chủ nhật)
+
+Đếm tay 4 ảnh, so với YOLO11 m/x ở conf 0.05–0.1 và imgsz 1280:
+
+| Camera | Xe máy đang chạy (đếm tay) | YOLO | Lỗi |
+|---|---|---|---|
+| Khánh Hội – Hoàng Diệu | ~22 (cụm dừng đèn) | 3–20 | đếm thiếu cụm dày |
+| Nguyễn Tất Thành – Tôn Đản | ~10, cộng ~12 xe đỗ vỉa hè | 19–36 | đếm cả xe đỗ |
+| Hoàng Diệu – Đoàn Văn Bơ 1 | ~12 | 15–27 | đếm cả xe đỗ |
+| Võ Văn Kiệt – Ông Lãnh 1 | ~6 | 0–2 | xe ở xa quá nhỏ |
+
+Sai số mỗi ảnh khoảng ±50%. **Chưa dùng được số tuyệt đối.**
+
+Cách sửa:
+1. Vẽ vùng mặt đường (ROI) cho từng camera để bỏ xe đỗ.
+2. Chỉ dùng tín hiệu tương đối: mật độ cao điểm / giờ vắng trên cùng một camera.
+3. Báo cáo sai số đếm trong bài.
+
+Số làn Võ Văn Kiệt: OSM ghi làn xe máy riêng (`motorcar=no`, `motorcycle=designated`, `lanes=1`), nên **không phải lỗi gắn nhãn**. Mạng còn 42 đoạn primary và 183 đoạn secondary 1 làn mỗi chiều. Nút cổ chai có thể do luồng phía tây dồn vào. Sẽ kiểm tra bằng 6 camera trên Võ Văn Kiệt; trong lúc đó coi số làn của làn chỉ dành cho xe máy là tham số của tập mô phỏng E (`PREREG_SCENARIOS.md`).
