@@ -163,6 +163,16 @@ class SumoEnvConfig:
     sd_b: float = 2.0
     sd_k0: float = 0.1
     sd_vmin: float = 0.2
+    # SUMO meso has no sublanes: a motorcycle fills a whole lane, one file per lane. A 3.5 m lane holds 2-3
+    # motorcycles side by side (TCVN: 0.3 PCU), so in meso the storage per lane is about 3x too small and queues
+    # spill back far too early (audit C1, 2026-11-08). moto_length_m / moto_mingap_m override the motorcycle
+    # vType (e.g. 0.5 / 0.2 for about 3 files per lane). None = the micro vType (1.9 / 0.5).
+    moto_length_m: float | None = None
+    moto_mingap_m: float | None = None
+    # Extra motorcycle vType attributes for local driving: lane weaving and pushing in at junctions (e.g.
+    # 'lcAssertive="3" lcImpatience="1" minGapLat="0.1" jmIgnoreFoeProb="0.3" jmIgnoreFoeSpeed="3"').
+    # Empty = the default vType.
+    moto_extra: str = ""
     # Measure vehicle-seconds standing per link, for routing2.scenarios. Not for controllers.
     record_link_wait: bool = False
 
@@ -594,7 +604,20 @@ class SumoRoutingEnv:
                               f'value="true"/><param key="device.rerouting.period" value="0"/></trip>\n'))
         lines.sort(key=lambda x: x[0])
         with rou.open("w", encoding="utf-8") as f:
-            f.write("<routes>\n  " + MOTO_VTYPE + "\n")
+            vt = MOTO_VTYPE
+            if cfg.moto_length_m is not None:
+                vt = vt.replace('length="1.9"', f'length="{cfg.moto_length_m:g}"')
+            if cfg.moto_mingap_m is not None:
+                vt = vt.replace('minGap="0.5"', f'minGap="{cfg.moto_mingap_m:g}"')
+            if cfg.moto_extra:  # an attribute already in the vType is replaced, a new one appended
+                import re
+
+                for k, v in re.findall(r'(\w+)="([^"]*)"', cfg.moto_extra):
+                    if f' {k}="' in vt:
+                        vt = re.sub(rf' {k}="[^"]*"', f' {k}="{v}"', vt)
+                    else:
+                        vt = vt.replace("/>", f' {k}="{v}"/>')
+            f.write("<routes>\n  " + vt + "\n")
             if cars:
                 f.write("  " + CAR_VTYPE + "\n")
             f.writelines(x for _, x in lines)

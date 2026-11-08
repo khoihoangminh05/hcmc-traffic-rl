@@ -278,3 +278,13 @@ P0 → (P1 cào dữ liệu chạy nền 1 tuần) ∥ P2 → P3 → P4 → P5 �
   - Train: reward attrib; khởi đầu từ greedy (prior 60); baseline greedy queue_s 0.5 (giá trị tốt nhất sau tinh chỉnh, `k4`).
   - Quy mô: 16 episode mỗi lượt cập nhật, 200 lượt; đánh giá mỗi 25 lượt trên seed 50000–50007, cỡ đội 3000 / 6000 / 9000.
 - Code: `sumo_marl --demand v3 --bg --sumo-extra --sd --surge-prob --surge --forced-mult`, mặc định không đổi; smoke chạy thông.
+- **2026-11-08 18:30: dừng v13_m3 và v13_m1 theo yêu cầu** (update 5–6, khoảng 15 phút mỗi update).
+  - Lý do: cả hai dùng xe máy meso "1 hàng mỗi làn", sức chứa thấp khoảng 3 lần so với thực tế.
+  - Đánh giá ở update 0 (chính sách khởi đầu từ greedy): m3 rl 568 / ff 553; m1 rl 1037 / ff 1054. Hai lượt này không dùng làm kết quả.
+- **Sửa sức chứa xe máy trong meso** (`SumoEnvConfig.moto_length_m / moto_mingap_m`, thử 0.5 / 0.2 ≈ 3 hàng, hệ số TCVN 0.3 PCU; `cal_moto`):
+  - Mô hình có kiểm soát nút (j1), tới đích c20 / c4 / d14 tăng từ 0.78 / 0.66 / 0.48 lên 0.87 / 0.81 / 0.63.
+  - Spearman khúc 300 m, đường lớn, tăng từ 0.34 / 0.12 / 0.03 lên 0.47 / 0.30 / 0.30.
+  - Mô hình không kiểm soát nút (j0) gần như không đổi: tới đích 0.81–0.85, ρ 0.40–0.49.
+  - Lớp tốc độ tắt trong phép thử này, nên TTI khoảng 1.0.
+- Ảnh camera Võ Văn Kiệt, Chủ nhật 15h30: không nghẽn, nhiều ô tô. Tỉ lệ ô tô trong mô phỏng chỉ 4.5–5%, trong khi ảnh cho thấy 24–38% ở các nút đếm tay.
+- **Đang thử micro với kiểu lái Việt Nam** (`SumoEnvConfig.moto_extra`: lcAssertive, minGapLat, jmIgnoreFoeProb…; `cal_vn`).
