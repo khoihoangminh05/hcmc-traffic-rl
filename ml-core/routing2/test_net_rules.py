@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .net_rules import active, axis_groups, clusters, largest_scc, split_bans, two_axis_phases
+from .net_rules import active, axis_groups, clusters, inner_nodes, largest_scc, split_bans, two_axis_phases
 
 
 def test_active() -> None:
@@ -58,6 +58,13 @@ def test_clusters() -> None:
     assert c["a"] == c["b"] != c["z"]
 
 
+def test_inner_nodes() -> None:
+    xy = {"a": (0.0, 0.0), "m": (15.0, 0.0), "b": (30.0, 0.0), "far": (100.0, 0.0), "up": (-20.0, 0.0)}
+    succ = {"a": {"m"}, "m": {"b", "far"}, "up": {"a"}}
+    got = inner_nodes({"a", "b"}, succ, {"a", "b"}, xy, 40.0)
+    assert got == {"a", "b", "m"}  # "far" is too far, "up" feeds the crossing and stays an approach
+
+
 def test_scc() -> None:
     assert largest_scc({"a": {"b"}, "b": {"a", "c"}}) == 2
 
@@ -68,6 +75,7 @@ def main() -> None:
     test_axes()
     test_phases()
     test_clusters()
+    test_inner_nodes()
     test_scc()
     print("NET_RULES_TESTS_OK")
 

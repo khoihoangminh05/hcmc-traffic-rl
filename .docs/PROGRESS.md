@@ -132,3 +132,4 @@ Kế hoạch và trạng thái: [PLAN_V4.md](./PLAN_V4.md). MAPPO micro v3v đó
 | 2026-10-09 | **Supersede → one paper UAKP**: RESEARCH_ONE_PAPER + uakp_env/train + quan4_uakp; binary v5 = legacy |
 | 2026-10-30 | **V4:** đích TR-C/T-ITS (+A\* phụ), chỉ dữ liệu miễn phí; P0 + Mapbox driving-traffic probes (100 tuyến) + match_probe; via 8 điểm/tuyến + chế độ typical `depart_at`; live 15 phút × 14 ngày. Xem PLAN_V4.md |
 | 2026-11-10 | G1 đạt có điều kiện (SUMO micro bỏ làn trong nút); G0 đếm xe máy sơ bộ đạt ngưỡng, chưa chốt; `routing2/net_rules.py`: mạng v5 có cấm rẽ và chu kỳ đèn đo được, 27 cụm đèn 2 pha |
+| 2026-11-10 | L3 trục Khánh Hội đạt một phần (`VALIDATE_L3.md`): chọn `n`, `alpha` 1500 trên chiều 324, chiều 142 giữ riêng sai số 9,8%, tương quan 0,82, nhưng biên độ cao điểm 9,1% so với 26,0% của Mapbox; chưa so mật độ. Sửa 3 lỗi: bề rộng theo chiều, vạch dừng thừa (mạng v6), tốc độ tự do chứa độ trễ tại nút |

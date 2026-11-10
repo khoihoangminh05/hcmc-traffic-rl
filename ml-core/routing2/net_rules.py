@@ -245,10 +245,29 @@ def assign_cycles(tls: list[str], geo: dict, cameras: list[dict], measured: list
     return got, rows
 
 
+def inner_nodes(members: set[str], succ: dict[str, set[str]], signal: set[str], xy: dict[str, tuple[float, float]], radius_m: float) -> set[str]:
+    """Signal nodes of one controller plus the unsignalled nodes reached from them without leaving radius_m of a member.
+
+    OSM often places an unsignalled node between two signal nodes of one crossing. An edge starting there is inside the
+    crossing, not an approach, otherwise traffic meets a second stop line a few metres after the first.
+    """
+    seen, todo = set(members), list(members)
+    while todo:
+        for v in succ.get(todo.pop(), ()):
+            if v not in seen and v not in signal and min(math.dist(xy[v], xy[m]) for m in members) <= radius_m:
+                seen.add(v)
+                todo.append(v)
+    return seen
+
+
 def tl_links(root: ET.Element, tl_of: dict[str, str]) -> tuple[dict[str, list[dict]], dict[str, dict[str, int]]]:
     """Controller -> links by linkIndex, and controller -> approach edge -> axis. Edges that start inside the crossing
     are not approaches."""
     edge = {e.get("id"): e for e in root.iter("edge") if e.get("function") != "internal"}
+    node_xy = {j.get("id"): (float(j.get("x")), float(j.get("y"))) for j in root.iter("junction") if j.get("type") != "internal"}
+    succ: dict[str, set[str]] = defaultdict(set)
+    for e in edge.values():
+        succ[e.get("from")].add(e.get("to"))
     raw: dict[str, list[ET.Element]] = defaultdict(list)
     for c in root.iter("connection"):
         if c.get("tl"):
@@ -258,8 +277,9 @@ def tl_links(root: ET.Element, tl_of: dict[str, str]) -> tuple[dict[str, list[di
         cs.sort(key=lambda c: int(c.get("linkIndex")))
         links[tl] = [{"from": c.get("from"), "dir": c.get("dir")} for c in cs]
         heading = {}
+        inner = inner_nodes({n for n, t in tl_of.items() if t == tl}, succ, set(tl_of), node_xy, CLUSTER_M)
         for e in {c.get("from") for c in cs}:
-            if tl_of.get(edge[e].get("from")) == tl:
+            if edge[e].get("from") in inner:
                 continue
             xy = [tuple(map(float, q.split(","))) for q in edge[e].find("lane").get("shape").split()]
             (x0, y0), (x1, y1) = xy[-2], xy[-1]
