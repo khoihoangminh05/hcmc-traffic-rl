@@ -1,3 +1,5 @@
+> **Đã thay bằng `.docs/PLAN_FINAL.md` (2026-11-09).** Giữ lại để tra cứu.
+
 # Quy trình 7 bước (người dùng chốt 2026-11-08, thay `PLAN_CALIB_TRAIN.md`)
 
 Xong bước trước mới sang bước sau. **Bỏ SUMO meso.** Các kết quả trước đây trên meso và mọi phép so baseline, UE–SO không dùng được.

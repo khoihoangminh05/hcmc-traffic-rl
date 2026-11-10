@@ -1,3 +1,5 @@
+> **Đã thay bằng `.docs/PLAN_FINAL.md` (2026-11-09).** Giữ lại để tra cứu.
+
 # Kế hoạch triển khai: hiệu chỉnh mô phỏng → kiểm tra còn đất → train MAPPO (lập 2026-11-08)
 
 Nguyên tắc:

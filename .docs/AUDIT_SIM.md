@@ -214,3 +214,7 @@ Số làn Võ Văn Kiệt: OSM ghi làn xe máy riêng (`motorcar=no`, `motorcyc
 - **Không tìm được cách chia luồng nào tốt hơn UE.** Trên mô phỏng này, phối hợp gần như không có đất so với app và greedy.
 - **Lý do có thể:** m3 tắt kiểm soát nút (`--meso-junction-control false`), nên mất ngoại ứng nhập dòng ở nút. Đó chính là nguồn của khoảng cách UE–SO 8.9% trên mạng micro hôm 7/11 (thành phần so_x). Ở meso m3, tắc chỉ còn theo cạnh, và UE xấp xỉ SO.
 - **Hệ quả:** đất cho phối hợp nằm ở **tương tác tại nút**, nhất là chỗ xe từ hẻm nhập ra đường chính. Mô hình m3 đã bỏ đúng phần này để hết kẹt chết. Phải thử meso có kiểm soát nút (m1) hoặc micro có chống kẹt v3.
+
+## Hiệu lực các kết quả (2026-11-09, `PLAN_FINAL.md`)
+
+Không dùng làm kết quả hay kết luận, vì chạy trên mô phỏng chưa qua cổng G2: `cal_*` trên meso, `k1–k5`, `msa13–15`, MARL `v10–v13`. Giữ được: kiểm toán Mapbox (M1–M10), mạng v2, bộ OD v3 (phải tính lại khi mạng đổi), danh mục camera.
