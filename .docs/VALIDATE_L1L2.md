@@ -57,12 +57,50 @@ Mạng `quan4_v4`, 15 phút mô phỏng, bước 0,5 s, lateral 0,4, OD ngẫu n
 
 Số xe đồng thời thật ở Q4 chưa biết. Với 4.000–10.000 xe, episode 15 phút tốn khoảng 2–7 phút máy, chưa tính thời gian ra quyết định của chính sách.
 
+## Ứng viên cuối (chạy 9/11, chấm 10/11)
+
+Xe máy: `base:maxSpeed=8.5;speedDev=0.2;tau=1.2;minGap=0.3;width=0.8;minGapLat=0.3;jmIgnoreFoeProb=0.3;jmIgnoreFoeSpeed=3;jmTimegapMinor=0.5;impatience=1`, sublane 0,4 m, bước 0,5 s, mạng bỏ làn trong nút. Chạy với `--collision.action warn --collision.mingap-factor 0`, vì trước đó toàn bộ teleport đều do va chạm ở khoảng cách sát của xe máy. Kết quả thô: `val/out_l1e`, `val/out_l2f` (bản sao ở `D:\sol1_backup\data8tb\val`).
+
+**L1, đường vòng 1 làn 7 m, so với đường cong Hà Nội:**
+
+| Mật độ thật (xe/m²) | Tốc độ SUMO (km/h) | Hà Nội (km/h) | Lệch | Lưu lượng (xe/h/m) |
+|---|---|---|---|---|
+| 0,030 | 29,3 | 32,8 | −10,7% | 862 |
+| 0,049 | 28,7 | 26,5 | +8,1% | 1.406 |
+| 0,063 | 28,2 | 23,5 | +20,2% | 1.772 |
+| 0,073 | 24,9 | 21,6 | +15,2% | 1.820 |
+| 0,081 | 23,3 | 20,4 | +14,3% | 1.884 |
+| 0,087 | 21,2 | 19,5 | +8,7% | 1.839 |
+| 0,106 | 16,0 | 17,0 | −6,0% | 1.700 |
+
+Lệch tốc độ trung bình 11,9%, lớn nhất 20,2%. Năng lực 1.884 so với mốc 1.908 xe/h/m, lệch 1,3%.
+
+Giới hạn: bộ này được chọn trong 12 bộ trên chính đường cong Hà Nội, chưa có dữ liệu giữ riêng. Bề rộng 7 m của mốc là giả định. Không kiểm được trên 0,106 xe/m² vì SUMO không nạp đủ xe, trong khi mật độ tới hạn của Hà Nội quy đổi khoảng 0,155; đỉnh lưu lượng của SUMO đến sớm hơn, quanh 0,08. `maxSpeed` 8,5 m/s chỉ là tham số khớp đường cong, không phải tốc độ tự do đo được.
+
+**L2:** 37 lượt, 74.857 xe, 0 teleport (ngưỡng 300 s), 84 cảnh báo va chạm (1,1/1.000 xe).
+
+- Xả hàng chờ trên 7 m: xe máy thuần 1.760 xe/h/m; có 15% ô tô 1.371 xe/h/m; thời gian mất lúc khởi động 2,3–2,4 s. Trên 3,5 m: 1.662 và 1.273.
+- Trễ chưa bão hòa: 17,1 s (x 0,35) và 21,3 s (x 0,71), so với Webster 13,4 và 16,9 s.
+- Nút 4 nhánh, 7 m, đủ hướng rẽ:
+
+| Xe/h mỗi nhánh | Xe máy thuần: không tới đích, trễ | 15% ô tô: không tới đích, trễ |
+|---|---|---|
+| 1.000 | 0%, 17 s | 0%, 19 s |
+| 2.000 | 0%, 19 s | 0%, 23 s |
+| 3.000 | 0%, 23 s | 0,8%, 122 s |
+| 4.000 | 0%, 86 s | 20,7%, 237 s |
+| 5.000 | 14,4%, 206 s | 26,7%, 292 s |
+
+- Hẻm ra đường chính: đường chính 1.500–4.000 xe/h, hẻm thoát hết, trễ 7–34 s, riêng hẻm 1,5 m với 800 xe/h ở 4.000 xe/h là 134 s. Đường chính 7.000 xe/h: trễ 23–459 s, hẻm 1,5 m với 800 xe/h có 43/200 xe chưa ra được.
+
+Không xe nào đứng yên liên tục 300 s, nên không có dấu hiệu kẹt chết vĩnh viễn. Chưa rõ 20,7% ở 4.000 xe/h có 15% ô tô (x khoảng 0,86 theo năng lực đi thẳng) là năng lực thật của nút một làn có xe rẽ, hay do mô hình. Chưa có số đo TP.HCM để chấm xả hàng chờ và thời gian chờ ở miệng hẻm.
+
 ## Kết luận
 
 | Tiêu chí | Kết quả |
 |---|---|
-| Sơ đồ cơ bản lệch ≤ 15% | Chưa đạt: năng lực 8%, tốc độ 18%; mốc còn là số Hà Nội |
-| Không kẹt chết do mô hình ở nút | Đạt ở tải vừa khi bỏ làn trong nút; chưa rõ ở sát năng lực |
-| Episode ≤ 5 phút | Đạt nếu episode 15 phút và khoảng 7.000 xe trở xuống |
+| Sơ đồ cơ bản lệch ≤ 15% | Đạt theo trung bình (tốc độ 11,9%, năng lực 1,3%); một điểm lệch 20,2%; mốc là số Hà Nội, tối ưu trên chính mốc đó |
+| Không kẹt chết do mô hình ở nút | Đạt: 0 teleport trên 74.857 xe; nhánh 4.000 xe/h có ô tô cần theo dõi |
+| Episode ≤ 5 phút | Đạt nếu episode 15 phút và khoảng 7.000 xe trở xuống, chưa tính thời gian chính sách |
 
-G1 chưa qua, nhưng SUMO chưa bị loại. Hướng chính: SUMO micro bỏ làn trong nút, tham số VN. Mô phỏng tự viết chỉ làm nếu cách này không qua G1.
+G1 đạt có điều kiện, chọn SUMO micro bỏ làn trong nút, chưa cần tự viết mô phỏng. Điều kiện: L3 phải kiểm lại bằng dữ liệu TP.HCM giữ riêng (tốc độ Mapbox và mật độ camera), mở rộng khỏi vùng mật độ đã khớp, và đo xả hàng chờ tại các nút có camera. Nếu L3 lệch vượt ngưỡng thì mở lại quyết định này.

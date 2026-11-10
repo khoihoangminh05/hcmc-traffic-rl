@@ -1,0 +1,18 @@
+{
+  "note": "Signal cycles from 20 s image series on 2026-11-09 (cv/cycle2.py). level B: passed in both the morning and afternoon windows; level B-: passed in one window. Cycle may change by hour; one day only.",
+  "cameras": [
+    {"camera": "q4_hoang_dieu_doan_van_bo_1", "cycle_s": 83, "level": "B"},
+    {"camera": "q4_hoang_dieu_doan_van_bo_2", "cycle_s": 83, "level": "B"},
+    {"camera": "q4_pasteur_ham_nghi", "cycle_s": 84, "level": "B"},
+    {"camera": "q4_vo_van_kiet_ky_con", "cycle_s": 125, "level": "B"},
+    {"camera": "q4_nguyen_tat_thanh_cang_sg_q7_q4", "cycle_s": 183.5, "level": "B"},
+    {"camera": "q4_vo_van_kiet_nguyen_van_cu_1", "cycle_s": 129, "level": "B-"},
+    {"camera": "q4_vo_van_kiet_cau_ong_lanh_1", "cycle_s": 144, "level": "B-"},
+    {"camera": "q4_vo_van_kiet_cau_ong_lanh_2", "cycle_s": 144, "level": "B-"},
+    {"camera": "q4_vo_van_kiet_tran_dinh_xu_2", "cycle_s": 139, "level": "B-"},
+    {"camera": "q4_nguyen_tat_thanh_cau_khanh_hoi", "cycle_s": 187, "level": "B-"},
+    {"camera": "q4_khanh_hoi_duong_so_41", "cycle_s": 75, "level": "B-"},
+    {"camera": "q4_khanh_hoi_cau_kenh_te", "cycle_s": 175, "level": "B-"},
+    {"camera": "q4_khanh_hoi_hoang_dieu", "cycle_s": 82, "level": "B-"}
+  ]
+}

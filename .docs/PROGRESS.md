@@ -131,3 +131,4 @@ Kế hoạch và trạng thái: [PLAN_V4.md](./PLAN_V4.md). MAPPO micro v3v đó
 | 2026-10-06 | Locked **2 conference papers**: RESEARCH_TWO_PAPERS.md (A=data twin, B=routing) |
 | 2026-10-09 | **Supersede → one paper UAKP**: RESEARCH_ONE_PAPER + uakp_env/train + quan4_uakp; binary v5 = legacy |
 | 2026-10-30 | **V4:** đích TR-C/T-ITS (+A\* phụ), chỉ dữ liệu miễn phí; P0 + Mapbox driving-traffic probes (100 tuyến) + match_probe; via 8 điểm/tuyến + chế độ typical `depart_at`; live 15 phút × 14 ngày. Xem PLAN_V4.md |
+| 2026-11-10 | G1 đạt có điều kiện (SUMO micro bỏ làn trong nút); G0 đếm xe máy sơ bộ đạt ngưỡng, chưa chốt; `routing2/net_rules.py`: mạng v5 có cấm rẽ và chu kỳ đèn đo được, 27 cụm đèn 2 pha |
