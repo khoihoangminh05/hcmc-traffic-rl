@@ -50,3 +50,11 @@ Lưu vào `Downloads\HCMC_papers\`, đặt đúng tên file ở cột cuối (kh
 | 20 | Chowdhury & Chakraborty 2024, Transportation Engineering | Thay file sai ở mục 10 | https://doi.org/10.1016/j.treng.2024.100281 |
 | 21 | Patil & Sangole 2016, gap acceptance xe máy, Ấn Độ | Nguồn gốc 3.0 s cho chỗ hẻm nhập đường | Tìm tên tác giả + "gap acceptance", trích qua Fadilah p.9 |
 | 22 | Ibrahim & Sanik 2007, gap acceptance, Malaysia | Nguồn gốc 3.2 s | Tìm tên tác giả + "gap acceptance", trích qua Fadilah p.9 |
+
+## Đợt 2026-11-11 (baseline mạnh)
+
+| # | Bài | Tải ở đâu | Vì sao |
+|---|---|---|---|
+| 1 | Wang, Djahel, Zhang, McManis 2016, Next Road Rerouting, IEEE T-ITS 17(10), DOI 10.1109/TITS.2016.2531425 | IEEE Xplore qua tài khoản trường | Gần nhất với `greedy` (chọn cạnh kế); cần hàm chi phí đúng |
+| 2 | Du et al. 2023, fog-cloud RL rerouting, CACAIE, DOI 10.1111/mice.13115 (hoặc arXiv 2110.05532, miễn phí) | arXiv | Đã so RL với EBkSP |
+| 3 | Wilkie, van den Berg, Lin, Manocha 2011, Self-Aware Traffic Route Planning, AAAI | ojs.aaai.org (miễn phí, máy mình bị chặn) | Gốc của `foot` |
