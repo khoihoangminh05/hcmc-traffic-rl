@@ -141,6 +141,14 @@ def one(job: dict) -> dict:
                         f'<flow id="{kind}_{r}" type="{kind}" route="r{r}" begin="0" end="{WARM_S + 3600}" '
                         f'{rate} departLane="best" departPosLat="random_free" departSpeed="max"/>\n'
                     )
+        # side traffic (l3 experiments): (id, from edge, to edge, veh/h at this hour), routed by SUMO, cars at `share`
+        for fid, fe, te, v in job.get("extra_flows", []):
+            for kind, vv in (("moto", v * (1 - share)), ("car", v * share)):
+                if vv >= 1:
+                    rows.append(
+                        f'<flow id="x{fid}_{kind}" type="{kind}" from="{fe}" to="{te}" begin="0" end="{WARM_S + 3600}" '
+                        f'period="exp({vv / 3600:.5f})" departLane="best" departPosLat="random_free" departSpeed="max"/>\n'
+                    )
         (d / "rou.xml").write_text("<routes>\n" + "".join(rows) + "</routes>\n", encoding="utf-8")
         ids = " ".join(e for c in job["chains"].values() for e in c)
         tls = Path(job["tls"]).read_text(encoding="utf-8")

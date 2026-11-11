@@ -201,3 +201,32 @@ Số xe quanh camera, tỷ lệ giờ cao nhất trên giờ thấp nhất (8, 1
 **Còn mở.** Mô phỏng chỉ có xe đi suốt trục thì tốc độ giảm theo lưu lượng sớm hơn thực tế, hoặc lưu lượng trưa thật thấp mà camera đếm cả xe không thuộc trục. Không tách được khi chưa có số đo lưu lượng thật (đếm xe qua vạch) hoặc tỷ lệ xanh theo giờ. Ứng viên chưa kiểm: tỷ lệ xanh theo giờ, xe vào ra đường nhánh dọc trục (ngoài đời một phần xe camera thấy không đi hết trục), số xe đỗ trong khung camera.
 
 Đổi mặc định `MOTO` của `l3_axis.py` sang bộ IDM. Kết quả L3 ở mục Kết luận vẫn là của Krauss; với IDM, phép dò ngược cho số gần như giống.
+
+## Cập nhật 2026-11-11 chiều: nguyên nhân là thiếu xe đường ngang
+
+**Mapbox chỉ chỗ mất thời gian** (trễ so với 5h, theo đoạn). Chiều 324 lúc 8h: 96 s thêm, khoảng 57 s nằm trên 360 m quanh nút Vĩnh Hội (ngã ba không đèn) và trước nút Đường số 41. Nút Khánh Hội – Hoàng Diệu chỉ khoảng 5 s. Chiều 142 lúc 17h: chậm nhất ở 233 m trước nút Vĩnh Hội (25 s). Trễ dồn đúng chỗ đường nhánh nhập vào. Trong L3 các đường đó không có xe.
+
+**Thí nghiệm** (`net_v8`, IDM, Poisson, Khánh Hội `alpha` 1500 hình dạng `n`):
+
+| Giờ | Chiều 324: không xe rẽ / có xe rẽ / Mapbox | Chiều 142: không xe rẽ / có xe rẽ / Mapbox |
+|---|---|---|
+| 8h | 19,7 / 16,8 / 16,1 | 18,8 / 19,1 / 21,0 |
+| 12h | 19,7 / 17,4 / 21,5 | 19,6 / 19,1 / 22,1 |
+| 17h | 18,8 / 11,8 / 15,1 | 18,0 / 18,3 / 16,6 |
+
+Xe rẽ là 1.000 xe/h nhân hình dạng camera, mỗi chiều: từ Vĩnh Hội vào Khánh Hội (chỉ rẽ phải vào chiều 324) và từ Khánh Hội vào Vĩnh Hội. Có xe đường ngang, mô phỏng tái hiện được 8h chậm ở chiều 324 mà không chậm ở chiều 142, điều trục trơn không làm được. Trưa thì quá chậm và 17h chậm quá mức, vì mức xe rẽ là giả định theo hình dạng camera đã bị nén.
+
+**Hai lỗi dữ liệu tìm thấy trên đường đi:**
+
+1. **Đường nhánh quá hẹp trong mạng.** Vĩnh Hội rộng 3,2 m mỗi chiều (số làn OSM nhân bề rộng mặc định). Với 1.000 xe/h, xe Vĩnh Hội không vào được: trễ xuất phát 23–119 s, 8–26 teleport "chờ quá lâu". Cho phép xe máy chen (`jmIgnoreFoeSpeed` 3 lên 6 hoặc 9 m/s) không đổi gì. Gán 7 m mỗi chiều thì hết kẹt (trễ 0,5 s, 0 teleport). Bề rộng đường nhánh là giả định chưa đo, ảnh hưởng cả L4.
+2. **Số đếm camera không tỷ lệ với lưu lượng:**
+   - vùng mặt đường khoanh lúc trước lấn vỉa hè, nên xe máy đỗ trước cửa hàng (8–15 chiếc mỗi camera) được tính là đang chạy; lọc xe đỗ theo độ trùng khung giữa các ảnh 5 phút chỉ bỏ được 10–20%;
+   - camera đổi góc theo giờ (Hoàng Diệu, Vĩnh Hội);
+   - YOLO đếm thiếu ở cảnh đông (G0: khoảng 58% số xe ở khung dày).
+
+   Đếm bằng mắt ở Vĩnh Hội: trưa khoảng 20–22 xe đang chạy, 17h khoảng 45–50, tức mật độ gấp 2,2–2,5 lần, trong khi YOLO cho 34 và 57. Hình dạng nhu cầu theo giờ lấy từ camera hiện đang bị nén.
+
+**Kết luận.** L3 kiểu "một trục, không xe ngang" không kiểm được mô phỏng: phần lớn biến động theo giờ ngoài đời đến từ xe ra vào ở các nút nhánh. L3 phải làm lại thành "trục cộng các đường ngang chính", lưu lượng đường ngang lấy từ Mapbox của chính đường đó. Đầu vào cần sửa trước:
+
+- vùng mặt đường camera không lấn vỉa hè, tách theo góc nhìn;
+- bề rộng đường nhánh đo được, ít nhất cho các đường cắt trục thử.
