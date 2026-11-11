@@ -29,7 +29,7 @@ import pandas as pd
 
 from .common import edge_data, run_sumo, sumo_bin, teleport_reasons, teleports, vtypes
 
-KEY = ("shape", "alpha", "width", "seed", "hour", "green")
+KEY = ("shape", "alpha", "width", "seed", "hour", "green", "arrivals")
 HOURS = list(range(7, 21))  # the camera frames on hand cover 7h to 20h
 WARM_S = 900
 FREE_RATIO = 0.6  # below this share of the neighbouring edges, a 5h speed is junction delay
@@ -134,9 +134,10 @@ def one(job: dict) -> dict:
             r = name.replace("|", "_").replace(" ", "")
             for kind, v in (("moto", q * (1 - share)), ("car", q * share)):
                 if v >= 1:
+                    rate = f'period="exp({v / 3600:.5f})"' if job["arrivals"] == "poisson" else f'vehsPerHour="{v:.1f}"'
                     rows.append(
                         f'<flow id="{kind}_{r}" type="{kind}" route="r{r}" begin="0" end="{WARM_S + 3600}" '
-                        f'vehsPerHour="{v:.1f}" departLane="best" departPosLat="random_free" departSpeed="max"/>\n'
+                        f'{rate} departLane="best" departPosLat="random_free" departSpeed="max"/>\n'
                     )
         (d / "rou.xml").write_text("<routes>\n" + "".join(rows) + "</routes>\n", encoding="utf-8")
         ids = " ".join(e for c in job["chains"].values() for e in c)
@@ -150,7 +151,7 @@ def one(job: dict) -> dict:
             encoding="utf-8",
         )
         extra = ("--ignore-junction-blocker", "5", "--time-to-impatience", "20", "--collision.action", "warn", "--collision.mingap-factor", "0")
-        wall, err = run_sumo(d, WARM_S + 3600, 0.5, 0.4, extra)
+        wall, err = run_sumo(d, WARM_S + 3600, 0.5, 0.4, extra, seed=job["seed"] + 1)
         ed, edm = edge_data(d / "ed.xml", 0.0), edge_data(d / "edm.xml", 0.0)
         sim: dict[str, float | None] = {}
         for name, chain in job["chains"].items():
@@ -200,6 +201,7 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--flow-shape", nargs="+", choices=["n_v", "n"], default=["n_v", "n"], help="hourly inflow proportional to count x speed, or to count")
     ap.add_argument("--green", type=float, nargs="+", default=[0.5], help="share of the green given to the corridor (0.5: as built)")
+    ap.add_argument("--arrivals", choices=["uniform", "poisson"], default="uniform", help="evenly spaced or random vehicle arrivals")
     ap.add_argument("--raw-free", action="store_true", help="use the Mapbox 5h speed on every edge, without free_speeds")
     ap.add_argument("--hours", type=int, nargs="+", default=[8, 10, 12, 15, 17, 18])
     a = ap.parse_args()
@@ -231,9 +233,9 @@ def main() -> None:
     done = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
     have = {tuple(r[k] for k in KEY) for r in done}
     jobs = [
-        dict(shape=sh, alpha=al, width=w, seed=s, hour=h, green=gr, net=str(net), tls=str(a.net / f"tls_seed{s}.add.xml"), chains=chains, lengths=lengths, lanes=lanes, free=free, profile=profiles[sh])
+        dict(shape=sh, alpha=al, width=w, seed=s, hour=h, green=gr, arrivals=a.arrivals, net=str(net), tls=str(a.net / f"tls_seed{s}.add.xml"), chains=chains, lengths=lengths, lanes=lanes, free=free, profile=profiles[sh])
         for sh in a.flow_shape for al in a.alpha for w in a.width for s in a.seeds for h in a.hours for gr in a.green
-        if (sh, al, w, s, h, gr) not in have
+        if (sh, al, w, s, h, gr, a.arrivals) not in have
     ]
     print(f"[l3] {len(jobs)} runs to do, {len(done)} done", flush=True)
     with Pool(a.workers) as p, path.open("a", encoding="utf-8") as f:

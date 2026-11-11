@@ -4,14 +4,45 @@ Mã: `ml-core/routing2/validate/l3_axis.py`. Mạng: `D:\sol1_backup\net_v6` (`r
 
 ## Kết luận
 
-**L3 đạt một phần. Chưa được coi là đã khớp hình dạng theo giờ.**
+**L3 đạt một phần. Mức tốc độ và xu hướng theo giờ khớp, biên độ cao điểm mới bằng khoảng một nửa thực tế hoặc thấp hơn.**
 
-- Mức tốc độ đạt: sai số trung bình 14,1% ở chiều hiệu chỉnh và 9,8% ở chiều giữ riêng.
-- Xu hướng theo giờ đúng chiều ở chiều giữ riêng (tương quan 0,82, chỉ 6 khung giờ).
-- Biên độ cao điểm không đạt: mô phỏng hoặc gần như phẳng, hoặc sập hẳn lúc 17h. Chiều giữ riêng giảm 9,1%, Mapbox giảm 26,0%.
-- Chưa so mật độ, dù kế hoạch yêu cầu: chưa đo chiều dài đường mà camera nhìn thấy.
+Cấu hình cuối: mạng `net_v7` (mỗi chiều một làn rộng bằng mặt đường), xe đến ngẫu nhiên, hình dạng lưu lượng theo số xe camera, `alpha` 2500, chọn trên chiều 324. Trung bình 2 seed, tổng 12 lượt, 0 teleport:
 
-Một seed, một trục, 6 khung giờ. Chưa đủ để nói về cả mạng.
+| | Sai số TB % | Tương quan theo giờ | Tốc độ giảm cao điểm % (mô phỏng / Mapbox) | Tốc độ mô phỏng 8, 10, 12, 15, 17, 18h |
+|---|---|---|---|---|
+| Chiều 324 (hiệu chỉnh) | 9,1 | 0,63 | 16,6 / 29,9 | 18,1 / 18,5 / 18,1 / 17,7 / 15,4 / 17,2 |
+| Chiều 142 (giữ riêng) | 12,0 | 0,83 | 10,8 / 26,0 | 17,6 / 18,1 / 17,6 / 17,3 / 16,2 / 16,9 |
+
+Mapbox: chiều 324 16,1 / 19,0 / 21,5 / 19,9 / 15,1 / 15,5; chiều 142 21,0 / 20,9 / 22,1 / 20,7 / 16,6 / 16,3.
+
+Hai seed cho kết quả gần như nhau. Chưa so mật độ vì chưa đo chiều dài đường camera nhìn thấy. Mức `alpha` chưa có số đo lưu lượng độc lập. Một trục, 6 khung giờ.
+
+## Vì sao trước đó sập
+
+Chiều 324 sập ở 1250–1500 xe/giờ là lỗi dựng mạng, không phải năng lực thật. OSM ghi số làn thay đổi dọc đường trong khi mặt đường liền. Sau nút Khánh Hội – Hoàng Diệu đường từ 2 làn về 1 làn, `netconvert` chỉ nối làn phải (`6772914371_2032267337` lane 0 sang lane 0), nên cả mặt đường dồn vào một làn 3,5 m. Năng lực ước tính khoảng 2.050 xe/giờ (1.273 xe/h/m × 3,5 m × tỷ lệ xanh 0,46, số xả hàng chờ lấy từ L2), khớp lưu lượng nghẽn đo được 1.600–1.770 xe/giờ.
+
+Sửa: `net_rules.py --one-lane`, mỗi chiều một làn, bề rộng bằng tổng các làn cũ. Đây cũng là cấu hình đã qua L1/L2. Ở `alpha` 3000 lúc 17h (4.100 xe/giờ vào) trục mới quá tải, khoảng 3.600 xe/giờ qua được. Kiểm thử tác động: `alpha` 1500 lúc 17h, chiều 324 từ 7,2 lên 19,0 km/h.
+
+Mô hình một làn rộng để SUMO cho xe máy đi ngang hàng trong làn. Năng lực khớp số Hà Nội ở L1/L2, nhưng kiểu len lỏi chưa đối chiếu với dữ liệu xe máy Việt Nam.
+
+## Kết quả trên mạng v7 (`l3_v7`, seed 0, Poisson)
+
+| Hình dạng | alpha | Chiều 324: sai số %, giảm %, tương quan | Chiều 142: sai số %, giảm %, tương quan |
+|---|---|---|---|
+| n | 1500 | 14,8; 5,9; 0,58 | 10,5; 6,5; 0,70 |
+| n | 2000 | 11,4; 8,6; 0,68 | 11,4; 7,2; 0,72 |
+| **n** | **2500** | **9,0; 17,0; 0,63** | **11,9; 11,8; 0,81** |
+| n | 3000 | 19,3; 56,5; 0,64 | 19,8; 37,2; 0,70 |
+| n | 3500 | 42,2; 68,9; 0,61 | 32,2; 34,5; 0,87 |
+| n_v | 1500 | 16,1; 4,9; −0,34 | 11,0; 6,1; 0,21 |
+| n_v | 2000 | 14,5; 4,7; −0,53 | 13,0; 6,0; −0,09 |
+| n_v | 2500 | 13,4; 7,6; −0,35 | 14,4; 7,1; −0,21 |
+| n_v | 3000 | 18,9; 37,7; −0,63 | 17,3; 14,8; −0,27 |
+| n_v | 3500 | 35,6; 62,7; −0,62 | 29,0; 33,0; −0,17 |
+
+Mapbox giảm 29,9% (324) và 26,0% (142). Hình dạng `n_v` vẫn tương quan âm, nên loại.
+
+Các mục dưới là quá trình dẫn tới đây, trên mạng cũ, giữ để đủ mọi lượt đã chạy.
 
 ## Thiết lập
 
@@ -22,7 +53,7 @@ Một seed, một trục, 6 khung giờ. Chưa đủ để nói về cả mạng
 - Tốc độ tự do mỗi đoạn lấy từ Mapbox 5h, có sửa (mục Lỗi đã sửa).
 - Mốc so: tốc độ ô tô Mapbox điển hình theo giờ. Chọn `alpha` và hình dạng trên chiều 324, chiều 142 giữ riêng.
 
-## Kết quả cuối (`l3_v6f`, 60 lượt, 3 lượt có teleport, mỗi lượt 1 xe)
+## Kết quả trên mạng v6, 2 làn (`l3_v6f`, 60 lượt, 3 lượt có teleport, mỗi lượt 1 xe)
 
 Mapbox, km/h, theo thứ tự 8, 10, 12, 15, 17, 18h:
 
@@ -74,12 +105,15 @@ Ngưỡng 60% là quy tắc tự đặt. Khi lên L4 phải áp chung cho cả m
 | `l3_fine` | 60 | v5, sửa bề rộng, còn hai lỗi sau | Ngưỡng sập 1250 |
 | `l3_v6` | 27/60 | v6, dừng vì còn lỗi tốc độ tự do | |
 | `l3_free` | 2 | v6 có sửa tốc độ tự do, kiểm chứng | |
-| `l3_v6f` | 60 | v6 có sửa tốc độ tự do | Kết quả cuối |
+| `l3_v6f` | 60 | v6 có sửa tốc độ tự do | Còn lỗi giảm làn |
+| `l3_poisson` | 55/60 | v6, xe đến ngẫu nhiên | Dừng sớm vì các mức cao đã sập |
+| `l3_v7_test` | 6 | v7, kiểm chứng một làn | |
+| `l3_v7` | 66 | v7, Poisson, 60 lượt seed 0 và 6 lượt seed 1 | Kết quả cuối |
 | `l3_green` | 36 | v6 có sửa, tỷ lệ xanh 35% và 65% | Kiểm độ nhạy, 1 lượt có teleport |
 
 ## Điểm còn lệch
 
-1. **Mô phỏng có ngưỡng gắt.** Chiều 324 lúc 17h ổn ở `alpha` 1000 (19,4 km/h) nhưng còn 7,7 km/h ở 1500 và 3,3 km/h ở 2000. Mapbox không xuống dưới 15 km/h. Kết quả ở `alpha` đã chọn nhạy với mức lưu lượng.
+1. **Mô phỏng có ngưỡng gắt (mạng cũ, đã giải thích ở mục Vì sao trước đó sập).** Chiều 324 lúc 17h ổn ở `alpha` 1000 (19,4 km/h) nhưng còn 7,7 km/h ở 1500 và 3,3 km/h ở 2000. Mapbox không xuống dưới 15 km/h. Kết quả ở `alpha` đã chọn nhạy với mức lưu lượng.
 2. **Thiếu biên độ khi chưa bão hòa.** Dưới ngưỡng, tốc độ gần như chỉ phụ thuộc vào đèn. Có thể do thiếu xe từ đường nhánh, xe đỗ, người đi bộ. Chưa kiểm được.
 3. **Lệch chiều lúc 8h không tái hiện được.** Mapbox: 16,2 km/h chiều 324, 21,0 km/h chiều 142. Mô phỏng cho hai chiều lưu lượng bằng nhau vì camera không tách chiều.
 4. **Tỷ lệ xanh đang giả định chia đều.** Camera Khánh Hội – Hoàng Diệu, sáng 9/11: gấp theo chu kỳ 82 s thấy khối xe đứng yên liền nhau, đỏ ước 52–66 s trên hướng nhìn thấy. Buổi trưa và chiều không ra cấu trúc rõ, có thể do chu kỳ đổi hoặc hàng chờ ngắn. Mới một camera, chưa đưa vào mô hình.
@@ -108,10 +142,27 @@ Thử tự động trên 18 cặp camera và khung giờ, ảnh ngày 9/11: chia
 
 Số 52–66 s ở điểm 4 trên là từ vùng khoanh tay trên một camera, vẫn chỉ là một mẫu.
 
+## Xe đến ngẫu nhiên (`l3_poisson`)
+
+Giả thuyết: dòng xe vào đều tăm tắp không gây trễ thêm ở đèn cho đến khi vượt năng lực, nên mô phỏng phẳng rồi sập. Đổi sang dòng Poisson, hình dạng `n`, xanh 50%, 2 seed. Dừng ở 55/60 lượt, phần bỏ dở là một số lượt của `alpha` 2000; 2 xe teleport.
+
+| alpha | Chiều | Sai số TB % | Giảm cao điểm % (mô phỏng / Mapbox) | Tương quan | Tốc độ theo giờ |
+|---|---|---|---|---|---|
+| 1000 | 324 | 15,5 | 7,8 / 29,7 | 0,51 | 20,0 / 20,5 / 20,2 / 19,5 / 19,0 / 19,7 |
+| 1000 | 142 | 9,8 | 5,8 / 26,0 | 0,72 | 19,7 / 20,2 / 19,9 / 19,5 / 19,0 / 19,5 |
+| **1250** | **324** | **12,2** | **11,8 / 29,7** | **0,63** | 19,5 / 19,8 / 19,4 / 19,0 / 17,5 / 18,4 |
+| **1250** | **142** | **10,1** | **5,8 / 26,0** | **0,88** | 19,2 / 19,4 / 19,5 / 19,2 / 18,4 / 18,9 |
+| 1500 | 324 | 16,5 | 62,7 / 29,7 | 0,62 | 18,3 / 19,2 / 18,8 / 16,5 / 7,2 / 15,2 |
+| 1500 | 142 | 10,4 | 7,6 / 26,0 | 0,85 | 18,6 / 19,1 / 18,9 / 18,5 / 17,7 / 18,2 |
+| 1750 | 324 | 43,9 | 76,2 / 29,7 | 0,64 | 10,5 / 17,4 / 14,0 / 8,1 / 4,1 / 7,4 |
+| 1750 | 142 | 10,4 | 9,6 / 26,0 | 0,87 | 18,2 / 18,7 / 18,6 / 17,9 / 16,9 / 17,5 |
+
+Giả thuyết chỉ đúng một phần. Ở mức tốt nhất (`alpha` 1250) sai số giảm còn 12,2% và không còn sập, nhưng biên độ vẫn chỉ 11,8% so với 29,7%, chiều giữ riêng 5,8% so với 26,0%. Lên 1500 chiều 324 vẫn sập lúc 17h. Dòng ngẫu nhiên nên được giữ vì thực tế hơn, nhưng chưa giải thích được phần thiếu.
+
 ## Việc tiếp
 
 - Tìm cơ chế làm tốc độ giảm dần theo lưu lượng khi chưa bão hòa, đối chiếu tài liệu xe máy và ảnh thật.
 - Muốn tách lưu lượng khỏi tỷ lệ xanh: đếm xe qua vạch theo chu kỳ ở vài camera, hoặc khoanh tay vùng hàng chờ từng hướng.
 - Đo chiều dài nhìn thấy của camera để so mật độ.
 - Thêm xe từ đường nhánh khi sang L4; tách lưu lượng theo chiều nếu có dữ liệu.
-- Chạy thêm seed và trục Nguyễn Tất Thành để xác nhận.
+- Kiểm trục Nguyễn Tất Thành để xác nhận cấu hình một làn; xem cấu hình này tác động đến toàn mạng ra sao ở L4.

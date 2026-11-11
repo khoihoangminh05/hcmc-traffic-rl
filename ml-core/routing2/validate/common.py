@@ -64,14 +64,14 @@ def build_net(d: Path, nodes: str, edges: str, cons: str = "", extra: tuple[str,
     return d / "net.xml"
 
 
-def run_sumo(d: Path, end_s: float, step_s: float, lateral_m: float, extra: tuple[str, ...] = ()) -> tuple[float, str]:
+def run_sumo(d: Path, end_s: float, step_s: float, lateral_m: float, extra: tuple[str, ...] = (), seed: int = 1) -> tuple[float, str]:
     """Runs net.xml + rou.xml + add.xml in d. Returns wall seconds and stderr text."""
     cmd = [
         sumo_bin("sumo"), "-n", "net.xml", "-r", "rou.xml", "-a", "add.xml", "--end", str(end_s),
         "--step-length", str(step_s), "--lateral-resolution", str(lateral_m),
         "--no-step-log", "true", "--duration-log.disable", "true",
         "--tripinfo-output", "trip.xml", "--tripinfo-output.write-unfinished", "true",
-        "--time-to-teleport", "300", "--seed", "1", *extra,
+        "--time-to-teleport", "300", "--seed", str(seed), *extra,
     ]
     t0 = time.perf_counter()
     r = subprocess.run(cmd, cwd=d, capture_output=True, text=True)

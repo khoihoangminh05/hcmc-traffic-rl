@@ -204,8 +204,23 @@ def write_joined_nodes(plain: Path, out: Path, tl_of: dict[str, str]) -> Path:
     return path
 
 
-def build(plain: Path, out: Path, delete: set[tuple[str, str]], tl_of: dict[str, str], name: str = "quan4_v5.net.xml") -> Path:
+def write_one_lane_edges(plain: Path, out: Path) -> Path:
+    """Each direction as one lane as wide as the carriageway. OSM lane counts change along a road where the pavement does
+    not, and netconvert then joins only one lane across the change, which makes a lane drop that does not exist. Motorcycles
+    do not keep to lanes, and L1 and L2 validated one wide lane."""
+    root = ET.parse(plain / "quan4.edg.xml").getroot()
+    for e in root.iter("edge"):
+        n = int(e.get("numLanes", "1"))
+        e.set("width", f'{float(e.get("width", "3.2")) * n:.2f}')
+        e.set("numLanes", "1")
+    path = out / "one_lane.edg.xml"
+    ET.ElementTree(root).write(path, encoding="unicode")
+    return path
+
+
+def build(plain: Path, out: Path, delete: set[tuple[str, str]], tl_of: dict[str, str], name: str = "quan4_v5.net.xml", one_lane: bool = False) -> Path:
     out.mkdir(parents=True, exist_ok=True)
+    edges = write_one_lane_edges(plain, out) if one_lane else plain / "quan4.edg.xml"
     nod = write_joined_nodes(plain, out, tl_of)
     con = out / "quan4_v5.con.xml"
     con.write_text(
@@ -216,7 +231,7 @@ def build(plain: Path, out: Path, delete: set[tuple[str, str]], tl_of: dict[str,
     )
     net = out / name
     cmd = [
-        sumo_binary("netconvert"), "--node-files", str(nod), "--edge-files", str(plain / "quan4.edg.xml"),
+        sumo_binary("netconvert"), "--node-files", str(nod), "--edge-files", str(edges),
         "--connection-files", str(con), "--output-file", str(net), "--junctions.join", "false", "--geometry.remove", "false",
         "--offset.disable-normalization", "true", "--default.junctions.radius", "1.5", "--junctions.corner-detail", "0",
         "--tls.default-type", "static", "--tls.cycle.time", "60", "--no-internal-links", "true", "--no-warnings", "true",
@@ -314,6 +329,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--at", default="08:00", help="HH:MM; time-windowed bans in force at this time are applied")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
+    ap.add_argument("--one-lane", action="store_true", help="each direction is one lane as wide as the carriageway")
     ap.add_argument("--cycles", type=Path, default=DEFAULT_CYCLES)
     ap.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
     a = ap.parse_args()
@@ -323,10 +339,10 @@ def main() -> None:
     nodes = signal_nodes(a.plain)
     cl = clusters({t: (float(geo[t]["lon"]), float(geo[t]["lat"])) for t in nodes}, CLUSTER_M)
     tl_of = {t: f"i{c}" for t, c in cl.items()}
-    base = build(a.plain, a.out, set(), tl_of, name="base.net.xml")
+    base = build(a.plain, a.out, set(), tl_of, name="base.net.xml", one_lane=a.one_lane)
     succ0, _ = net_links(base)
     sp = split_bans(bans["bans"], a.at, succ0)
-    net = build(a.plain, a.out, sp["delete"], tl_of)
+    net = build(a.plain, a.out, sp["delete"], tl_of, one_lane=a.one_lane)
     base.unlink()
     succ1, logics = net_links(net)
     links, groups = tl_links(ET.parse(net).getroot(), tl_of)
