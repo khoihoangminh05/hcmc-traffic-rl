@@ -87,6 +87,11 @@ Khu thử chứa code: `ml-core/routing2/validate/` (mới).
 - Baseline ở dạng mạnh nhất, tinh chỉnh trên seed 40000+: ff, app, app_history, greedy_load.
 - Trên đội 100–200 xe: tìm kịch bản greedy và app thua; đo cơ chế (dồn đường, đổi đường, chờ ở hẻm thông).
 - Cận phối hợp: sửa `routing2/gate_msa.py` trước khi dùng: so trung bình các vòng đã hội tụ, đánh giá trên nhu cầu khác; bỏ cách so vòng cuối với vòng tốt nhất. Thêm oracle chia luồng cho riêng đội xe.
+- **Cận tối ưu bằng luồng chi phí nhỏ nhất (chốt 2026-11-11):**
+  - Chia luồng tối ưu cho riêng đội xe trên mạng mở rộng theo thời gian. Thời gian đi mỗi cạnh lấy từ mô phỏng đã qua G2, với xe nền giữ cố định; ràng buộc năng lực cạnh từ đo L1/L2.
+  - Dùng hai vai: (1) cận để đo khoảng cách của greedy và MAPPO trong G3; (2) baseline phối hợp tập trung, giải lại vài phút một lần.
+  - Gọi greedy_load đúng tên trong tài liệu: định tuyến tham lam có tính tải, gần với gán dòng tăng dần và định tuyến lại phản ứng.
+  - Chỉ cài đặt và chạy sau G2.
 
 **Cổng G3:** khoảng cách từ greedy tới cận ≥ 5% ở CVaR25 hoặc trung bình, trên ít nhất 10 seed. Dưới 3%: báo người dùng trước khi train; bài chuyển trọng tâm sang pipeline và dữ liệu.
 

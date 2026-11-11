@@ -116,6 +116,17 @@ def retime(tls: str, net: str, edges: set[str], share: float) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
+def scale_cycles(tls: str, f: float) -> str:
+    """Every green phase times f (at least 5 s), yellow kept: an effective cycle for what the measured cycles miss
+    (shorter cycles at minor crossings, coordination, early starts). A calibrated knob, not a measurement."""
+    root = ET.fromstring(tls)
+    for t in root.iter("tlLogic"):
+        for p in t.findall("phase"):
+            if "y" not in p.get("state"):
+                p.set("duration", str(max(5, round(int(p.get("duration")) * f))))
+    return ET.tostring(root, encoding="unicode")
+
+
 def one(job: dict) -> dict:
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
@@ -154,6 +165,8 @@ def one(job: dict) -> dict:
         tls = Path(job["tls"]).read_text(encoding="utf-8")
         if job["green"] != 0.5:
             tls = retime(tls, job["net"], set(ids.split()), job["green"])
+        if job.get("cycle_scale", 1.0) != 1.0:
+            tls = scale_cycles(tls, job["cycle_scale"])
         prog = re.sub(r"</?additional>", "", tls)
         (d / "add.xml").write_text(
             f'<additional>\n{prog}<edgeData id="c" file="ed.xml" freq="3600" begin="{WARM_S}" end="{WARM_S + 3600}" vTypes="car" edges="{ids}" excludeEmpty="true"/>\n'

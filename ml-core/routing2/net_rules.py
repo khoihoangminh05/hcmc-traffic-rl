@@ -367,8 +367,39 @@ def axis_share(group: dict[str, int], priority: dict[str, int], major_share: flo
     return major_share if top[0] > top[1] else 1 - major_share
 
 
+def wave_arrivals(root: ET.Element, chains: dict[str, list[str]], groups: dict[str, dict[str, int]], both: bool = False) -> dict[str, list[tuple[float, str]]]:
+    """Controller -> [(free-flow time from a corridor start to its stop line, approach edge)], for a green wave.
+
+    Corridors (chain names "Road|bearing") are taken highest road class first, then longest; a controller belongs to
+    the first chain that reaches it, so at a crossing the bigger road gets the wave. One direction only unless `both`:
+    averaging the two directions' offsets left neither in the wave on Hoàng Diệu (VALIDATE_L3.md)."""
+    edge = {e.get("id"): e for e in root.iter("edge") if e.get("function") != "internal"}
+    approach = {e: tl for tl, g in groups.items() for e in g}
+
+    def rank(c: list[str]) -> tuple:
+        return (max(int(edge[e].get("priority", "0")) for e in c if e in edge), sum(float(edge[e].find("lane").get("length")) for e in c if e in edge))
+
+    owner: dict[str, str] = {}
+    out: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    for name in sorted(chains, key=lambda n: rank(chains[n]), reverse=True):
+        road = name.split("|")[0] if both else name
+        t = 0.0
+        for e in chains[name]:
+            if e not in edge:
+                continue
+            lane = edge[e].find("lane")
+            t += float(lane.get("length")) / float(lane.get("speed"))
+            tl = approach.get(e)
+            if tl and owner.setdefault(tl, road) == road:
+                out[tl].append((t, e))
+    return dict(out)
+
+
 def write_programs(path: Path, links: dict[str, list[dict]], groups: dict[str, dict[str, int]], cycles: dict[str, tuple[float, str, str]], seed: int,
-                   priority: dict[str, int] | None = None, major_share: float = 0.5) -> list[dict]:
+                   priority: dict[str, int] | None = None, major_share: float = 0.5, arrivals: dict[str, tuple[float, str]] | None = None,
+                   offset_sign: int = 1) -> list[dict]:
+    """With `arrivals`, those controllers get offsets that start their corridor's green when a free-flow platoon arrives
+    (2 s lead); the others keep random offsets. SUMO's offset sign convention is checked by experiment (offset_sign)."""
     rng = random.Random(seed)
     rows = []
     with path.open("w", encoding="utf-8") as f:
@@ -379,6 +410,14 @@ def write_programs(path: Path, links: dict[str, list[dict]], groups: dict[str, d
             phases = two_axis_phases(links[tl], groups[tl], cycle, share0=share0)
             total = sum(d for d, _ in phases)
             offset = int(rng.random() * total)
+            if arrivals and tl in arrivals:
+                # circular mean of the offsets each direction of the road would want
+                ang = []
+                for t_arr, e in arrivals[tl]:
+                    start = 0 if groups[tl][e] == 0 else phases[0][0] + phases[1][0]
+                    ang.append(2 * math.pi * ((offset_sign * (start - t_arr + 2.0)) % total) / total)
+                mean = math.atan2(sum(map(math.sin, ang)), sum(map(math.cos, ang))) % (2 * math.pi)
+                offset = int(round(mean / (2 * math.pi) * total)) % total
             f.write(f'  <tlLogic id={quoteattr(tl)} type="static" programID="measured" offset="{offset}">\n')
             f.writelines(f'    <phase duration="{d}" state="{s}"/>\n' for d, s in phases)
             f.write("  </tlLogic>\n")
@@ -398,6 +437,11 @@ def main() -> None:
     ap.add_argument("--one-lane", action="store_true", help="each direction is one lane as wide as the carriageway")
     ap.add_argument("--free-obs", type=Path, help="Mapbox edge_obs.csv; edges in it get a measured free speed")
     ap.add_argument("--free-hour", type=int, default=5)
+    ap.add_argument("--unmeasured-cycle", type=float, default=None, help="cycle (s) for signals without a camera, instead of a draw from the measured ones")
+    ap.add_argument("--snap-cycle-s", type=float, default=0.0, help="measured cycles this close to --unmeasured-cycle take it")
+    ap.add_argument("--wave", type=Path, default=None, help="corridor chains JSON (name -> edge ids): green-wave offsets along them")
+    ap.add_argument("--offset-sign", type=int, choices=[1, -1], default=1, help="1 matches SUMO (tested on Hoàng Diệu)")
+    ap.add_argument("--wave-both", action="store_true", help="time both directions of a road (circular mean of offsets)")
     ap.add_argument("--major-share", type=float, default=0.5, help="green share of the higher-class axis at a crossing of unequal classes")
     ap.add_argument("--cycles", type=Path, default=DEFAULT_CYCLES)
     ap.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
@@ -431,10 +475,17 @@ def main() -> None:
     for seed in a.seeds:
         rng = random.Random(seed)
         cycles = {
-            t: (got_tl[t]["cycle_s"], f"measured_{got_tl[t]['level']}", got_tl[t]["camera"]) if t in got_tl else (rng.choice(pool), "drawn_from_measured", "")
+            t: (got_tl[t]["cycle_s"], f"measured_{got_tl[t]['level']}", got_tl[t]["camera"]) if t in got_tl
+            else ((a.unmeasured_cycle, "fixed_assumed", "") if a.unmeasured_cycle else (rng.choice(pool), "drawn_from_measured", ""))
             for t in tls
         }
-        rows = write_programs(a.out / f"tls_seed{seed}.add.xml", links, groups, cycles, seed, priority, a.major_share)
+        if a.unmeasured_cycle and a.snap_cycle_s > 0:
+            # a wave needs one cycle along a corridor; cycles measured within the tolerance (about the measurement error)
+            # are set to the common one, or the offsets drift by the difference every cycle
+            cycles = {t: (a.unmeasured_cycle, src + "_snapped", cam) if abs(c - a.unmeasured_cycle) <= a.snap_cycle_s and c != a.unmeasured_cycle else (c, src, cam)
+                      for t, (c, src, cam) in cycles.items()}
+        arrivals = wave_arrivals(ET.parse(net).getroot(), json.loads(a.wave.read_text(encoding="utf-8")), groups, a.wave_both) if a.wave else None
+        rows = write_programs(a.out / f"tls_seed{seed}.add.xml", links, groups, cycles, seed, priority, a.major_share, arrivals, a.offset_sign)
         if seed == a.seeds[0]:
             with (a.out / "tls_sources.csv").open("w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -472,6 +523,10 @@ def main() -> None:
         "cycle_pool_s": pool,
         "one_lane": a.one_lane,
         "major_share": a.major_share,
+        "unmeasured_cycle": a.unmeasured_cycle,
+        "wave": str(a.wave) if a.wave else None,
+        "offset_sign": a.offset_sign,
+        "snap_cycle_s": a.snap_cycle_s,
         "free_speed_edges_measured": n_obs,
         "free_speed_edges_junction_delay_replaced": fixed,
     }

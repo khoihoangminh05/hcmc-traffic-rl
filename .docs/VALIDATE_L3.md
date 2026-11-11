@@ -264,3 +264,30 @@ Phép "ảnh đứng yên" không đo được thời gian đỏ ở nút đông
 - đèn nháy vàng lúc sáng sớm, giải thích vì sao Mapbox 5h gần bằng chạy tự do.
 
 Cần một nguồn đo trước khi chọn. Không vặn cho khớp.
+
+## Cập nhật 2026-11-11 tối: mô hình đèn hiệu chỉnh, `net_v10`
+
+Người dùng cho phép hiệu chỉnh các tham số chưa đo. Mọi thay đổi dưới đây là **hiệu chỉnh**, không phải số đo. Thử trên Hoàng Diệu gần như trống xe (300 xe/h mỗi chiều, 12h, 2 seed), so với chạy tự do 214 và 212 s, Mapbox trưa 250 (chiều 236) và 257 s (chiều 54):
+
+| Thử | Chiều 236 | Chiều 54 | Kết luận |
+|---|---|---|---|
+| `net_v8` (chu kỳ rút ngẫu nhiên, lệch pha ngẫu nhiên) | 320–327 s | 322–333 s | — |
+| Xe máy vượt đỏ X = 5/10/20 s (`jmDriveAfterRedTime`) | ô tô 311–327 s | ô tô 318–330 s | Chỉ xe máy nhanh hơn; Mapbox đo ô tô. Bỏ |
+| Hệ số chu kỳ hiệu dụng 0,7 / 0,5 / 0,35 | 268–314 s | 271–316 s | Mỗi lần dừng vẫn mất 5–10 s; ngay cả chu kỳ khoảng 30 s cũng chưa đủ. Giữ làm tùy chọn (`scale_cycles`), không dùng |
+| Nút chưa đo dùng 83 s, làn sóng xanh, chọn dấu lệch pha | dấu +1: 290–294 s; dấu −1: 268–270 s | dấu +1: 267–271 s; dấu −1: 312–315 s | Làn sóng chạy cho chiều 54 (chiều được chọn) với dấu +1: quy ước của SUMO là +1 |
+| Như trên, gom chu kỳ đo được trong ±2 s về 83 (`net_v10`) | 288–296 s | 248–253 s | Nút i21 đo 82 s làm lệch pha trôi khoảng 43 s mỗi giờ; gom lại thì làn sóng giữ được |
+| Căn hai chiều bằng trung bình vòng tròn (`net_v11`) | 295–298 s | 267–277 s | Tệ hơn; giữ một chiều |
+
+**`net_v10`** (`net_rules.py --unmeasured-cycle 83 --snap-cycle-s 2 --wave l3_axes.json`):
+- nút chưa có camera dùng 83 s, thay vì rút từ các chu kỳ đo được (phần lớn là nút lớn, 125–187 s);
+- chu kỳ đo được trong ±2 s của 83 gom về 83 (chỉ i21);
+- mỗi nút lấy lệch pha làn sóng xanh cho trục lớn nhất đi qua, theo một chiều.
+
+Chiều ngược làn sóng vẫn chậm hơn thực tế khoảng 40 s.
+
+**L3 trục cộng đường ngang trên `net_v10`** (`l3_network.py`, 6 luồng, 9 vòng dò):
+- **8h:** mọi luồng hội tụ. Phép kiểm độc lập, trễ thêm so với 5h theo từng đoạn dọc Khánh Hội: Spearman 0,77 (chiều 324, 26 đoạn) và 0,60 (chiều 142, 20 đoạn); tổng 93 so với 96 s và 37 so với 38 s. Mô phỏng tái hiện được chỗ xe chậm, không chỉ tốc độ trung bình.
+- **12h:** Khánh Hội chiều 324 chạm cận dưới (20 xe/h) mà vẫn 20,2 so với 21,5 km/h; Hoàng Diệu chiều 236 cũng chạm cận dưới.
+- **17h:** chưa hội tụ. Khánh Hội 324 ra 9,5 so với 15,1; Hoàng Diệu 54 ra 14,3 so với 18,1.
+
+Nguyên nhân: xe vào từ Vĩnh Hội được cho đi hết trục (2.434 xe/h lúc 17h). Đang chạy lại với xe Vĩnh Hội rời trục ở nút Đường số 41 và 11 vòng dò.
