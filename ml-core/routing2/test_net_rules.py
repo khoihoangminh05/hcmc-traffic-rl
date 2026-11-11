@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .net_rules import active, axis_groups, clusters, inner_nodes, largest_scc, split_bans, two_axis_phases
+from .net_rules import active, axis_groups, clusters, free_speeds, inner_nodes, largest_scc, road_neighbours, split_bans, two_axis_phases
 
 
 def test_active() -> None:
@@ -65,6 +65,17 @@ def test_inner_nodes() -> None:
     assert got == {"a", "b", "m"}  # "far" is too far, "up" feeds the crossing and stays an approach
 
 
+def test_free_speeds() -> None:
+    # a road a-b-c-d-e-f of one class, its reverse edge, and a side street of another class at c
+    edges = {"ab": ("a", "b", "5"), "bc": ("b", "c", "5"), "cd": ("c", "d", "5"), "de": ("d", "e", "5"), "ef": ("e", "f", "5"),
+             "dc": ("d", "c", "5"), "cx": ("c", "x", "1")}
+    nb = road_neighbours(edges)
+    assert set(nb["cd"]) == {"de", "ef", "bc", "ab"}  # no U-turn (dc), no other class (cx)
+    v = {"ab": 9.0, "bc": 8.0, "cd": 2.5, "de": 9.0, "ef": 8.5, "cx": 1.0}
+    out, fixed = free_speeds(v, nb)
+    assert fixed == ["cd"] and out["cd"] == 8.75 and out["cx"] == 1.0  # cx has no measured neighbour of its class
+
+
 def test_scc() -> None:
     assert largest_scc({"a": {"b"}, "b": {"a", "c"}}) == 2
 
@@ -76,6 +87,7 @@ def main() -> None:
     test_phases()
     test_clusters()
     test_inner_nodes()
+    test_free_speeds()
     test_scc()
     print("NET_RULES_TESTS_OK")
 

@@ -19,7 +19,11 @@ nodes closer than CLUSTER_M therefore share one controller with our own two-phas
 axis. The equal green split is an assumption.
 
 Signals without a measurement take a cycle drawn from the measured cycles. Offsets and green splits are unmeasured:
-offsets are drawn per seed, green splits keep netconvert's proportions.
+offsets are drawn per seed, greens are split equally between the two axes.
+
+With --free-obs, an edge with a Mapbox speed at --free-hour gets that speed as its free speed instead of the class value,
+except where it is far below its neighbours on the same road: that is junction delay placed on a short edge, and as a
+speed limit it would cap the discharge (found on Khánh Hội, VALIDATE_L3.md).
 
     python -m routing2.net_rules --plain DIR --bans turn_bans.json --graph graph.json --out DIR --at 08:00 --seeds 0 1 2
 """
@@ -204,23 +208,72 @@ def write_joined_nodes(plain: Path, out: Path, tl_of: dict[str, str]) -> Path:
     return path
 
 
-def write_one_lane_edges(plain: Path, out: Path) -> Path:
-    """Each direction as one lane as wide as the carriageway. OSM lane counts change along a road where the pavement does
-    not, and netconvert then joins only one lane across the change, which makes a lane drop that does not exist. Motorcycles
-    do not keep to lanes, and L1 and L2 validated one wide lane."""
+def hour_speeds(obs: Path, hour: int) -> dict[str, float]:
+    """Edge -> median Mapbox speed (m/s) for trips departing in that local hour."""
+    by: dict[str, list[float]] = defaultdict(list)
+    with obs.open(encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            if r.get("depart_at") and int(r["depart_at"][11:13]) == hour:
+                by[r["alley_id"]].append(float(r["speed_mps"]))
+    return {e: sorted(v)[len(v) // 2] if len(v) % 2 else sum(sorted(v)[len(v) // 2 - 1: len(v) // 2 + 1]) / 2 for e, v in by.items()}
+
+
+def road_neighbours(edges: dict[str, tuple[str, str, str]], hops: int = 2) -> dict[str, list[str]]:
+    """Edge -> edges up to `hops` steps before and after it on the same road: same priority, no U-turn."""
+    out_of, into = defaultdict(list), defaultdict(list)
+    for e, (u, v, _) in edges.items():
+        out_of[u].append(e)
+        into[v].append(e)
+    res = {}
+    for e, (u, v, p) in edges.items():
+        found = []
+        for step, back in ((lambda x: out_of[edges[x][1]], lambda x, y: edges[y][1] != edges[x][0]),
+                           (lambda x: into[edges[x][0]], lambda x, y: edges[y][0] != edges[x][1])):
+            front = [e]
+            for _ in range(hops):
+                front = [y for x in front for y in step(x) if edges[y][2] == p and back(x, y) and y != e]
+                found += front
+        res[e] = list(dict.fromkeys(found))
+    return res
+
+
+def free_speeds(v: dict[str, float], neighbours: dict[str, list[str]], ratio: float = 0.6) -> tuple[dict[str, float], list[str]]:
+    """Measured speeds with junction delay removed: an edge below `ratio` x the median of its measured neighbours takes
+    that median."""
+    out, fixed = dict(v), []
+    for e, x in v.items():
+        near = sorted(v[n] for n in neighbours.get(e, []) if n in v)
+        if near:
+            m = near[len(near) // 2] if len(near) % 2 else (near[len(near) // 2 - 1] + near[len(near) // 2]) / 2
+            if x < ratio * m:
+                out[e] = m
+                fixed.append(e)
+    return out, fixed
+
+
+def write_edges(plain: Path, out: Path, one_lane: bool, speeds: dict[str, float]) -> Path:
+    """The plain edges with each direction as one lane as wide as the carriageway (one_lane) and measured free speeds.
+
+    One lane: OSM lane counts change along a road where the pavement does not, and netconvert then joins only one lane
+    across the change, which makes a lane drop that does not exist. Motorcycles do not keep to lanes, and L1 and L2
+    validated one wide lane."""
     root = ET.parse(plain / "quan4.edg.xml").getroot()
     for e in root.iter("edge"):
-        n = int(e.get("numLanes", "1"))
-        e.set("width", f'{float(e.get("width", "3.2")) * n:.2f}')
-        e.set("numLanes", "1")
-    path = out / "one_lane.edg.xml"
+        if one_lane:
+            n = int(e.get("numLanes", "1"))
+            e.set("width", f'{float(e.get("width", "3.2")) * n:.2f}')
+            e.set("numLanes", "1")
+        if e.get("id") in speeds:
+            e.set("speed", f'{speeds[e.get("id")]:.2f}')
+    path = out / "edges.edg.xml"
     ET.ElementTree(root).write(path, encoding="unicode")
     return path
 
 
-def build(plain: Path, out: Path, delete: set[tuple[str, str]], tl_of: dict[str, str], name: str = "quan4_v5.net.xml", one_lane: bool = False) -> Path:
+def build(plain: Path, out: Path, delete: set[tuple[str, str]], tl_of: dict[str, str], name: str = "quan4_v5.net.xml", one_lane: bool = False,
+          speeds: dict[str, float] | None = None) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    edges = write_one_lane_edges(plain, out) if one_lane else plain / "quan4.edg.xml"
+    edges = write_edges(plain, out, one_lane, speeds) if one_lane or speeds else plain / "quan4.edg.xml"
     nod = write_joined_nodes(plain, out, tl_of)
     con = out / "quan4_v5.con.xml"
     con.write_text(
@@ -330,6 +383,8 @@ def main() -> None:
     ap.add_argument("--at", default="08:00", help="HH:MM; time-windowed bans in force at this time are applied")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--one-lane", action="store_true", help="each direction is one lane as wide as the carriageway")
+    ap.add_argument("--free-obs", type=Path, help="Mapbox edge_obs.csv; edges in it get a measured free speed")
+    ap.add_argument("--free-hour", type=int, default=5)
     ap.add_argument("--cycles", type=Path, default=DEFAULT_CYCLES)
     ap.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
     a = ap.parse_args()
@@ -339,10 +394,16 @@ def main() -> None:
     nodes = signal_nodes(a.plain)
     cl = clusters({t: (float(geo[t]["lon"]), float(geo[t]["lat"])) for t in nodes}, CLUSTER_M)
     tl_of = {t: f"i{c}" for t, c in cl.items()}
-    base = build(a.plain, a.out, set(), tl_of, name="base.net.xml", one_lane=a.one_lane)
+    speeds, fixed, n_obs = None, [], 0
+    if a.free_obs:
+        plain_edges = {e.get("id"): (e.get("from"), e.get("to"), e.get("priority")) for e in ET.parse(a.plain / "quan4.edg.xml").getroot().iter("edge")}
+        measured = {e: s for e, s in hour_speeds(a.free_obs, a.free_hour).items() if e in plain_edges}
+        n_obs = len(measured)
+        speeds, fixed = free_speeds(measured, road_neighbours(plain_edges))
+    base = build(a.plain, a.out, set(), tl_of, name="base.net.xml", one_lane=a.one_lane, speeds=speeds)
     succ0, _ = net_links(base)
     sp = split_bans(bans["bans"], a.at, succ0)
-    net = build(a.plain, a.out, sp["delete"], tl_of, one_lane=a.one_lane)
+    net = build(a.plain, a.out, sp["delete"], tl_of, one_lane=a.one_lane, speeds=speeds)
     base.unlink()
     succ1, logics = net_links(net)
     links, groups = tl_links(ET.parse(net).getroot(), tl_of)
@@ -394,6 +455,9 @@ def main() -> None:
         "controllers_measured_levels": Counter(v["level"] for v in got_tl.values()),
         "cameras": cam_rows,
         "cycle_pool_s": pool,
+        "one_lane": a.one_lane,
+        "free_speed_edges_measured": n_obs,
+        "free_speed_edges_junction_delay_replaced": fixed,
     }
     (a.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in report.items() if k != "cameras"}, ensure_ascii=False, indent=1), flush=True)
