@@ -35,7 +35,8 @@ WARM_S = 900
 FREE_RATIO = 0.6  # below this share of the neighbouring edges, a 5h speed is junction delay
 MOTO = (
     "base:maxSpeed=8.5;speedDev=0.2;tau=1.2;minGap=0.3;width=0.8;minGapLat=0.3;"
-    "jmIgnoreFoeProb=0.3;jmIgnoreFoeSpeed=3;jmTimegapMinor=0.5;impatience=1"
+    "jmIgnoreFoeProb=0.3;jmIgnoreFoeSpeed=3;jmTimegapMinor=0.5;impatience=1;"
+    "carFollowModel=IDM;maxSpeed=11;tau=1.1;delta=2"  # 2026-11-11: IDM, see VALIDATE_L1L2.md
 )
 
 
@@ -124,7 +125,7 @@ def one(job: dict) -> dict:
             [sumo_bin("netconvert"), "-s", job["net"], "-e", "patch.edg.xml", "-o", "net.xml", "--no-internal-links", "true", "--no-warnings", "true"],
             cwd=d, check=True, capture_output=True, text=True,
         )
-        rows = [vtypes(MOTO)]
+        rows = [vtypes(job.get("moto", MOTO))]
         for name, chain in job["chains"].items():
             r = name.replace("|", "_").replace(" ", "")
             rows.append(f'<route id="r{r}" edges="{" ".join(chain)}"/>\n')
@@ -132,7 +133,8 @@ def one(job: dict) -> dict:
         q, share = job["alpha"] * job["profile"][str(h)]["q"], job["profile"][str(h)]["car_share"]
         for name in job["chains"]:
             r = name.replace("|", "_").replace(" ", "")
-            for kind, v in (("moto", q * (1 - share)), ("car", q * share)):
+            qc = q * job.get("scale", {}).get(name, 1.0)  # per-direction flow factor (l3_invert)
+            for kind, v in (("moto", qc * (1 - share)), ("car", qc * share)):
                 if v >= 1:
                     rate = f'period="exp({v / 3600:.5f})"' if job["arrivals"] == "poisson" else f'vehsPerHour="{v:.1f}"'
                     rows.append(
@@ -163,7 +165,7 @@ def one(job: dict) -> dict:
             c0, m0 = (ed.get(e) or [{}])[0], (edm.get(e) or [{}])[0]
             per_edge[e] = {
                 "v_car": c0.get("speed"), "v_moto": m0.get("speed"), "n_car": c0.get("entered"), "n_moto": m0.get("entered"),
-                "k_moto": m0.get("density"), "wait_moto": m0.get("waitingTime"),
+                "k_moto": m0.get("density"), "k_car": c0.get("density"), "wait_moto": m0.get("waitingTime"),
             }
         tr = ET.parse(d / "trip.xml").getroot().findall("tripinfo")
         arrived = [t for t in tr if float(t.get("arrival")) >= 0]

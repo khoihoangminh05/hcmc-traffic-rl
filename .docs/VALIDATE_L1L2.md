@@ -104,3 +104,28 @@ Không xe nào đứng yên liên tục 300 s, nên không có dấu hiệu kẹ
 | Episode ≤ 5 phút | Đạt nếu episode 15 phút và khoảng 7.000 xe trở xuống, chưa tính thời gian chính sách |
 
 G1 đạt có điều kiện, chọn SUMO micro bỏ làn trong nút, chưa cần tự viết mô phỏng. Điều kiện: L3 phải kiểm lại bằng dữ liệu TP.HCM giữ riêng (tốc độ Mapbox và mật độ camera), mở rộng khỏi vùng mật độ đã khớp, và đo xả hàng chờ tại các nút có camera. Nếu L3 lệch vượt ngưỡng thì mở lại quyết định này.
+
+## Cập nhật 2026-11-11: xe máy đổi sang IDM
+
+**Lý do.** Bộ Krauss ở trên đạt theo sai số trung bình nhưng sai hình dạng. Từ 0,030 lên 0,063 xe/m², Hà Nội giảm 28% tốc độ, Krauss chỉ giảm 4%: tốc độ giữ ở mức tối đa rồi mới gãy khi khoảng cách hẹp. L3 lộ ra đúng lỗi này (mô phỏng phẳng rồi sập). Mốc: S = 98,34 − 12,3·ln D km/h, D xe máy/km trên 7 m (Nguyễn Cao Ý và cs.).
+
+**Dò.** Vòng đường 1 làn 7 m, chỉ xe máy, 9 mật độ. Dò rộng 40 bộ (IDM: tốc độ mong muốn 11 / 12,5 / 14 m/s, khoảng thời gian bám xe 1,2 / 1,6 / 2,0 s, số mũ 2 / 4, khoảng hở ngang 0,3 / 0,5 m; thêm 4 bộ Krauss), dừng sau 120 lượt vì khoảng thời gian bám xe lớn làm sụt năng lực. Dò hẹp 12 bộ (11 / 12 m/s, 0,9 / 1,0 / 1,1 s, số mũ 2 / 3), 96 lượt, 0 teleport. Kết quả thô: `D:\sol1_backup\g0\l1_shape`, `l1_shape2`.
+
+Sửa harness: IDM từ chối chèn xe đứng xếp lưới (113/353 xe ở 0,063 xe/m² không vào, SUMO không báo). Xe xếp lưới giờ chèn với `insertionChecks="none"`; Krauss vốn chèn đủ nên không đổi.
+
+**Chọn:** `base:...;carFollowModel=IDM;maxSpeed=11;tau=1.1;delta=2;minGapLat=0.3` (phần `base` như cũ).
+
+| Mật độ (xe/m²) | 0,020 | 0,030 | 0,044 | 0,059 | 0,079 | 0,098 | 0,128 |
+|---|---|---|---|---|---|---|---|
+| IDM (km/h) | 34,8 | 33,3 | 30,3 | 27,7 | 22,9 | 18,5 | 13,9 |
+| Hà Nội (km/h) | 37,8 | 32,8 | 27,8 | 24,3 | 20,7 | 18,0 | 14,8 |
+
+Sai số trung bình 7,4%, lớn nhất 14,2% (Krauss: 11,9% và 20,2%). Năng lực 1.816 xe/h/m, thấp hơn mốc 1.908 là 5%. Bộ 1,2 s bám hình dạng tốt hơn (6,8%) nhưng năng lực thấp hơn 10%. Vẫn tối ưu trên chính mốc Hà Nội, chưa có dữ liệu giữ riêng.
+
+**L2 chạy lại** (`g0\l2_idm`, 37 lượt, đúng cấu hình cũ):
+- Nút 4 nhánh: như cũ đến 3.000 xe/h; ở 4.000 xe/h chỉ xe máy, 46 xe chưa tới đích (cũ 0). Có 3 teleport ở các nhánh có ô tô quá tải.
+- Hẻm ra đường chính: như cũ đến 4.000 xe/h; hẻm 1,5 m với 800 xe/h trễ 217 s (cũ 134 s).
+- Số "xả hàng chờ" của L2 bị giới hạn bởi khâu chèn xe: kịch bản yêu cầu 28.000 xe/h, SUMO chỉ chèn được 6.400–9.400 xe/h, nên hàng chờ không luôn đầy. Hạn chế này có ở cả bộ cũ. Đo lại bằng hàng chờ xếp sẵn 360 xe trước đèn đỏ: Krauss 1.954, IDM 1.851 xe/h/m, 0 teleport.
+- Chèn xe Poisson 3.000 và 6.000 xe/h vào đường 7 m: cả hai mô hình chèn đủ, trễ xuất phát 0,3 s.
+
+**Kết luận.** IDM thay Krauss làm ứng viên G1: hình dạng L1 tốt hơn, L2 tương đương, chỉ kém hơn ở tải rất cao. Trên trục Khánh Hội (L3) đổi mô hình gần như không đổi kết quả, vì mật độ giữa đoạn ở đó thấp (khoảng 0,01 xe/m²); tốc độ trục chủ yếu do đèn.

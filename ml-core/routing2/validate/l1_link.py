@@ -53,6 +53,7 @@ def one(job: dict) -> dict:
         ring_edges = list(starts)
         if n_car == 0:
             # Motorcycles only: an explicit grid of side-by-side files, since random insertion stops near k = 0.1.
+            # No insertion checks: IDM refuses spaced-out standing vehicles otherwise (113 of 353 at k = 0.063, silently).
             attrs = moto_attrs(job["moto"])
             veh_w = float(re.search(r'\bwidth="([^"]+)"', attrs).group(1))
             gap_lat = float(re.search(r'minGapLat="([^"]+)"', attrs).group(1))
@@ -68,7 +69,7 @@ def one(job: dict) -> dict:
                 stagger = 0.5 * dx if f % 2 else 0.0
                 rows.append(
                     f'<vehicle id="{i}" type="moto" depart="0" departLane="{lane}" departPos="{s * dx + stagger + 1:.2f}" '
-                    f'departPosLat="{lat:.2f}" departSpeed="0"><route edges="{starts[e]}" repeat="400"/></vehicle>'
+                    f'departPosLat="{lat:.2f}" departSpeed="0" insertionChecks="none"><route edges="{starts[e]}" repeat="400"/></vehicle>'
                 )
                 i += 1
         else:

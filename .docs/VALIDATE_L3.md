@@ -166,3 +166,38 @@ Giả thuyết chỉ đúng một phần. Ở mức tốt nhất (`alpha` 1250) 
 - Đo chiều dài nhìn thấy của camera để so mật độ.
 - Thêm xe từ đường nhánh khi sang L4; tách lưu lượng theo chiều nếu có dữ liệu.
 - Kiểm trục Nguyễn Tất Thành để xác nhận cấu hình một làn; xem cấu hình này tác động đến toàn mạng ra sao ở L4.
+
+## Cập nhật 2026-11-11: dò lưu lượng ngược và kiểm bằng camera
+
+Mã: `routing2/validate/l3_invert.py`. Mỗi giờ, mỗi chiều, dò lưu lượng vào (8 vòng chia đôi trên thang log, 30–6.000 xe/h) đến khi tốc độ ô tô mô phỏng bằng Mapbox. Rồi so số xe mô phỏng trong bán kính 100 m quanh 4 camera Khánh Hội với số camera đếm. Chỉ so hình dạng theo giờ, vì chưa biết chiều dài camera nhìn thấy.
+
+| Giờ | Lưu lượng cần, chiều 324 (Krauss / IDM) | Chiều 142 (Krauss / IDM) |
+|---|---|---|
+| 8h | 3.031 / 2.677 | 451 / 655 |
+| 12h | 533 / 490 | 31 / 31 (chạm cận dưới) |
+| 17h | 3.431 / 2.908 | 2.790 / 2.790 |
+
+Số xe quanh camera, tỷ lệ giờ cao nhất trên giờ thấp nhất (8, 12, 17h):
+
+| Camera | Mô phỏng (IDM) | Camera |
+|---|---|---|
+| Kênh Tẻ | 11,7 | 1,23 |
+| Hoàng Diệu | 18,6 | 1,59 |
+| Vĩnh Hội | 12,1 | 1,30 |
+| Đường số 41 | 57,3 | 2,20 |
+
+**Mâu thuẫn.** Để khớp Mapbox, buổi trưa gần như phải không có xe. Nhưng camera thấy buổi trưa vẫn đông, bằng 60–80% giờ cao điểm. Quanh camera Hoàng Diệu lúc 12h, mô phỏng có khoảng 5 xe trong 338 m, camera đếm 36. Dù một phần số camera là xe đỗ hoặc xe đường ngang, chênh lệch vẫn quá lớn.
+
+**Các giả thuyết đã kiểm:**
+
+| Giả thuyết | Cách kiểm | Kết quả |
+|---|---|---|
+| Kiểu bám xe của xe máy | Đổi Krauss sang IDM (`VALIDATE_L1L2.md`) | L1 tốt hơn, L3 gần như không đổi |
+| Ô tô kẹt sau xe máy | Đoạn 1 km, 7 m, không đèn, 20% ô tô | Ở 1.600 xe/h ô tô chỉ chậm 1–2%; xe máy đi bên phải thì gần 0 |
+| Trễ dồn ở đèn | Tách trễ theo đoạn (`alpha` 1500 và 2500, 12h) | Đoạn có đèn chỉ thêm 3–11 s; đoạn khác thêm 15–37 s, do xe chậm cản xe nhanh |
+| Mapbox "điển hình" sai | So với Mapbox trực tiếp (`probe_full2`, khoảng 250 m mỗi chiều, ngày thường) | Trực tiếp còn giảm mạnh hơn: chiều 324 từ 23,9 (12h) xuống 13,2 km/h (17h), chiều 142 từ 17,9 xuống 12,3 |
+| Đèn đổi chu kỳ theo giờ | Đo chu kỳ khung 11:30–12:00 ngày 9/11, cùng phép kiểm như sáng và chiều | Khánh Hội – Hoàng Diệu 82 s (sáng 82), Kỳ Con 125 (như cũ), Nguyễn Văn Cừ 130 (chiều 129), Ông Lãnh 134 (chiều 144); không ủng hộ |
+
+**Còn mở.** Mô phỏng chỉ có xe đi suốt trục thì tốc độ giảm theo lưu lượng sớm hơn thực tế, hoặc lưu lượng trưa thật thấp mà camera đếm cả xe không thuộc trục. Không tách được khi chưa có số đo lưu lượng thật (đếm xe qua vạch) hoặc tỷ lệ xanh theo giờ. Ứng viên chưa kiểm: tỷ lệ xanh theo giờ, xe vào ra đường nhánh dọc trục (ngoài đời một phần xe camera thấy không đi hết trục), số xe đỗ trong khung camera.
+
+Đổi mặc định `MOTO` của `l3_axis.py` sang bộ IDM. Kết quả L3 ở mục Kết luận vẫn là của Krauss; với IDM, phép dò ngược cho số gần như giống.
