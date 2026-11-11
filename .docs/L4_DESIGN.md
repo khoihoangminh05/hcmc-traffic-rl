@@ -55,3 +55,16 @@ Mục tiêu theo `PLAN_FINAL.md`: cả mạng Quận 4, nhu cầu thay đổi th
 - **Ít dữ liệu đúng ngày:** Mapbox điển hình là ngày 9 và 10/11, camera mới có 2 ngày, nên tạm thời mới chia được theo đoạn đường, chưa chia theo ngày được. Đủ 2 tuần camera (khoảng 21/11) thì chia thêm theo ngày.
 - **Thiếu số đo:** lượng xe đi xuyên quận và tỷ lệ xanh chưa đo; offset đèn rút ngẫu nhiên theo seed.
 - **Chuyến nội quận là giả định:** báo kết quả theo dải giả định, không coi là số đo.
+
+## Kết quả các bước đã làm
+
+**S0 (2026-11-11).** Chuyến ngẫu nhiên trên `net_v8` (đi cả vào hẻm, chưa phải nhu cầu thật), 80% xe máy IDM, 20% ô tô, mô phỏng 30 phút:
+
+| Mức nhu cầu | 30 phút mô phỏng mất | Xe đang chạy cuối lượt | Teleport |
+|---|---|---|---|
+| 20.000 xe/giờ | 216 s | 2.871 | 25 / 9.956 (2,5‰; kẹt 17, nhường 8) |
+| 40.000 xe/giờ | 569 s | 10.204, đang nghẽn dần | 134 / 18.972 (7‰) |
+
+Mức 40.000 chạm điều kiện dừng: một giờ mất hơn 15 phút. Hiệu chỉnh S3 cho 3 khung giờ ước khoảng 4–8 giờ chạy trên máy cá nhân. Tỷ lệ teleport đều trên ngưỡng G2 (1‰), phải xem lại khi có nhu cầu thật vì chuyến ngẫu nhiên vào hẻm dễ gây kẹt hơn thực tế.
+
+**S1 (đang chạy).** Phát hiện trước khi chạy: `cv_tracker/count_snapshots.py` và `roi_counts.py` gắn cứng mã lớp COCO (1 xe đạp, 2 ô tô, 3 xe máy, 5 xe buýt, 7 xe tải). Mô hình UVH chọn ở G0 đánh số khác (0 xe máy, 1 ô tô, 2 xe buýt, 3 xe tải, 4 xe ba bánh, 5 xe đạp), nên chạy thẳng sẽ bỏ xe máy và gán nhầm lớp mà không báo lỗi. Đã thêm `--labels uvh`. Chỉ ngày 9/11 là ngày thường có đủ ảnh (7–8/11 là cuối tuần, 10/11 thiếu).

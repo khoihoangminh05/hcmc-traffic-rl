@@ -17,7 +17,11 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-CLASSES = {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+LABELS = {
+    "coco": {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"},
+    # UVH-26 fine-tune selected at G0 (cv runs/uvh512_y11m_g): class ids differ from COCO
+    "uvh": {0: "motorcycle", 1: "car", 2: "bus", 3: "truck", 4: "three_wheeler", 5: "bicycle"},
+}
 
 
 def main() -> None:
@@ -32,6 +36,8 @@ def main() -> None:
     ap.add_argument("--device", default="0")
     ap.add_argument("--save-vis", type=Path, default=None, help="write annotated images for the first N files")
     ap.add_argument("--n-vis", type=int, default=0)
+    ap.add_argument("--labels", choices=list(LABELS), default="coco", help="class ids of --model")
+    ap.add_argument("--days", nargs="+", default=None, help="only these YYYY-MM-DD folders")
     ap.add_argument("--boxes", type=Path, default=None, help="also write every box (JSONL) for the parked-vehicle filter")
     args = ap.parse_args()
 
@@ -39,7 +45,11 @@ def main() -> None:
     if args.out.exists():
         with args.out.open() as f:
             done = {r["file"] for r in csv.DictReader(f)}
-    files = sorted(str(p) for d in sorted(args.root.glob(args.glob)) for p in d.rglob("*.jpg") if str(p) not in done)
+    CLASSES = LABELS[args.labels]
+    files = sorted(
+        str(p) for d in sorted(args.root.glob(args.glob)) for p in d.rglob("*.jpg")
+        if str(p) not in done and (args.days is None or p.parent.name in args.days)
+    )
     print(f"[count] {len(files)} new images, {len(done)} already counted", flush=True)
     if not files:
         return

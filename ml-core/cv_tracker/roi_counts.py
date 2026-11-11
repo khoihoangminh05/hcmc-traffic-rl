@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-NAMES = {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+from .count_snapshots import LABELS
 
 
 def main() -> None:
@@ -21,7 +21,9 @@ def main() -> None:
     ap.add_argument("--roi", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--conf", type=float, default=0.1)
+    ap.add_argument("--labels", choices=list(LABELS), default="coco", help="class ids used in --boxes")
     args = ap.parse_args()
+    NAMES = LABELS[args.labels]
     spec = json.loads(args.roi.read_text())
     gw, gh = spec["grid"]["w"] / spec["grid"]["cols"], spec["grid"]["h"] / spec["grid"]["rows"]
     roi = {k: set(v) for k, v in spec["roi"].items()}
