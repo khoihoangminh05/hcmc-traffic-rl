@@ -230,3 +230,25 @@ Xe rẽ là 1.000 xe/h nhân hình dạng camera, mỗi chiều: từ Vĩnh Hộ
 
 - vùng mặt đường camera không lấn vỉa hè, tách theo góc nhìn;
 - bề rộng đường nhánh đo được, ít nhất cho các đường cắt trục thử.
+
+## Cập nhật 2026-11-11 tối: mô hình đèn cho trễ quá lớn trên trục chính
+
+Chuẩn bị L3 dạng "trục cộng đường ngang" (`routing2/validate/l3_network.py`, 6 luồng: Khánh Hội 2 chiều, Hoàng Diệu 2 chiều, xe vào và ra Vĩnh Hội; mỗi luồng dò từ Mapbox của chính đường đó). Lượt thử ở 12h với 346 xe/h mỗi luồng: Hoàng Diệu chỉ 16,9–17,7 km/h, Mapbox trưa 21,8–22,5. Luồng này sẽ dồn về cận dưới mà vẫn không khớp, nên chưa chạy dò.
+
+**Nguyên nhân.** Hoàng Diệu qua 6 nút đèn (i3, i16, i17, i18, i19, i21). Gần như không xe (300 xe/h mỗi chiều), mô phỏng mất thêm 106–110 s so với chạy tự do (214 s), khoảng 18 s mỗi nút. Mapbox: 5h gần bằng chạy tự do (224 và 216 s), trưa 250–257 s.
+
+| Tỷ lệ xanh cho trục (2 seed) | Thời gian đi, chiều 236 | Chiều 54 |
+|---|---|---|
+| 50% (như mạng hiện tại) | 320–327 s | 322–333 s |
+| 65% | 277–288 s | 283–302 s |
+| 75% | 257–265 s | 255–260 s |
+
+Ngay cả 75% xanh, đường gần như trống mới bằng Mapbox buổi trưa, mà trưa thì có xe. Chia xanh đều với lệch pha ngẫu nhiên cho trễ ở đèn quá lớn trên trục chính. Cùng hiện tượng này làm Khánh Hội buổi trưa luôn chậm hơn thực tế trong mọi lượt L3. Ngoài đời trục chính có thể được xanh nhiều hơn đường nhỏ cắt ngang, có làn sóng xanh, hoặc đèn nháy lúc 5h. Chưa đo được điều nào.
+
+**Thử đo thời gian đỏ từ ảnh lần nữa: thất bại.** Nút Hoàng Diệu – Đoàn Văn Bơ, khoanh tay hai vùng hàng chờ:
+- vùng trái không bao giờ đứng yên (xe máy, người đi bộ len liên tục);
+- vùng phải có khối rõ khi gấp theo chu kỳ, nhưng hai cách đọc cho khoảng 40 s và khoảng 61 s, vì xe máy nhích trong lúc đỏ.
+
+Phép "ảnh đứng yên" không đo được thời gian đỏ ở nút đông xe máy.
+
+**Hướng xử lý (giả định có kiểm):** coi tỷ lệ xanh của trục lớn khi cắt đường nhỏ hơn là một thông số chung chưa đo. Hiệu chỉnh nó trên Mapbox buổi trưa của một nửa số trục, kiểm trên nửa còn lại, rồi mới dò lưu lượng. Cần sửa `net_rules.two_axis_phases` để nhận tỷ lệ xanh theo cấp đường.
