@@ -94,15 +94,15 @@ def axis_groups(headings: dict[str, float]) -> dict[str, int]:
     return {e: 0 if abs((h - ref + 90) % 180 - 90) < 45 else 1 for e, h in headings.items()}
 
 
-def two_axis_phases(links: list[dict], group: dict[str, int], cycle: float, yellow: int = YELLOW_S) -> list[tuple[int, str]]:
-    """(duration, state) of a two-phase program with equal greens. `links` is ordered by linkIndex, each with
+def two_axis_phases(links: list[dict], group: dict[str, int], cycle: float, yellow: int = YELLOW_S, share0: float = 0.5) -> list[tuple[int, str]]:
+    """(duration, state) of a two-phase program, axis 0 getting `share0` of the green. `links` is ordered by linkIndex, each with
     "from" and "dir". Links missing from `group` join two signal nodes inside the crossing and stay green. Left turns
     and U-turns are permissive. With one axis only, the second phase is red for that axis (unmodelled side street or
     pedestrians)."""
     total = round(cycle)
-    green = (total - 2 * yellow) // 2
-    if green < 1:
+    if total - 2 * yellow < 2:
         raise ValueError(f"cycle {cycle} too short")
+    green = min(max(1, round((total - 2 * yellow) * share0)), total - 2 * yellow - 1) if share0 != 0.5 else (total - 2 * yellow) // 2
 
     def state(axis: int, ch: str) -> str:
         out = ""
@@ -356,14 +356,27 @@ def tl_links(root: ET.Element, tl_of: dict[str, str]) -> tuple[dict[str, list[di
     return links, groups
 
 
-def write_programs(path: Path, links: dict[str, list[dict]], groups: dict[str, dict[str, int]], cycles: dict[str, tuple[float, str, str]], seed: int) -> list[dict]:
+def axis_share(group: dict[str, int], priority: dict[str, int], major_share: float) -> float:
+    """Green share of axis 0: `major_share` if its highest approach class is above axis 1's, its complement if below,
+    0.5 if equal or one axis only. The split is unmeasured (VALIDATE_L3.md); major_share = 0.5 is the equal split."""
+    top = {}
+    for e, ax in group.items():
+        top[ax] = max(top.get(ax, 0), priority.get(e, 0))
+    if len(top) < 2 or top[0] == top[1]:
+        return 0.5
+    return major_share if top[0] > top[1] else 1 - major_share
+
+
+def write_programs(path: Path, links: dict[str, list[dict]], groups: dict[str, dict[str, int]], cycles: dict[str, tuple[float, str, str]], seed: int,
+                   priority: dict[str, int] | None = None, major_share: float = 0.5) -> list[dict]:
     rng = random.Random(seed)
     rows = []
     with path.open("w", encoding="utf-8") as f:
         f.write("<additional>\n")
         for tl in sorted(links):
             cycle, src, cam = cycles[tl]
-            phases = two_axis_phases(links[tl], groups[tl], cycle)
+            share0 = axis_share(groups[tl], priority or {}, major_share)
+            phases = two_axis_phases(links[tl], groups[tl], cycle, share0=share0)
             total = sum(d for d, _ in phases)
             offset = int(rng.random() * total)
             f.write(f'  <tlLogic id={quoteattr(tl)} type="static" programID="measured" offset="{offset}">\n')
@@ -385,6 +398,7 @@ def main() -> None:
     ap.add_argument("--one-lane", action="store_true", help="each direction is one lane as wide as the carriageway")
     ap.add_argument("--free-obs", type=Path, help="Mapbox edge_obs.csv; edges in it get a measured free speed")
     ap.add_argument("--free-hour", type=int, default=5)
+    ap.add_argument("--major-share", type=float, default=0.5, help="green share of the higher-class axis at a crossing of unequal classes")
     ap.add_argument("--cycles", type=Path, default=DEFAULT_CYCLES)
     ap.add_argument("--cameras", type=Path, default=DEFAULT_CAMERAS)
     a = ap.parse_args()
@@ -407,6 +421,7 @@ def main() -> None:
     base.unlink()
     succ1, logics = net_links(net)
     links, groups = tl_links(ET.parse(net).getroot(), tl_of)
+    priority = {e.get("id"): int(e.get("priority", "0")) for e in ET.parse(net).getroot().iter("edge") if e.get("function") != "internal"}
 
     measured = json.loads(a.cycles.read_text(encoding="utf-8"))["cameras"]
     got, cam_rows = assign_cycles(nodes, geo, json.loads(a.cameras.read_text(encoding="utf-8")), measured)
@@ -419,7 +434,7 @@ def main() -> None:
             t: (got_tl[t]["cycle_s"], f"measured_{got_tl[t]['level']}", got_tl[t]["camera"]) if t in got_tl else (rng.choice(pool), "drawn_from_measured", "")
             for t in tls
         }
-        rows = write_programs(a.out / f"tls_seed{seed}.add.xml", links, groups, cycles, seed)
+        rows = write_programs(a.out / f"tls_seed{seed}.add.xml", links, groups, cycles, seed, priority, a.major_share)
         if seed == a.seeds[0]:
             with (a.out / "tls_sources.csv").open("w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -456,6 +471,7 @@ def main() -> None:
         "cameras": cam_rows,
         "cycle_pool_s": pool,
         "one_lane": a.one_lane,
+        "major_share": a.major_share,
         "free_speed_edges_measured": n_obs,
         "free_speed_edges_junction_delay_replaced": fixed,
     }

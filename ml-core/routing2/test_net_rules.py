@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .net_rules import active, axis_groups, clusters, free_speeds, inner_nodes, largest_scc, road_neighbours, split_bans, two_axis_phases
+from .net_rules import active, axis_groups, axis_share, clusters, free_speeds, inner_nodes, largest_scc, road_neighbours, split_bans, two_axis_phases
 
 
 def test_active() -> None:
@@ -46,6 +46,11 @@ def test_phases() -> None:
     assert [s for _, s in p] == ["GgrG", "yyrG", "rrGG", "rryG"]
     assert abs(p[0][0] - p[2][0]) <= 1
     assert sum(d for d, _ in two_axis_phases(links, {"n": 0, "e": 1}, 183.5)) == round(183.5)
+    q = two_axis_phases(links, {"n": 0, "e": 1}, 83, share0=0.75)
+    assert sum(d for d, _ in q) == 83 and q[0][0] == round(77 * 0.75) and q[2][0] == 77 - round(77 * 0.75)
+    assert axis_share({"n": 0, "e": 1}, {"n": 5, "e": 3}, 0.7) == 0.7
+    assert abs(axis_share({"n": 0, "e": 1}, {"n": 3, "e": 5}, 0.7) - 0.3) < 1e-9
+    assert axis_share({"n": 0, "e": 1}, {"n": 5, "e": 5}, 0.7) == 0.5 and axis_share({"n": 0}, {"n": 5}, 0.7) == 0.5
     try:
         two_axis_phases(links, {}, 5)
     except ValueError:

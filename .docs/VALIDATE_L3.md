@@ -252,3 +252,15 @@ Ngay cả 75% xanh, đường gần như trống mới bằng Mapbox buổi trư
 Phép "ảnh đứng yên" không đo được thời gian đỏ ở nút đông xe máy.
 
 **Hướng xử lý (giả định có kiểm):** coi tỷ lệ xanh của trục lớn khi cắt đường nhỏ hơn là một thông số chung chưa đo. Hiệu chỉnh nó trên Mapbox buổi trưa của một nửa số trục, kiểm trên nửa còn lại, rồi mới dò lưu lượng. Cần sửa `net_rules.two_axis_phases` để nhận tỷ lệ xanh theo cấp đường.
+
+**Thử tỷ lệ xanh theo cấp đường (`net_rules.py --major-share`), dừng trước khi chạy.**
+- Đã thêm tham số, mặc định 0,5 (giữ như cũ), có test. Dựng thử `net_v9_ms0.65` và `net_v9_ms0.75`: chỉ 9/27 cụm đèn có hai trục khác cấp.
+- Trên Hoàng Diệu: i16 và i18 cho Hoàng Diệu nhiều xanh hơn; i17, i19, i21 hai trục cùng cấp nên giữ 50%; i3 (giao Nguyễn Tất Thành, cấp cao hơn) lại cho Hoàng Diệu chỉ 25%.
+- Hai trục cắt nhau đều cần ít trễ hơn để khớp Mapbox, nên chia lại xanh giữa hai trục không giải được. Không chạy tiếp hướng này.
+
+**Cơ chế còn lại, đều chưa đo, làm giảm trễ cho mọi hướng:**
+- phối hợp làn sóng xanh giữa các nút liên tiếp;
+- xe máy vượt đèn hoặc đi sớm, rẽ phải khi đỏ (sổ dữ liệu: "tỉ lệ vượt đèn" còn trống);
+- đèn nháy vàng lúc sáng sớm, giải thích vì sao Mapbox 5h gần bằng chạy tự do.
+
+Cần một nguồn đo trước khi chọn. Không vặn cho khớp.
